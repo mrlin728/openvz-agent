@@ -291,20 +291,16 @@ focusBannerBridge.on('hide', () => {
 })
 
 function setupAutoUpdater() {
-  autoUpdater.autoDownload = true
+  autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
 
   autoUpdater.on('checking-for-update', () => {
-    sendUpdaterStatus({ stage: 'checking', message: 'Checking for updates...' })
+    sendUpdaterStatus({ stage: 'checking' })
   })
 
   autoUpdater.on('update-available', info => {
     console.log('[updater] update available', info?.version)
-    sendUpdaterStatus({
-      stage: 'available',
-      version: info?.version,
-      message: `New version ${info?.version || ''} found, downloading...`.trim(),
-    })
+    sendUpdaterStatus({ stage: 'available', version: info?.version })
   })
 
   autoUpdater.on('download-progress', progress => {
@@ -313,48 +309,29 @@ function setupAutoUpdater() {
       percent: Number(progress?.percent || 0),
       transferred: progress?.transferred || 0,
       total: progress?.total || 0,
-      message: `Downloading update ${Math.round(Number(progress?.percent || 0))}%`,
     })
   })
 
   autoUpdater.on('update-downloaded', info => {
-    sendUpdaterStatus({
-      stage: 'downloaded',
-      version: info?.version,
-      message: `Version ${info?.version || ''} is ready to install`.trim(),
-    })
-
-    const result = dialog.showMessageBoxSync(mainWindow, {
-      type: 'info',
-      title: 'Update ready',
-      message: `Bailongma ${info.version} has been downloaded. Restart now to install?`,
-      buttons: ['Restart now', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-    })
-
-    if (result === 0) autoUpdater.quitAndInstall()
+    console.log('[updater] update downloaded', info?.version)
+    sendUpdaterStatus({ stage: 'downloaded', version: info?.version })
   })
 
   autoUpdater.on('update-not-available', info => {
     sendUpdaterStatus({
-      stage: 'idle',
+      stage: 'up-to-date',
       version: info?.version || app.getVersion(),
-      message: 'You already have the latest version',
     })
   })
 
   autoUpdater.on('error', err => {
     const message = err?.message || String(err || 'Update failed')
     console.warn('[updater] update failed', message)
-    sendUpdaterStatus({
-      stage: 'error',
-      message,
-    })
+    sendUpdaterStatus({ stage: 'error', message })
   })
 
   if (!IS_DEV) {
-    autoUpdater.checkForUpdatesAndNotify().catch(() => {})
+    autoUpdater.checkForUpdates().catch(() => {})
   }
 }
 
@@ -362,23 +339,33 @@ ipcMain.handle('app:get-version', () => app.getVersion())
 
 ipcMain.handle('updater:check-for-updates', async () => {
   if (IS_DEV) {
-    const message = 'Update checks are disabled in development mode'
-    sendUpdaterStatus({ stage: 'dev', message })
-    return { ok: false, skipped: true, reason: 'dev', message }
+    sendUpdaterStatus({ stage: 'dev' })
+    return { ok: false, skipped: true, reason: 'dev' }
   }
-
   try {
-    sendUpdaterStatus({ stage: 'checking', message: 'Checking for updates...' })
+    sendUpdaterStatus({ stage: 'checking' })
     const result = await autoUpdater.checkForUpdates()
-    return {
-      ok: true,
-      updateInfo: result?.updateInfo || null,
-    }
+    return { ok: true, updateInfo: result?.updateInfo || null }
   } catch (error) {
     const message = error?.message || String(error || 'Update check failed')
     sendUpdaterStatus({ stage: 'error', message })
     return { ok: false, message }
   }
+})
+
+ipcMain.handle('updater:start-download', async () => {
+  try {
+    await autoUpdater.downloadUpdate()
+    return { ok: true }
+  } catch (error) {
+    const message = error?.message || String(error || 'Download failed')
+    sendUpdaterStatus({ stage: 'error', message })
+    return { ok: false, message }
+  }
+})
+
+ipcMain.handle('updater:quit-and-install', () => {
+  autoUpdater.quitAndInstall()
 })
 
 app.on('second-instance', () => {

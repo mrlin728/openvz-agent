@@ -7,7 +7,7 @@ import { fileURLToPath } from 'url'
 import { WebSocketServer } from 'ws'
 import { pushMessage } from './queue.js'
 import { getDB, getConfig, insertUISignal, upsertMediaHistory, getMediaHistory, updateLastJarvisConversationContent } from './db.js'
-import { emitEvent, addSSEClient, removeSSEClient, addACUIClient, removeACUIClient, removeActiveUICard, flushStickyEvents } from './events.js'
+import { emitEvent, addSSEClient, removeSSEClient, addACUIClient, removeACUIClient, removeActiveUICard, emitUICommand, flushStickyEvents } from './events.js'
 import { getQuotaStatus } from './quota.js'
 import { isRunning, stopLoop, startLoop } from './control.js'
 import { buildHeartbeatSystemPromptPreview } from './system-prompt-preview.js'
@@ -1184,6 +1184,21 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
             if (action === 'app:saveState') {
               // 组件自动上报的状态快照：直接落盘，不触发 agent
               persistAppState(appId, payload)
+            } else if (action === 'confirm_security_change') {
+              // 用户确认安全设置变更，直接应用，不推入 agent 队列
+              const updates = {}
+              if (payload.file_sandbox !== undefined) updates.fileSandbox = String(payload.file_sandbox) === 'true'
+              if (payload.exec_sandbox !== undefined) updates.execSandbox = String(payload.exec_sandbox) === 'true'
+              if (Object.keys(updates).length > 0) setSecurity(updates)
+              emitUICommand({ op: 'unmount', id: appId })
+              removeActiveUICard(appId)
+              const desc = Object.entries(updates).map(([k, v]) => `${k}=${v}`).join(', ')
+              pushMessage('SYSTEM', `[安全设置已更新] 用户确认变更：${desc}`, 'APP_SIGNAL')
+            } else if (action === 'cancel_security_change') {
+              // 用户取消，关闭卡片，不应用变更
+              emitUICommand({ op: 'unmount', id: appId })
+              removeActiveUICard(appId)
+              pushMessage('SYSTEM', '[安全设置变更] 用户取消，设置未变更', 'APP_SIGNAL')
             } else if (action.startsWith('app:') || SILENT_CARD_ACTIONS.has(action)) {
               // app: 前缀 = 系统内部信号；SILENT_CARD_ACTIONS = 生命周期信号
               // 均已由 insertUISignal 写库，injector 下次 tick 被动注入，无需立即触发 agent

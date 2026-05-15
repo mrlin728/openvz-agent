@@ -1090,6 +1090,45 @@ To play music, use media_mode with mode=music and src=file_path to show the reco
       }
     }
   },
+
+  connect_wechat: {
+    type: 'function',
+    function: {
+      name: 'connect_wechat',
+      description: 'Show the WeChat ClawBot connection popup so the user can scan a QR code to bind their personal WeChat account. Call ONLY when the user explicitly asks to connect, bind, or set up WeChat. Do not call speculatively.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  },
+
+  set_security: {
+    type: 'function',
+    function: {
+      name: 'set_security',
+      description: 'Request a sandbox security setting change. Shows a confirmation card to the user — the change only takes effect after explicit user approval. Call ONLY when the user explicitly asks to disable or enable the file sandbox or exec sandbox. Do not call speculatively.',
+      parameters: {
+        type: 'object',
+        properties: {
+          file_sandbox: {
+            type: 'boolean',
+            description: 'New value for file sandbox. false = disable (allow access outside sandbox dir). Omit if not changing.'
+          },
+          exec_sandbox: {
+            type: 'boolean',
+            description: 'New value for exec sandbox. false = disable (allow absolute paths and home dir). Omit if not changing.'
+          },
+          reason: {
+            type: 'string',
+            description: 'Brief explanation shown to the user explaining why this change is needed.'
+          }
+        },
+        required: ['reason']
+      }
+    }
+  },
 }
 
 // 根据名称列表获取 schema 数组（含已安装工具）

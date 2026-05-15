@@ -96,12 +96,17 @@ const createSecondaryPanel = () => `
     </div>
   </header>
 
-  <section class="update-card" id="update-card">
+  <section class="update-card hidden" id="update-card">
     <div class="update-copy">
       <div class="update-title">桌面更新</div>
       <div class="update-status" id="update-status">未检查</div>
     </div>
-    <button class="update-action" id="check-update-btn" type="button">检查更新</button>
+    <div class="update-actions">
+      <button class="update-action" id="check-update-btn" type="button">检查更新</button>
+      <button class="update-action hidden" id="download-update-btn" type="button">立即更新</button>
+      <button class="update-action update-action-install hidden" id="install-update-btn" type="button">立即重启</button>
+      <button class="update-ignore hidden" id="ignore-version-btn" type="button">忽略此版本</button>
+    </div>
     <button class="update-close" id="update-close-btn" type="button" aria-label="关闭">×</button>
   </section>
 
@@ -164,6 +169,7 @@ const createSettingsModal = () => `
         <button class="settings-nav-item" data-tab="social" type="button">社交媒体</button>
         <button class="settings-nav-item" data-tab="voice" type="button">语音识别</button>
         <button class="settings-nav-item" data-tab="security" type="button">安全沙箱</button>
+        <button class="settings-nav-item" data-tab="update" type="button">更新</button>
       </nav>
 
       <!-- 内容区 -->
@@ -532,6 +538,39 @@ const createSettingsModal = () => `
           <div class="settings-section settings-section-action">
             <button class="settings-save-btn" id="settings-save-security" type="button">保存</button>
             <span class="settings-feedback" id="settings-security-feedback"></span>
+          </div>
+        </div>
+
+        <!-- ── 更新 tab ── -->
+        <div class="settings-tab" data-tab="update">
+          <div class="settings-section">
+            <div class="settings-section-label">版本信息</div>
+            <div class="settings-config-row">
+              <span class="settings-config-type">当前版本</span>
+              <span class="settings-config-info" id="settings-current-version">—</span>
+            </div>
+            <div class="settings-row-action" style="margin-top:12px;">
+              <button class="settings-save-btn" id="settings-check-update-btn" type="button">检查更新</button>
+              <span class="settings-feedback" id="settings-update-feedback"></span>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-label">通知偏好</div>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-suppress-updates">不再提醒更新</label>
+              <label class="settings-toggle">
+                <input type="checkbox" id="settings-suppress-updates">
+                <span class="settings-toggle-track"></span>
+              </label>
+            </div>
+            <p class="settings-hint">开启后发现新版本时不会弹出提示卡片，仍可在此处手动检查。</p>
+          </div>
+          <div class="settings-section" id="settings-ignored-section" style="display:none;">
+            <div class="settings-section-label">已忽略的版本</div>
+            <div class="settings-row">
+              <span class="settings-config-info" id="settings-ignored-version-val">—</span>
+              <button class="settings-save-btn" id="settings-clear-ignored-btn" type="button" style="width:auto;padding:0 12px;margin-left:auto;">清除忽略</button>
+            </div>
           </div>
         </div>
 

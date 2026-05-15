@@ -71,10 +71,14 @@ const CSS = `
   }
 `
 
+const _stepSheet = new CSSStyleSheet()
+_stepSheet.replaceSync(CSS)
+
 class SelfCheckStepCard extends HTMLElement {
   constructor() {
     super()
     this.attachShadow({ mode: 'open' })
+    this.shadowRoot.adoptedStyleSheets = [_stepSheet]
     this._props = {}
   }
 
@@ -88,7 +92,6 @@ class SelfCheckStepCard extends HTMLElement {
   _render() {
     const { step = 1, total = 4, name = '', icon = '🔍' } = this._props
     this.shadowRoot.innerHTML = `
-      <style>${CSS}</style>
       <div class="card">
         <div class="header">
           <span class="header-icon">${icon}</span>

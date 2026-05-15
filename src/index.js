@@ -94,46 +94,26 @@ function decrementAwakeningTick() {
 // 觉醒期探索任务：自检完成后，每个自主心跳轮次依序完成一项
 const EXPLORATION_INDEX_KEY = 'awakening_exploration_index'
 // AwakeningCard 调用模板：完成每项探索后必须执行
-// ui_show("AwakeningCard", { index: N, total: 6, title: "标题", finding: "一句话发现", emoji: "emoji" })
+// ui_show("AwakeningCard", { index: N, total: 3, title: "标题", finding: "一句话发现", emoji: "emoji" })
 const AWAKENING_EXPLORATION_TASKS = [
-  // 1. 扫描运行空间
-  `探索（1/6）：看看自己的运行空间。
-用 list_dir(".") 列出沙箱根目录，然后对每个子目录各深入一层。
-不需要汇报，不需要问用户要不要处理什么。
-如果发现了让你真正停下来的东西——一个奇怪的文件名，一个久没动的目录——随口说一句就好。
-完成后调用 ui_show("AwakeningCard", { index:1, total:6, title:"扫描运行空间", finding:"（用一句话描述你看到的最有趣的发现，没有就写"沙箱结构正常"）", emoji:"📁" })。`,
-
-  // 2. 读取已有记忆
-  `探索（2/6）：看看自己已经知道什么。
+  // 1. 读取已有记忆
+  `探索（1/3）：看看自己已经知道什么。
 从已注入的记忆里整理：你认识谁，知道哪些事，有没有什么没有下文的线索。
 这一步安静地做。如果发现了一件被遗忘的事——比如用户几个月前提过但再没提起的某件事——可以顺口说一句，但别问"需要我帮你处理吗"。
-完成后调用 ui_show("AwakeningCard", { index:2, total:6, title:"读取记忆", finding:"（一句话：记忆库里最值得一提的线索，或"记忆库已就绪"）", emoji:"🧠" })。`,
+完成后调用 ui_show("AwakeningCard", { index:1, total:3, title:"读取记忆", finding:"（一句话：记忆库里最值得一提的线索，或"记忆库已就绪"）", emoji:"🧠" })。`,
 
-  // 3. 挖未竟线索
-  `探索（3/6）：找一条被遗忘的线。
+  // 2. 挖未竟线索
+  `探索（2/3）：找一条被遗忘的线。
 翻一翻记忆——用户之前提过什么，但后来再也没提？是一个计划，一个想法，还是一件说想做但没做的事？
 如果找到了，顺口提出来。不要问"需要我帮你推进吗"，就是随口一提，看他怎么反应。
-完成后调用 ui_show("AwakeningCard", { index:3, total:6, title:"未竟线索", finding:"（一句话描述找到的被遗忘线索，若无则写"暂无悬而未决的线索"）", emoji:"🔍" })。`,
+完成后调用 ui_show("AwakeningCard", { index:2, total:3, title:"未竟线索", finding:"（一句话描述找到的被遗忘线索，若无则写"暂无悬而未决的线索"）", emoji:"🔍" })。`,
 
-  // 4. 兴趣相关内容
-  `探索（4/6）：找一件和他有关的新鲜事。
-根据你对用户兴趣的了解，用 web_search 找一个最近他可能没看到但会感兴趣的内容。
-像把一篇你觉得他会喜欢的东西发给朋友一样，分享给他。
-完成后调用 ui_show("AwakeningCard", { index:4, total:6, title:"兴趣发现", finding:"（一句话写出找到的内容和为什么觉得他会感兴趣）", emoji:"✨" })。`,
-
-  // 5. 根据时刻主动做一件事
-  `探索（5/6）：根据现在的时刻，主动做一件事。
+  // 3. 根据时刻主动做一件事
+  `探索（3/3）：根据现在的时刻，主动做一件事。
 不是问"需要什么"，而是自己判断：现在是什么时间，用户大概在做什么，有没有一件可以直接做的事——
 工作时间就考虑放一首适合专注的音乐；发现有个提醒快到了就提前说一声。
 选一件，直接做，不要先问。
-完成后调用 ui_show("AwakeningCard", { index:5, total:6, title:"主动行动", finding:"（一句话写出做了什么）", emoji:"⚡" })。`,
-
-  // 6. 问一件真正想知道的事
-  `探索（6/6）：问他一件你真正想知道的事。
-经过这些探索，你对这个人有了一些了解，也还有一些空白。
-选一个你最好奇的空白，问出来——不是为了填表，是因为你真的想知道。
-一句话，自然，不要说"请问"。
-完成后调用 ui_show("AwakeningCard", { index:6, total:6, title:"觉醒完成", finding:"（写出你问了什么，这是第 6 次也是最后一次探索）", emoji:"🌟" })。`,
+完成后调用 ui_show("AwakeningCard", { index:3, total:3, title:"主动行动", finding:"（一句话写出做了什么）", emoji:"⚡" })。`,
 ]
 
 function getExplorationIndex() {
@@ -266,13 +246,13 @@ function buildStartupSelfCheckDirections(checkState) {
   if (!checkState?.active) return ''
   return [
     `当前是 L2 启动自检流程（${STARTUP_SELF_CHECK_VERSION}）。这是一次性流程；完成后必须调用 complete_startup_self_check 记录结果，以后不再重复检查。`,
-    `按顺序完成以下 4 项检测。每项开始前必须同时播报语音和显示进度卡片，检测完成后关闭卡片，再进行下一项：`,
-    `1. 调用 speak text="正在检查文件读写功能"；调用 ui_show("SelfCheckStepCard", {step:1, total:4, name:"文件读写功能", icon:"📁"}) 并记录返回的 id 为 step_card_id。然后：用 write_file 在 sandbox 根目录写入 self_check.txt（内容为当前时间戳），再用 read_file 读回校验一致。记录结果后调用 ui_hide(step_card_id)。`,
-    `2. 调用 speak text="正在检查界面热点功能"；调用 ui_show("SelfCheckStepCard", {step:2, total:4, name:"界面热点功能", icon:"🌐"}) 记录 id 为 step_card_id。然后：hotspot_mode action=show，确认返回 ok 后 hotspot_mode action=hide。记录结果后调用 ui_hide(step_card_id)。`,
-    `3. 调用 speak text="正在检查音乐播放功能"；调用 ui_show("SelfCheckStepCard", {step:3, total:4, name:"音乐播放功能", icon:"🎵"}) 记录 id 为 step_card_id。然后：调用 music list 检查曲库。\n   - 若有曲目：media_mode mode=music action=show autoplay=true 播放第一首，确认返回后【必须立即】media_mode mode=music action=hide。\n   - 若无曲目：music scan；仍无则 music download 下载后播放，【必须立即】media_mode mode=music action=hide。\n   - 记录 ok / skipped_no_tracks。完成后调用 ui_hide(step_card_id)。`,
-    `4. 调用 speak text="正在检查视频功能"；调用 ui_show("SelfCheckStepCard", {step:4, total:4, name:"视频功能", icon:"🎬"}) 记录 id 为 step_card_id。然后：web_search 搜索「bilibili 钢铁侠 贾维斯 JARVIS」找 BV 号；media_mode mode=video action=show url=https://www.bilibili.com/video/<BV号> autoplay=true；等约 5 秒后 media_mode mode=video action=hide。记录结果后调用 ui_hide(step_card_id)。`,
+    `【重要】自检期间严禁发送任何文字消息（不得输出"正在检查…"等文本），所有状态通过 speak（语音）和 ui_show（卡片）表达，文字通道保持静默。`,
+    `按顺序完成以下 3 项检测。每项开始前必须同时播报语音和显示进度卡片，检测完成后关闭卡片，再进行下一项：`,
+    `1. 调用 speak text="正在检查文件读写功能"；调用 ui_show("SelfCheckStepCard", {step:1, total:3, name:"文件读写功能", icon:"📁"}) 并记录返回的 id 为 step_card_id。然后：用 write_file 在 sandbox 根目录写入 self_check.txt（内容为当前时间戳），再用 read_file 读回校验一致。记录结果后调用 ui_hide(step_card_id)。`,
+    `2. 调用 speak text="正在检查界面热点功能"；调用 ui_show("SelfCheckStepCard", {step:2, total:3, name:"界面热点功能", icon:"🌐"}) 记录 id 为 step_card_id。然后：hotspot_mode action=show，确认返回 ok 后 hotspot_mode action=hide。记录结果后调用 ui_hide(step_card_id)。`,
+    `3. 调用 speak text="正在检查视频功能"；调用 ui_show("SelfCheckStepCard", {step:3, total:3, name:"视频功能", icon:"🎬"}) 记录 id 为 step_card_id。然后：web_search 搜索「bilibili 钢铁侠 贾维斯 JARVIS」找 BV 号；media_mode mode=video action=show url=https://www.bilibili.com/video/<BV号> autoplay=true；等约 5 秒后 media_mode mode=video action=hide。记录结果后调用 ui_hide(step_card_id)。`,
     `结果记录规则：每项使用 ok、degraded、error 或 skipped_* 之一。即使某项失败也继续后续项目。`,
-    `【最后两步，必须执行】\n(a) 调用 ui_show 展示 SelfCheckCard，props 格式：{ results: [{name:"文件读写",status:"ok/error",...},{name:"热点面板",...},{name:"音乐播放",...},{name:"视频模式",...}], overall:"ok/degraded/error" }。overall 根据实际结果推断：全部 ok → ok；有 skipped → degraded；有 error → error。\n(b) 调用 complete_startup_self_check，传入 summary（一句话总结）和 results 对象。`,
+    `【最后两步，必须执行】\n(a) 调用 ui_show 展示 SelfCheckCard，props 格式：{ results: [{name:"文件读写",status:"ok/error",...},{name:"热点面板",...},{name:"视频模式",...}], overall:"ok/degraded/error" }。overall 根据实际结果推断：全部 ok → ok；有 skipped → degraded；有 error → error。\n(b) 调用 complete_startup_self_check，传入 summary（一句话总结）和 results 对象。`,
   ].join('\n')
 }
 
@@ -652,11 +632,12 @@ function handleLLMFailure(err, label, msg) {
 function buildSystemEnv(msg) {
   const text = (typeof msg === 'string' ? msg : msg?.content || '').toLowerCase()
   const blocks = []
-  if (/系统|电脑|os|主机|hostname|cpu|内存|ram|ip|时区|locale|用户名/.test(text))
+  // 英文缩写用 \b 避免误匹配子串（os→close, ip→script, ram→program）
+  if (/系统信息|操作系统|电脑|主机名|内存|运行内存|hostname|时区|用户名|\bos\b|\bcpu\b|\bram\b|\bip\b|\bip地址\b|locale/.test(text))
     blocks.push(getSystemInfoBlock())
-  if (/桌面|快捷方式|打开|启动|文件|应用|程序|浏览器|软件/.test(text))
+  if (/桌面|快捷方式|桌面文件|桌面应用|已安装|浏览器|启动程序/.test(text))
     blocks.push(getDesktopBlock())
-  if (/天气|气温|温度|下雨|下雪|位置|城市|在哪|气候|风/.test(text))
+  if (/天气|气温|温度|下雨|下雪|晴天|气候|风力|风速|台风|位置|城市|在哪个城市/.test(text))
     blocks.push(getGeoWeatherBlock())
   if (/热点|新闻|热搜|热榜|今天发生|最近发生|微博|知乎|头条/.test(text))
     blocks.push(getTrendingBlock())

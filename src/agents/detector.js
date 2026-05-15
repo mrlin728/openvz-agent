@@ -296,23 +296,7 @@ function probeHermes() {
 }
 
 function probeOpenClaw() {
-  // 检测 openclaw CLI
-  const names = ['openclaw', 'claw', 'open-claw']
-  for (const name of names) {
-    const cliPath = findInPath(name)
-    if (cliPath) {
-      return {
-        available: true,
-        version: tryExec(`${name} --version`) || 'unknown',
-        invokeType: 'cli',
-        invokeCmd: name,
-        invokeArgs: ['run', '{prompt}'],
-        notes: `CLI: ${cliPath}`,
-      }
-    }
-  }
-
-  // 检测本地 HTTP API（OpenClaw 默认 3210 端口）
+  // 只检测服务是否在线（端口监听），安装了但没跑服务不算可用
   const ports = [3210, 3211, 8765]
   for (const port of ports) {
     if (isPortListening(port)) {
@@ -323,29 +307,6 @@ function probeOpenClaw() {
         invokeCmd: `http://localhost:${port}`,
         invokeArgs: [],
         notes: `HTTP on port ${port}`,
-      }
-    }
-  }
-
-  // 检测安装目录（跨平台）
-  const possibleDirs = [
-    path.join(os.homedir(), '.openclaw'),
-    ...(IS_WIN
-      ? [path.join(process.env.LOCALAPPDATA || '', 'OpenClaw')]
-      : IS_MAC
-      ? [path.join(os.homedir(), 'Applications', 'OpenClaw.app'), '/Applications/OpenClaw.app']
-      : [path.join(os.homedir(), '.local', 'share', 'openclaw'), '/opt/openclaw']
-    ),
-  ]
-  for (const dir of possibleDirs) {
-    if (fs.existsSync(dir)) {
-      return {
-        available: true,
-        version: 'installed',
-        invokeType: 'cli',
-        invokeCmd: 'openclaw',
-        invokeArgs: ['run', '{prompt}'],
-        notes: `Install dir: ${dir}`,
       }
     }
   }

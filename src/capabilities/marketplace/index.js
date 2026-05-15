@@ -19,7 +19,7 @@ const BUILTIN_NAMES = new Set([
   'ui_hide', 'ui_patch', 'manage_app', 'ui_register', 'focus_banner',
   'set_location', 'delegate_to_agent', 'grant_agent_delegation', 'recall_memory',
   'complete_startup_self_check', 'set_task', 'complete_task', 'update_task_step',
-  'install_tool', 'uninstall_tool', 'list_tools',
+  'install_tool', 'uninstall_tool', 'list_tools', 'set_security', 'connect_wechat',
 ])
 
 function ensureToolsDir() {

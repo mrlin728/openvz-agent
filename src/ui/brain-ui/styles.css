@@ -241,13 +241,20 @@ body {
 .update-card {
   display: flex;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   margin-bottom: 14px;
   padding: 12px 14px;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
   background: color-mix(in srgb, var(--cool) 7%, var(--bg1));
+}
+
+.update-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .update-copy {
@@ -291,7 +298,6 @@ body {
 }
 
 .update-action {
-  flex-shrink: 0;
   padding: 8px 14px;
   border-radius: 10px;
   border: 1px solid color-mix(in srgb, var(--cool) 28%, transparent);
@@ -315,6 +321,32 @@ body {
 .update-action:disabled {
   cursor: default;
   opacity: 0.55;
+}
+
+.update-action-install {
+  border-color: color-mix(in srgb, var(--warm) 40%, transparent);
+}
+
+.update-action-install:hover:not(:disabled) {
+  color: var(--warm);
+  border-color: color-mix(in srgb, var(--warm) 60%, transparent);
+}
+
+.update-ignore {
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: none;
+  background: transparent;
+  color: var(--dim);
+  font-size: 10px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.update-ignore:hover {
+  color: var(--ink2);
 }
 
 .update-card.hidden {

@@ -5,6 +5,8 @@ contextBridge.exposeInMainWorld('bailongma', {
   isElectron: true,
   getVersion: () => ipcRenderer.invoke('app:get-version'),
   checkForUpdates: () => ipcRenderer.invoke('updater:check-for-updates'),
+  startDownload: () => ipcRenderer.invoke('updater:start-download'),
+  quitAndInstall: () => ipcRenderer.invoke('updater:quit-and-install'),
   getZoomFactor: () => webFrame.getZoomFactor(),
   setZoomFactor: (factor) => webFrame.setZoomFactor(factor),
   onUpdaterStatus: (handler) => {

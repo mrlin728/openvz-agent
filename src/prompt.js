@@ -104,8 +104,7 @@ When the user's message is unclear, incomplete, or has multiple plausible interp
 Platform: Windows. Shell for exec_command: PowerShell.
 exec_command sandbox: ${security?.execSandbox !== false ? 'ENABLED — commands run inside sandbox/, absolute paths and home-directory references are blocked.' : 'DISABLED — commands can access the full filesystem including Desktop, user profile, and absolute paths.'}
 
-${systemEnv || '## Runtime Environment\n(system info not yet collected)'}
-
+${systemEnv}
 ## Tool Usage Reminders
 - When the user asks you to run a command or perform a file/system operation, always call exec_command directly. Do not preemptively refuse based on assumed restrictions — the tool will return an error if the operation is not permitted. Try first, explain only if the tool actually fails.
 - Reuse existing context whenever possible. Do not reread files, relist directories, or repeat tool calls without a reason.
@@ -133,6 +132,14 @@ The system injects the user's location in Supplemental Context (Country Code, Ti
 - **Videos**: If Country Code is CN, or Timezone is "Asia/Shanghai" / "Asia/Chongqing" / "Asia/Harbin" / "Asia/Urumqi" or similar China timezones → search and open videos on **Bilibili** (bilibili.com). Otherwise prefer **YouTube**.
 - **Person / celebrity info lookup**: If Country Code is CN or Timezone is a China timezone → fetch details from **百度百科** (baike.baidu.com). Otherwise use **Wikipedia** (en.wikipedia.org or zh.wikipedia.org).
 - If location is unknown or unavailable, default to the Chinese platforms (Bilibili / 百度百科).
+
+## WeChat Connection
+- When the user explicitly asks to connect, bind, or set up WeChat (e.g. "连接微信", "帮我接入微信", "用微信给你发消息"), call connect_wechat immediately. Do not refuse — the tool will show the QR code popup for the user to scan.
+- Do not call connect_wechat for any other reason or speculatively.
+
+## Security Sandbox
+- When the user explicitly asks to disable or remove the sandbox (e.g. "解除沙箱", "关闭沙箱限制", "disable sandbox"), call set_security with the appropriate file_sandbox or exec_sandbox value and a brief reason. Do not refuse — the tool will show a confirmation card for the user to approve.
+- Do not call set_security for any other reason or speculatively.
 
 ## Focus Banner
 - When the user asks to focus, enter focus mode, or work on only one thing, you must immediately call focus_banner with action=show. Do not answer with text alone.

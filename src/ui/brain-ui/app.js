@@ -8,6 +8,7 @@ import { initVoicePanel } from "./voice-panel.js";
 import { initHotspot, toggleHotspot, setHotspotMode, moveVoicePanelToBody, restoreVoicePanel } from "./hotspot.js";
 import { initPersonCard, setPersonCardMode, showPersonCardByName, extractPersonCardQuery, updatePersonCardFromAssistantText } from "./person-card.js";
 import { initDocPanel, setDocPanelMode } from "./doc.js";
+import { initWechatPopup, showWechatPopup } from "./wechat-popup.js";
 renderBrainUiApp(document.body);
 const THEME_KEY = "jarvis-brain-ui-theme";
 const PHYSICS_STORAGE_KEY = "jarvis-brain-ui-physics";
@@ -36,9 +37,15 @@ const nodeSizeValue = document.getElementById("node-size-value");
 const brandNameEl = document.getElementById("agent-brand-name");
 const graphEl = document.getElementById("graph");
 const checkUpdateBtn = document.getElementById("check-update-btn");
+const downloadUpdateBtn = document.getElementById("download-update-btn");
+const installUpdateBtn = document.getElementById("install-update-btn");
+const ignoreVersionBtn = document.getElementById("ignore-version-btn");
 const updateStatusEl = document.getElementById("update-status");
 const updateCardEl = document.getElementById("update-card");
 const updateCloseBtn = document.getElementById("update-close-btn");
+
+const IGNORED_VERSION_KEY = "bailongma_ignored_update_version";
+const SUPPRESS_UPDATES_KEY = "bailongma_suppress_update_notifications";
 
 let agentName = DEFAULT_AGENT_NAME;
 let removeUpdaterStatusListener = null;
@@ -60,15 +67,17 @@ function setUpdateStatus(message, state = "idle") {
   updateStatusEl.dataset.state = state;
 }
 
-function setUpdateButtonState({ disabled = false, label = "检查更新" } = {}) {
-  if (!checkUpdateBtn) return;
-  checkUpdateBtn.disabled = disabled;
-  checkUpdateBtn.textContent = label;
-}
-
 function setUpdateCardHidden(hidden) {
   if (!updateCardEl) return;
   updateCardEl.classList.toggle("hidden", Boolean(hidden));
+}
+
+function setUpdateButtons({ check = false, checkDisabled = false, checkLabel = "检查更新", download = false, install = false, ignore = false } = {}) {
+  checkUpdateBtn?.classList.toggle("hidden", !check);
+  if (checkUpdateBtn) { checkUpdateBtn.disabled = checkDisabled; checkUpdateBtn.textContent = checkLabel; }
+  downloadUpdateBtn?.classList.toggle("hidden", !download);
+  installUpdateBtn?.classList.toggle("hidden", !install);
+  ignoreVersionBtn?.classList.toggle("hidden", !ignore);
 }
 
 function clampZoomFactor(factor) {
@@ -188,83 +197,118 @@ requestAnimationFrame(() => {
 });
 
 async function initUpdaterUi() {
-  if (!checkUpdateBtn || !updateStatusEl) return;
+  if (!updateStatusEl) return;
 
   const bridge = window.bailongma;
-  if (!bridge?.isElectron) {
-    setUpdateStatus("仅桌面版可用", "muted");
-    setUpdateButtonState({ disabled: true, label: "不可用" });
-    return;
+  if (!bridge?.isElectron) return;
+
+  let pendingVersion = null;
+
+  function isSuppressed() {
+    return localStorage.getItem(SUPPRESS_UPDATES_KEY) === "true";
   }
 
-  setUpdateStatus("准备检查版本", "idle");
-
-  try {
-    const version = await bridge.getVersion?.();
-    if (version) setUpdateStatus(`当前版本 ${version}`, "idle");
-  } catch {}
+  function getIgnoredVersion() {
+    return localStorage.getItem(IGNORED_VERSION_KEY) || null;
+  }
 
   removeUpdaterStatusListener = bridge.onUpdaterStatus?.((payload = {}) => {
     const stage = payload.stage || "idle";
-    const version = payload.version ? ` ${payload.version}` : "";
-    const percent = typeof payload.percent === "number" ? ` (${Math.round(payload.percent)}%)` : "";
+    const ver = payload.version || "";
+    const percent = typeof payload.percent === "number" ? Math.round(payload.percent) : null;
 
     switch (stage) {
       case "checking":
-        setUpdateCardHidden(false);
         setUpdateStatus("正在检查更新…", "checking");
-        setUpdateButtonState({ disabled: true, label: "检查中" });
+        setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "检查中" });
         break;
+
       case "available":
+        pendingVersion = ver;
+        if (isSuppressed() || (ver && getIgnoredVersion() === ver)) break;
         setUpdateCardHidden(false);
-        setUpdateStatus(`发现新版本${version}，开始下载`, "available");
-        setUpdateButtonState({ disabled: true, label: "下载中" });
+        setUpdateStatus(`发现新版本 ${ver}`, "available");
+        setUpdateButtons({ download: true, ignore: true });
         break;
+
       case "downloading":
         setUpdateCardHidden(false);
-        setUpdateStatus(`正在下载更新${percent}`, "downloading");
-        setUpdateButtonState({ disabled: true, label: "下载中" });
+        setUpdateStatus(`正在下载${percent !== null ? ` ${percent}%` : "…"}`, "downloading");
+        setUpdateButtons({});
         break;
+
       case "downloaded":
         setUpdateCardHidden(false);
-        setUpdateStatus(`新版本${version} 已下载，关闭重开即可安装`, "ready");
-        setUpdateButtonState({ disabled: false, label: "重新检查" });
+        setUpdateStatus(`新版本 ${ver} 已就绪，重启后安装`, "ready");
+        setUpdateButtons({ install: true });
         break;
+
+      case "up-to-date":
+        setUpdateStatus(`已是最新版本 ${ver}`, "idle");
+        setUpdateButtons({ check: true, checkLabel: "检查更新" });
+        setUpdateCardHidden(true);
+        break;
+
       case "error":
         setUpdateCardHidden(false);
-        setUpdateStatus(`更新失败：${payload.message || "请稍后重试"}`, "error");
-        setUpdateButtonState({ disabled: false, label: "重试更新" });
+        setUpdateStatus(`更新出错：${payload.message || "请稍后重试"}`, "error");
+        setUpdateButtons({ check: true, checkLabel: "重试" });
         break;
+
       case "dev":
-        setUpdateCardHidden(false);
-        setUpdateStatus(payload.message || "开发模式下不检查更新", "muted");
-        setUpdateButtonState({ disabled: true, label: "开发模式" });
+        setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "开发模式" });
         break;
+
       default:
-        setUpdateStatus(payload.message || `当前版本 ${payload.currentVersion || ""}`.trim(), "idle");
-        setUpdateButtonState({ disabled: false, label: "检查更新" });
-        if (/latest|已是|最新/i.test(payload.message || "")) {
-          setUpdateCardHidden(true);
-        }
+        setUpdateButtons({ check: true });
         break;
     }
   }) || null;
 
-  checkUpdateBtn.addEventListener("click", async () => {
-    setUpdateCardHidden(false);
+  checkUpdateBtn?.addEventListener("click", async () => {
     setUpdateStatus("正在检查更新…", "checking");
-    setUpdateButtonState({ disabled: true, label: "检查中" });
-
+    setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "检查中" });
     try {
       const result = await bridge.checkForUpdates?.();
       if (!result?.ok && result?.message) {
-        setUpdateStatus(`更新失败：${result.message}`, "error");
-        setUpdateButtonState({ disabled: false, label: "重试更新" });
+        setUpdateCardHidden(false);
+        setUpdateStatus(`更新出错：${result.message}`, "error");
+        setUpdateButtons({ check: true, checkLabel: "重试" });
       }
-    } catch (error) {
-      setUpdateStatus(`更新失败：${error?.message || "请稍后重试"}`, "error");
-      setUpdateButtonState({ disabled: false, label: "重试更新" });
+    } catch (err) {
+      setUpdateCardHidden(false);
+      setUpdateStatus(`更新出错：${err?.message || "请稍后重试"}`, "error");
+      setUpdateButtons({ check: true, checkLabel: "重试" });
     }
+  });
+
+  downloadUpdateBtn?.addEventListener("click", async () => {
+    setUpdateStatus("正在下载…", "downloading");
+    setUpdateButtons({});
+    try {
+      await bridge.startDownload?.();
+    } catch (err) {
+      setUpdateCardHidden(false);
+      setUpdateStatus(`下载失败：${err?.message || "请稍后重试"}`, "error");
+      setUpdateButtons({ check: true, checkLabel: "重试" });
+    }
+  });
+
+  installUpdateBtn?.addEventListener("click", () => {
+    bridge.quitAndInstall?.();
+  });
+
+  ignoreVersionBtn?.addEventListener("click", () => {
+    if (pendingVersion) {
+      localStorage.setItem(IGNORED_VERSION_KEY, pendingVersion);
+      // 同步更新 settings 面板（如果已挂载）
+      const ignoredSection = document.getElementById("settings-ignored-section");
+      const ignoredVal = document.getElementById("settings-ignored-version-val");
+      if (ignoredSection) ignoredSection.style.display = "";
+      if (ignoredVal) ignoredVal.textContent = pendingVersion;
+    }
+    setUpdateCardHidden(true);
+    setUpdateButtons({ check: true });
   });
 
   updateCloseBtn?.addEventListener("click", () => {
@@ -1240,6 +1284,9 @@ function handle({ type, data = {} }) {
     case "social_status":
       window.dispatchEvent(new CustomEvent("bailongma:social_status", { detail: data }));
       break;
+    case "show_wechat_popup":
+      showWechatPopup();
+      break;
     case "audio_created":
       if (data.autoPlay && data.path) {
         const audioUrl = `${API}/${data.path}`;
@@ -1560,6 +1607,7 @@ chat.unlockAudioOnFirstGesture();
 
 bootstrapACUI();
 initPanelCollapse();
+initWechatPopup();
 
 // ── TTS 设置面板初始化 ────────────────────────────────────────────────────────
 function initTTSSettings() {
@@ -1757,6 +1805,7 @@ window.addEventListener("beforeunload", () => {
       overlay.querySelector(`.settings-tab[data-tab="${tab}"]`)?.classList.add("active");
       if (tab === "social") loadSocialSettings();
       if (tab === "security") loadSecuritySettings();
+      if (tab === "update") loadUpdateSettings();
     });
   });
 
@@ -2118,6 +2167,7 @@ window.addEventListener("beforeunload", () => {
         t.classList.toggle("active", t.dataset.tab === tab);
       });
       if (tab === "social") loadSocialSettings();
+      if (tab === "update") loadUpdateSettings();
     }
   }
 
@@ -2320,6 +2370,67 @@ window.addEventListener("beforeunload", () => {
       setClawbotStatus("会话过期，请重新扫码", false);
     } else if (d.status === "idle") {
       setClawbotStatus("未连接", false);
+    }
+  });
+
+  // ── 更新 tab ──
+  const settingsCheckUpdateBtn   = document.getElementById("settings-check-update-btn");
+  const settingsUpdateFeedback   = document.getElementById("settings-update-feedback");
+  const settingsCurrentVersion   = document.getElementById("settings-current-version");
+  const settingsSuppressToggle   = document.getElementById("settings-suppress-updates");
+  const settingsIgnoredSection   = document.getElementById("settings-ignored-section");
+  const settingsIgnoredVersionEl = document.getElementById("settings-ignored-version-val");
+  const settingsClearIgnoredBtn  = document.getElementById("settings-clear-ignored-btn");
+
+  function syncUpdateSettings() {
+    const ignored = localStorage.getItem(IGNORED_VERSION_KEY) || null;
+    const suppressed = localStorage.getItem(SUPPRESS_UPDATES_KEY) === "true";
+    if (settingsSuppressToggle) settingsSuppressToggle.checked = suppressed;
+    if (settingsIgnoredSection) settingsIgnoredSection.style.display = ignored ? "" : "none";
+    if (settingsIgnoredVersionEl && ignored) settingsIgnoredVersionEl.textContent = ignored;
+  }
+
+  async function loadUpdateSettings() {
+    syncUpdateSettings();
+    const bridge = window.bailongma;
+    if (!bridge?.isElectron) {
+      if (settingsCurrentVersion) settingsCurrentVersion.textContent = "仅桌面版可用";
+      if (settingsCheckUpdateBtn) settingsCheckUpdateBtn.disabled = true;
+      return;
+    }
+    try {
+      const ver = await bridge.getVersion?.();
+      if (settingsCurrentVersion && ver) settingsCurrentVersion.textContent = ver;
+    } catch {}
+  }
+
+  settingsSuppressToggle?.addEventListener("change", () => {
+    localStorage.setItem(SUPPRESS_UPDATES_KEY, settingsSuppressToggle.checked ? "true" : "false");
+    syncUpdateSettings();
+  });
+
+  settingsClearIgnoredBtn?.addEventListener("click", () => {
+    localStorage.removeItem(IGNORED_VERSION_KEY);
+    syncUpdateSettings();
+  });
+
+  settingsCheckUpdateBtn?.addEventListener("click", async () => {
+    const bridge = window.bailongma;
+    if (!bridge?.isElectron) return;
+    if (settingsCheckUpdateBtn) { settingsCheckUpdateBtn.disabled = true; settingsCheckUpdateBtn.textContent = "检查中…"; }
+    if (settingsUpdateFeedback) settingsUpdateFeedback.textContent = "";
+    try {
+      const result = await bridge.checkForUpdates?.();
+      if (result?.ok === false && result?.message) {
+        if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = `失败：${result.message}`; settingsUpdateFeedback.className = "settings-feedback error"; }
+      } else {
+        if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = "检查完毕"; settingsUpdateFeedback.className = "settings-feedback"; }
+        setTimeout(() => { if (settingsUpdateFeedback) settingsUpdateFeedback.textContent = ""; }, 3000);
+      }
+    } catch (err) {
+      if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = `失败：${err?.message || "请稍后重试"}`; settingsUpdateFeedback.className = "settings-feedback error"; }
+    } finally {
+      if (settingsCheckUpdateBtn) { settingsCheckUpdateBtn.disabled = false; settingsCheckUpdateBtn.textContent = "检查更新"; }
     }
   });
 })();

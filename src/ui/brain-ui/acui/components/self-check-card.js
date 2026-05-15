@@ -38,13 +38,14 @@ const CSS = `
     width: 288px;
     padding: 16px 18px 14px;
     border-radius: 14px;
-    background: rgba(8, 14, 22, 0.92);
-    border: 1px solid rgba(150, 185, 255, 0.14);
-    box-shadow: 0 16px 48px rgba(0,0,0,0.45), 0 0 0 0.5px rgba(255,255,255,0.04);
+    background: rgba(16, 26, 44, 0.97);
+    border: 1px solid rgba(150, 185, 255, 0.28);
+    box-shadow: 0 16px 48px rgba(0,0,0,0.6), 0 0 0 0.5px rgba(255,255,255,0.06), inset 0 1px 0 rgba(255,255,255,0.05);
     backdrop-filter: blur(20px);
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
     color: #e2eaf5;
     user-select: none;
+    border-left: 3px solid rgba(150, 185, 255, 0.5);
   }
   .header {
     display: flex;
@@ -132,10 +133,14 @@ const CSS = `
   }
 `
 
+const _cardSheet = new CSSStyleSheet()
+_cardSheet.replaceSync(CSS)
+
 class SelfCheckCard extends HTMLElement {
   constructor() {
     super()
     this.attachShadow({ mode: 'open' })
+    this.shadowRoot.adoptedStyleSheets = [_cardSheet]
     this._props = {}
     this._timer = null
     this._countdown = null
@@ -201,7 +206,6 @@ class SelfCheckCard extends HTMLElement {
     }).join('')
 
     this.shadowRoot.innerHTML = `
-      <style>${CSS}</style>
       <div class="card">
         <div class="header">
           <span class="header-icon">${os.icon}</span>

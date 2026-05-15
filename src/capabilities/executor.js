@@ -45,7 +45,7 @@ function getUrlTtl(url) {
   return URL_TTL_MS.default
 }
 
-import { config, getTTSCredentials } from '../config.js'
+import { config, getTTSCredentials, setSecurity } from '../config.js'
 import { streamTTS } from '../voice/tts-providers.js'
 import { paths } from '../paths.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -182,6 +182,7 @@ const TOOL_RISK = {
   generate_music: 'high',
   generate_image: 'high',
   ui_register: 'high',
+  set_security: 'high',
 }
 
 function classifyTool(name) {
@@ -419,6 +420,10 @@ async function executeToolUnchecked(name, args, context = {}) {
         return execUninstallTool(args)
       case 'list_tools':
         return execListTools()
+      case 'connect_wechat':
+        return execConnectWechat()
+      case 'set_security':
+        return execSetSecurity(args)
       default:
         if (isInstalledTool(name)) {
           return await executeInstalledTool(name, args)
@@ -2526,6 +2531,16 @@ function execUIShow({ component, mode, template, styles, code, props, hint }) {
 
   if (!hasACUIClient()) return '错误：当前没有 UI 客户端连接，请改用文字回答'
 
+  // 单例组件：显示新卡前先关掉同类旧卡，避免动画重叠出现"两种"
+  const SINGLETON_COMPONENTS = new Set(['SelfCheckStepCard'])
+  if (SINGLETON_COMPONENTS.has(component)) {
+    const existing = getActiveUICards().filter(c => c.component === component)
+    for (const old of existing) {
+      emitUICommand({ op: 'unmount', id: old.id })
+      removeActiveUICard(old.id)
+    }
+  }
+
   const id = `${component.toLowerCase()}-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`
   emitUICommand({
     op: 'mount',
@@ -2832,6 +2847,61 @@ function execSetAgentName({ name }) {
   dbSetConfig('agent_name', trimmed)
   emitEvent('agent_name_updated', { name: trimmed })
   return toolJson({ ok: true, name: trimmed, message: `好的，我以后就叫 ${trimmed} 了` })
+}
+
+function execConnectWechat() {
+  if (!hasACUIClient()) {
+    return toolJson({ ok: false, error: '当前没有 UI 客户端，无法弹出微信连接界面。' })
+  }
+  emitEvent('show_wechat_popup', {})
+  return toolJson({ ok: true, status: 'popup_shown', message: '已弹出微信连接二维码界面，请告知用户扫码操作。' })
+}
+
+function execSetSecurity({ file_sandbox, exec_sandbox, reason = '' }) {
+  if (file_sandbox === undefined && exec_sandbox === undefined) {
+    return toolJson({ ok: false, error: '至少指定 file_sandbox 或 exec_sandbox 之一' })
+  }
+  if (!hasACUIClient()) {
+    return toolJson({ ok: false, error: '当前没有 UI 客户端，无法弹出确认框。请告知用户到设置页面手动修改安全沙箱配置。' })
+  }
+
+  const changeLines = [
+    file_sandbox !== undefined ? `文件沙箱：${file_sandbox ? '开启' : '<span style="color:#e74c3c">关闭</span>'}` : null,
+    exec_sandbox !== undefined ? `执行沙箱：${exec_sandbox ? '开启' : '<span style="color:#e74c3c">关闭</span>'}` : null,
+  ].filter(Boolean).join('<br>')
+
+  const payloadAttrs = [
+    file_sandbox !== undefined ? `data-payload-file_sandbox="${file_sandbox}"` : '',
+    exec_sandbox !== undefined ? `data-payload-exec_sandbox="${exec_sandbox}"` : '',
+  ].filter(Boolean).join(' ')
+
+  const reasonHtml = reason
+    ? `<div style="font-size:12px;color:var(--ink1,#aaa);margin-bottom:10px;">${reason}</div>`
+    : ''
+
+  const template = `
+    <div style="padding:16px 20px;min-width:260px;background:var(--bg1,#1a1a2e);border:1px solid var(--ink3,#333);border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.6);">
+      <div style="font-size:13px;font-weight:600;color:var(--ink0,#e0e0e0);margin-bottom:6px;">⚠ 安全设置变更请求</div>
+      ${reasonHtml}
+      <div style="font-size:12px;color:var(--ink2,#888);margin-bottom:14px;line-height:1.8;">${changeLines}</div>
+      <div style="display:flex;gap:8px;">
+        <button data-acui-action="confirm_security_change" ${payloadAttrs}
+          style="padding:5px 14px;border:none;border-radius:4px;background:#c0392b;color:#fff;font-size:12px;cursor:pointer;">
+          确认变更
+        </button>
+        <button data-acui-action="cancel_security_change"
+          style="padding:5px 14px;border:1px solid var(--ink3,#555);border-radius:4px;background:transparent;color:var(--ink1,#aaa);font-size:12px;cursor:pointer;">
+          取消
+        </button>
+      </div>
+    </div>
+  `
+
+  const id = `security-confirm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`
+  emitUICommand({ op: 'mount', mode: 'inline-template', id, template, hint: { placement: 'center' } })
+  addActiveUICard(id, { component: 'security-confirm' })
+  emitEvent('action', { tool: 'set_security', summary: '等待用户确认安全设置变更', detail: id })
+  return toolJson({ ok: true, id, status: 'pending_confirmation', message: '已弹出确认卡片，等待用户确认。' })
 }
 
 // 把 Agent 的文档信息格式化成错误响应里的引导字段

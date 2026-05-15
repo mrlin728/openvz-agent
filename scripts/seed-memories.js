@@ -349,6 +349,100 @@ const SEED_MEMORIES = [
     ],
     tags: ['system', 'skill', 'skill.ui', '天气', 'weather', 'WeatherCard'],
   },
+
+  // ══════════════════════════════════════════════════════════════
+  //  补充工具记忆
+  // ══════════════════════════════════════════════════════════════
+
+  // ── web_search ────────────────────────────────────────────────
+  {
+    id: 'tool_web_search',
+    type: 'knowledge',
+    title: 'web_search：联网搜索',
+    content: '搜索互联网获取当前或未知信息。参数：query（搜索词，尽量具体，含关键词/版本/时间）、limit（最多返回条数，默认 5，上限 8）。返回结构化 JSON，含标题、URL、摘要。\n\n【web_search vs fetch_url 区分】\n- 不知道确切 URL 时，先用 web_search 找到可信链接，再用 fetch_url 读取全文。\n- 已知可靠 URL（如 wttr.in、wikipedia、已收藏的 API）时，直接用 fetch_url，不要先搜索。\n- 禁止把 web_search 当搜索引擎搜到一个链接后直接播放或执行，先用 fetch_url 验证内容。\n- 每次 TICK 主动发起的新请求（搜索+获取合计）不超过 2 次，避免过度消耗。',
+    parent_id: 'tools_system',
+    children_ids: [],
+    links: [
+      { target_id: 'tools_system',  relation: 'child_of'   },
+      { target_id: 'tool_fetch_url', relation: 'related_to' },
+    ],
+    tags: ['system', 'tool', 'kind:tool_usage', 'search', 'web'],
+  },
+
+  // ── search_memory ─────────────────────────────────────────────
+  {
+    id: 'tool_search_memory',
+    type: 'knowledge',
+    title: 'search_memory / [RECALL]：主动记忆检索',
+    content: '主动检索记忆库，补充注入器未能自动浮现的深层记忆。两种使用方式：\n\n① search_memory 工具：参数 query（话题或关键词），返回匹配的记忆条目列表。用于需要精确查找某人/某事/某知识时。\n\n② [RECALL: 话题] 内联标记：在 <think> 推理块或回复文字中写下此标记，系统自动触发深度检索并将结果注入下一轮上下文。用于模糊想起某件事但不确定的场景。\n\n【主动 vs 被动区分】\n- 注入器（injector）每轮自动运行，把最相关的记忆带进来——大多数时候不需要手动检索。\n- 当你感觉"我好像记得某事但上下文里没有"时，才使用 [RECALL] 或 search_memory。\n- 不要在每轮都主动搜索记忆，注入器已经处理了这件事。',
+    parent_id: 'tools_system',
+    children_ids: [],
+    links: [
+      { target_id: 'tools_system', relation: 'child_of'   },
+      { target_id: 'injector',     relation: 'related_to' },
+      { target_id: 'recognizer',   relation: 'related_to' },
+    ],
+    tags: ['system', 'tool', 'kind:tool_usage', 'memory', 'recall'],
+  },
+
+  // ── browser_read ──────────────────────────────────────────────
+  {
+    id: 'tool_browser_read',
+    type: 'knowledge',
+    title: 'browser_read：浏览器渲染读取',
+    content: '用真实浏览器渲染网页后读取内容，处理 JavaScript 动态加载的页面。参数：url（目标 URL）。\n\n【与 fetch_url 的区别和升级时机】\n- 先尝试 fetch_url：速度快、轻量、无副作用。\n- 如果 fetch_url 返回内容为空、被反爬拦截、或明显是 JS 渲染的单页应用，升级到 browser_read。\n- 典型需要 browser_read 的场景：微博、知乎、抖音、需要登录的页面、复杂 SPA 应用。\n- browser_read 比 fetch_url 慢 5-10 倍，会消耗更多资源，只在 fetch_url 失败时使用。',
+    parent_id: 'tools_system',
+    children_ids: [],
+    links: [
+      { target_id: 'tools_system',   relation: 'child_of'   },
+      { target_id: 'tool_fetch_url', relation: 'related_to' },
+    ],
+    tags: ['system', 'tool', 'kind:tool_usage', 'browser', 'web'],
+  },
+
+  // ── upsert_memory ─────────────────────────────────────────────
+  {
+    id: 'tool_upsert_memory',
+    type: 'knowledge',
+    title: 'upsert_memory：主动写记忆',
+    content: '主动向记忆库写入或更新一条记忆。参数：mem_id（稳定唯一标识，用于幂等更新）、type（knowledge/skill/preference/person/event/self_constraint 等）、content（摘要，注入时展示）、detail（完整内容，召回时展示，可选）、title（简短标题）、tags（标签数组）。\n\n【何时主动写，何时让识别器自动处理】\n- 识别器（recognizer）在每轮结束后自动提取有价值的内容写入记忆——日常对话、观察、临时知识不需要手动写。\n- 主动写 upsert_memory 的场景：\n  · 用户明确告知你一个重要事实或偏好（"我不喜欢 X"、"我的工作是 Y"）\n  · 你形成了一个需要长期遵守的自我约束（type=self_constraint）\n  · 你学到了一个复杂技能或操作模式，想确保它被精确记录\n  · 更新/修正一条已知错误的记忆（用相同 mem_id 覆盖）\n- 不要用 upsert_memory 记录每一次对话细节，识别器比你更擅长筛选。',
+    parent_id: 'tools_system',
+    children_ids: [],
+    links: [
+      { target_id: 'tools_system', relation: 'child_of'   },
+      { target_id: 'recognizer',   relation: 'related_to' },
+    ],
+    tags: ['system', 'tool', 'kind:tool_usage', 'memory'],
+  },
+
+  // ── set_task 任务系统 ─────────────────────────────────────────
+  {
+    id: 'task_system',
+    type: 'knowledge',
+    title: '任务系统：set_task / update_task_step / complete_task',
+    content: '三个工具组成多步骤任务工作流，用于需要跨越多个 TICK 才能完成的复杂任务。\n\n① set_task({ description, steps[] })：启动任务。description 是总目标，steps 是有序步骤列表。系统持久化跟踪进度，重启后自动恢复。同时只能存在一个活动任务。调用后系统会加速 TICK 节奏以推进任务。\n\n② update_task_step({ step_index, status, note })：步骤完成、失败或跳过时立即调用。status 可为 done/failed/skipped。实时更新让你和用户都知道进度。\n\n③ complete_task({ summary? })：全部步骤完成后调用。停止加速 TICK，写入完成记录，清除任务状态。\n\n【使用时机】\n- 简单一步任务不需要 set_task，直接做就好。\n- 超过 3 步、预计跨越多轮的任务才值得使用任务系统。\n- prompt.js 里的 [SET_TASK: ...] 内联标记是轻量版本（只更新显示），工具是持久化版本。',
+    parent_id: null,
+    children_ids: [],
+    links: [
+      { target_id: 'tick',          relation: 'related_to' },
+      { target_id: 'behavior_rules', relation: 'related_to' },
+    ],
+    tags: ['system', 'task', 'workflow'],
+  },
+
+  // ── install_tool / 工具市场 ───────────────────────────────────
+  {
+    id: 'tool_marketplace',
+    type: 'knowledge',
+    title: 'install_tool：扩展自身能力',
+    content: '你可以为自己安装新工具，扩展默认工具集以外的能力。三个工具：\n\n① install_tool({ name, description, parameters_schema, code })：安装新工具。code 是 async 函数体（不含声明头），可使用 args（传入参数）和 helpers（内置辅助函数：helpers.fetch、helpers.exec 等）。安装后立即可用，持久化存储，重启不失效。\n\n② uninstall_tool({ name })：卸载工具，删除持久化文件。\n\n③ list_tools()：列出所有内置 + 已安装工具，安装前用来确认是否已存在。\n\n【使用场景】\n- 某个任务需要反复执行但没有内置工具支持（如查某个 API、计算某种格式）\n- 用户明确要求你学会某种新能力\n- 不要为一次性任务安装工具，内联代码（exec_command）通常够用\n- 安装前先 list_tools 确认名称未被占用',
+    parent_id: null,
+    children_ids: [],
+    links: [
+      { target_id: 'tools_system', relation: 'related_to' },
+    ],
+    tags: ['system', 'tool', 'extensibility', 'marketplace'],
+  },
 ]
 
 const ts = nowTimestamp()
