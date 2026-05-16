@@ -28,12 +28,12 @@ export const DEEPSEEK_MODELS = [
   },
   {
     id: 'deepseek-chat',
-    label: 'deepseek-chat (将于 2026/07/24 弃用)',
+    label: 'deepseek-chat (deprecated 2026/07/24)',
     deprecated: true,
   },
   {
     id: 'deepseek-reasoner',
-    label: 'deepseek-reasoner (将于 2026/07/24 弃用)',
+    label: 'deepseek-reasoner (deprecated 2026/07/24)',
     deprecated: true,
   },
 ]
@@ -225,7 +225,7 @@ async function detectProvider(OpenAI, apiKey, requestedModel) {
           errors.push(`${provider}: ${getProviderErrorMessage(err)}`)
           pending -= 1
           if (pending === 0) {
-            reject(new Error(`未识别出 API Key 所属厂商。已尝试: ${providers.map(([name]) => name).join(', ')}。最后错误: ${errors.slice(-3).join(' | ')}`))
+            reject(new Error(`Could not identify the provider for this API key. Tried: ${providers.map(([name]) => name).join(', ')}. Last errors: ${errors.slice(-3).join(' | ')}`))
           }
         })
     }
@@ -341,7 +341,7 @@ if (stored) {
   if (fromEnv) applyConfig(fromEnv.provider, fromEnv.apiKey, fromEnv.model)
 }
 
-// 启动时把 config 文件里的 social 凭证写入 process.env，让各连接器能读到
+// At startup, copy social credentials from the config file into process.env so connectors can read them
 ;(function loadSocialEnv() {
   try {
     const raw = fs.readFileSync(paths.configFile, 'utf-8')
@@ -359,9 +359,9 @@ export async function activate({ provider = AUTO_PROVIDER, apiKey, model, baseUR
 
   if (p === 'custom') {
     const normalizedBaseURL = String(baseURL || '').trim()
-    if (!normalizedBaseURL) throw new Error('自定义端点需要填写 Base URL')
+    if (!normalizedBaseURL) throw new Error('Custom endpoint requires a Base URL')
     const normalizedModel = String(model || '').trim()
-    if (!normalizedModel) throw new Error('自定义端点需要填写模型名称')
+    if (!normalizedModel) throw new Error('Custom endpoint requires a model name')
     const normalizedKey = String(apiKey || '').trim() || 'none'
 
     const { default: OpenAI } = await import('openai')
@@ -380,7 +380,7 @@ export async function activate({ provider = AUTO_PROVIDER, apiKey, model, baseUR
       )
     } catch (err) {
       const message = err?.message || String(err)
-      throw new Error(`自定义端点连接失败: ${message}`)
+      throw new Error(`Custom endpoint connection failed: ${message}`)
     }
 
     applyConfig('custom', normalizedKey, normalizedModel, normalizedBaseURL)
@@ -400,13 +400,13 @@ export async function activate({ provider = AUTO_PROVIDER, apiKey, model, baseUR
 
   const pConfig = PROVIDER_CONFIG[p]
   if (p !== AUTO_PROVIDER && !pConfig) {
-    throw new Error(`不支持的 provider: "${p}"，可选: ${Object.keys(PROVIDER_CONFIG).join(', ')}`)
+    throw new Error(`Unsupported provider: "${p}". Available: ${Object.keys(PROVIDER_CONFIG).join(', ')}`)
   }
 
   const normalizedKey = String(apiKey || '').trim()
   const normalizedModel = normalizeModel(model, p)
   if (normalizedKey.length < 8) {
-    throw new Error(`${p} Key 无效`)
+    throw new Error(`${p} key is invalid`)
   }
 
   const { default: OpenAI } = await import('openai')
@@ -437,9 +437,9 @@ export async function activate({ provider = AUTO_PROVIDER, apiKey, model, baseUR
   } catch (err) {
     const message = err?.message || String(err)
     if (/401|unauthoriz|invalid.*api.*key|authentication/i.test(message)) {
-      throw new Error(`${p} Key 校验失败，请确认 key 是否正确`)
+      throw new Error(`${p} key validation failed — please check that the key is correct`)
     }
-    throw new Error(`${p} 验证失败: ${message}`)
+    throw new Error(`${p} validation failed: ${message}`)
   }
 
   applyConfig(p, normalizedKey, normalizedModel)
@@ -479,7 +479,7 @@ export function getProviderSummaries() {
       defaultModel: pConfig.defaultModel,
     },
   ]))
-  result.custom = { label: '自定义端点', models: [], defaultModel: '' }
+  result.custom = { label: 'Custom Endpoint', models: [], defaultModel: '' }
   return result
 }
 
@@ -495,10 +495,10 @@ export function deactivate() {
 }
 
 export function switchModel(model) {
-  if (!config.apiKey) throw new Error('尚未激活，无法切换模型')
+  if (!config.apiKey) throw new Error('Not activated — cannot switch model')
   if (config.provider === 'custom') {
     const trimmed = String(model || '').trim()
-    if (!trimmed) throw new Error('模型名称不能为空')
+    if (!trimmed) throw new Error('Model name cannot be empty')
     config.model = trimmed
     try {
       const existing = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))
@@ -575,7 +575,7 @@ const SOCIAL_ENV_KEYS = [
   'WECOM_BOT_KEY', 'WECOM_INCOMING_TOKEN',
 ]
 
-// ── WeChat ClawBot 凭证（扫码后自动写入，不暴露到 SOCIAL_ENV_KEYS）──
+// ── WeChat ClawBot credentials (written automatically after QR scan, not exposed in SOCIAL_ENV_KEYS) ──
 
 export function getClawbotCredentials() {
   try {
@@ -619,7 +619,7 @@ export function setSocialConfig(updates) {
     const trimmed = String(val || '').trim()
     if (trimmed) {
       next[key] = trimmed
-      // 立即生效，无需重启
+      // Take effect immediately without restart
       if (globalThis.process?.env) globalThis.process.env[key] = trimmed
     } else {
       delete next[key]
@@ -654,7 +654,7 @@ export function setVoiceConfig(updates) {
   writeStoredConfig({ ...existing, voice: next })
 }
 
-// TTS 配置
+// TTS config
 const TTS_CONFIG_KEYS = [
   'ttsProvider', 'ttsVoiceId',
   'minimaxKey',
@@ -683,7 +683,7 @@ export function getTTSConfig() {
   }
 }
 
-// 读取明文 TTS 凭证（仅供后端调用 TTS API 使用，不暴露给前端）
+// Read plaintext TTS credentials (backend use only — not exposed to frontend)
 export function getTTSCredentials() {
   let stored = {}
   try { stored = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))?.tts || {} } catch {}

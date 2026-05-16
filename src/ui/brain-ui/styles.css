@@ -2963,28 +2963,21 @@ body.video-mode   > #voice-panel #voice-canvas {
   z-index: 90;
   pointer-events: none;
   opacity: 0;
-  transform: translate3d(18px, -6px, 0) scale(0.98);
-  transition: opacity 180ms ease, transform 220ms cubic-bezier(.2,.85,.2,1);
-  --pc-glitch-shift: 0px;
-  --pc-glitch-red: 0;
-  --pc-glitch-cyan: 0;
 }
 
 body.person-card-mode .person-card-panel,
 .person-card-panel.pc-visible {
   pointer-events: auto;
   opacity: 1;
-  transform: translate3d(0, 0, 0) scale(1);
 }
 
 .person-card-panel.pc-entering {
-  animation: pc-panel-enter-glitch 520ms steps(1, end) both;
+  animation: pc-flash-in 280ms ease both;
 }
 
 .person-card-panel.pc-leaving {
   pointer-events: none;
-  opacity: 1;
-  animation: pc-panel-exit-glitch 420ms steps(1, end) both;
+  animation: pc-flash-out 220ms ease both;
 }
 
 .pc-card {
@@ -3009,58 +3002,6 @@ body.person-card-mode .person-card-panel,
     linear-gradient(90deg, rgba(130, 210, 255, 0.08), transparent 34%),
     repeating-linear-gradient(0deg, rgba(255,255,255,0.035) 0, rgba(255,255,255,0.035) 1px, transparent 1px, transparent 8px);
   opacity: 0.55;
-}
-
-.pc-card::after {
-  content: "";
-  position: absolute;
-  inset: -2px;
-  pointer-events: none;
-  opacity: 0;
-  z-index: 3;
-  background:
-    linear-gradient(90deg, rgba(255, 84, 115, var(--pc-glitch-red)) 0 18%, transparent 18% 62%, rgba(68, 225, 255, var(--pc-glitch-cyan)) 62% 100%),
-    repeating-linear-gradient(180deg, transparent 0 7px, rgba(255, 255, 255, 0.08) 7px 8px, transparent 8px 15px);
-  mix-blend-mode: screen;
-  transform: translateX(var(--pc-glitch-shift));
-}
-
-.person-card-panel.pc-entering .pc-card::after,
-.person-card-panel.pc-leaving .pc-card::after {
-  opacity: 1;
-}
-
-.person-card-panel.pc-entering .pc-card,
-.person-card-panel.pc-leaving .pc-card {
-  animation: pc-card-scan-flicker 520ms steps(1, end) both;
-}
-
-.person-card-panel.pc-leaving .pc-card {
-  animation-duration: 420ms;
-}
-
-.person-card-panel.pc-entering .pc-hero,
-.person-card-panel.pc-entering .pc-header,
-.person-card-panel.pc-entering .pc-summary,
-.person-card-panel.pc-entering .pc-section,
-.person-card-panel.pc-entering .pc-tags,
-.person-card-panel.pc-entering .pc-footer,
-.person-card-panel.pc-leaving .pc-hero,
-.person-card-panel.pc-leaving .pc-header,
-.person-card-panel.pc-leaving .pc-summary,
-.person-card-panel.pc-leaving .pc-section,
-.person-card-panel.pc-leaving .pc-tags,
-.person-card-panel.pc-leaving .pc-footer {
-  animation: pc-content-glitch 520ms steps(1, end) both;
-}
-
-.person-card-panel.pc-leaving .pc-hero,
-.person-card-panel.pc-leaving .pc-header,
-.person-card-panel.pc-leaving .pc-summary,
-.person-card-panel.pc-leaving .pc-section,
-.person-card-panel.pc-leaving .pc-tags,
-.person-card-panel.pc-leaving .pc-footer {
-  animation-duration: 420ms;
 }
 
 .pc-exit-btn {
@@ -3266,144 +3207,26 @@ body.person-card-mode .person-card-panel,
   }
 }
 
-@keyframes pc-panel-enter-glitch {
-  0% {
-    opacity: 0;
-    transform: translate3d(34px, -8px, 0) scale(0.98) skewX(-2deg);
-    clip-path: inset(45% 0 45% 0);
-    --pc-glitch-shift: -7px;
-    --pc-glitch-red: 0.24;
-    --pc-glitch-cyan: 0.16;
-  }
-  9% {
-    opacity: 1;
-    transform: translate3d(-8px, 2px, 0) scale(1.01) skewX(2deg);
-    clip-path: inset(0 0 72% 0);
-    --pc-glitch-shift: 9px;
-    --pc-glitch-red: 0.12;
-    --pc-glitch-cyan: 0.28;
-  }
-  18% {
-    opacity: 0.35;
-    transform: translate3d(10px, -2px, 0) scale(0.995);
-    clip-path: inset(62% 0 18% 0);
-  }
-  29% {
-    opacity: 1;
-    transform: translate3d(-3px, 0, 0) scale(1);
-    clip-path: inset(0 0 0 0);
-    --pc-glitch-shift: -4px;
-  }
-  43% {
-    opacity: 0.72;
-    transform: translate3d(5px, 1px, 0) scale(1.004);
-    clip-path: inset(12% 0 56% 0);
-  }
-  58% {
-    opacity: 1;
-    transform: translate3d(-2px, -1px, 0) scale(1);
-    clip-path: inset(0 0 0 0);
-    --pc-glitch-shift: 3px;
-  }
-  73% {
-    opacity: 0.9;
-    transform: translate3d(2px, 0, 0) scale(1);
-    filter: brightness(1.25) contrast(1.08);
-  }
-  100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
-    clip-path: inset(0 0 0 0);
-    filter: none;
-    --pc-glitch-shift: 0px;
-    --pc-glitch-red: 0;
-    --pc-glitch-cyan: 0;
-  }
+@keyframes pc-flash-in {
+  0%   { opacity: 0; filter: brightness(2); }
+  15%  { opacity: 1; filter: brightness(1.5); }
+  35%  { opacity: 0.55; filter: none; }
+  60%  { opacity: 1; }
+  80%  { opacity: 0.82; }
+  100% { opacity: 1; }
 }
 
-@keyframes pc-panel-exit-glitch {
-  0% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
-    clip-path: inset(0 0 0 0);
-    --pc-glitch-shift: 0px;
-    --pc-glitch-red: 0;
-    --pc-glitch-cyan: 0;
-  }
-  16% {
-    opacity: 0.85;
-    transform: translate3d(-6px, 1px, 0) scale(1.006) skewX(-1deg);
-    clip-path: inset(0 0 66% 0);
-    --pc-glitch-shift: -8px;
-    --pc-glitch-red: 0.22;
-    --pc-glitch-cyan: 0.12;
-  }
-  31% {
-    opacity: 1;
-    transform: translate3d(8px, -1px, 0) scale(0.995) skewX(2deg);
-    clip-path: inset(42% 0 29% 0);
-    --pc-glitch-shift: 10px;
-    --pc-glitch-red: 0.08;
-    --pc-glitch-cyan: 0.24;
-  }
-  49% {
-    opacity: 0.45;
-    transform: translate3d(-10px, 0, 0) scale(0.99);
-    clip-path: inset(72% 0 6% 0);
-  }
-  65% {
-    opacity: 0.78;
-    transform: translate3d(5px, 2px, 0) scale(0.985);
-    clip-path: inset(18% 0 48% 0);
-  }
-  82% {
-    opacity: 0.28;
-    transform: translate3d(18px, -3px, 0) scale(0.975);
-    clip-path: inset(46% 0 45% 0);
-    filter: brightness(1.35) saturate(1.2);
-  }
-  100% {
-    opacity: 0;
-    transform: translate3d(24px, -5px, 0) scale(0.96);
-    clip-path: inset(50% 0 50% 0);
-    filter: none;
-  }
-}
-
-@keyframes pc-card-scan-flicker {
-  0%, 100% { box-shadow: 0 18px 55px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06); }
-  12% { box-shadow: -8px 0 0 rgba(255, 80, 120, 0.12), 8px 0 0 rgba(80, 220, 255, 0.1), 0 18px 55px rgba(0, 0, 0, 0.42); }
-  30% { box-shadow: 5px 0 0 rgba(255, 80, 120, 0.08), -7px 0 0 rgba(80, 220, 255, 0.14), 0 18px 55px rgba(0, 0, 0, 0.42); }
-  55% { box-shadow: 0 0 34px rgba(130, 210, 255, 0.18), 0 18px 55px rgba(0, 0, 0, 0.42); }
-}
-
-@keyframes pc-content-glitch {
-  0%, 100% { transform: translateX(0); filter: none; }
-  12% { transform: translateX(-5px); filter: contrast(1.2) brightness(1.12); }
-  24% { transform: translateX(6px); }
-  36% { transform: translateX(-2px); opacity: 0.78; }
-  48% { transform: translateX(3px); opacity: 1; }
-  62% { transform: translateX(-1px); }
+@keyframes pc-flash-out {
+  0%   { opacity: 1; }
+  25%  { opacity: 0.6; filter: brightness(1.4); }
+  55%  { opacity: 0.85; filter: none; }
+  100% { opacity: 0; }
 }
 
 @media (prefers-reduced-motion: reduce) {
   .person-card-panel,
   .person-card-panel.pc-entering,
-  .person-card-panel.pc-leaving,
-  .person-card-panel.pc-entering .pc-card,
-  .person-card-panel.pc-leaving .pc-card,
-  .person-card-panel.pc-entering .pc-hero,
-  .person-card-panel.pc-entering .pc-header,
-  .person-card-panel.pc-entering .pc-summary,
-  .person-card-panel.pc-entering .pc-section,
-  .person-card-panel.pc-entering .pc-tags,
-  .person-card-panel.pc-entering .pc-footer,
-  .person-card-panel.pc-leaving .pc-hero,
-  .person-card-panel.pc-leaving .pc-header,
-  .person-card-panel.pc-leaving .pc-summary,
-  .person-card-panel.pc-leaving .pc-section,
-  .person-card-panel.pc-leaving .pc-tags,
-  .person-card-panel.pc-leaving .pc-footer {
+  .person-card-panel.pc-leaving {
     animation: none !important;
     transition: none !important;
   }

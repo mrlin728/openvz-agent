@@ -274,29 +274,6 @@ export function findPersonCard(query = '') {
   return null
 }
 
-export function extractPersonCardQuery(message = '') {
-  const text = String(message || '').trim()
-  if (!text) return ''
-
-  const patterns = [
-    /(?:我)?(?:不认识|不了解|不知道|没听过)\s*([\p{Script=Han}A-Za-z][\p{Script=Han}A-Za-z0-9·.\-\s]{1,24})/u,
-    /([\p{Script=Han}A-Za-z][\p{Script=Han}A-Za-z0-9·.\-\s]{1,24})\s*(?:是谁|是什么人|哪位|干嘛的|为什么火|为什么红)/u,
-    /(?:这个人|这位|这个明星|那个明星|这明星)\s*(?:是谁|是什么人|哪位|干嘛的)/u,
-  ]
-
-  for (const pattern of patterns) {
-    const match = text.match(pattern)
-    const raw = match?.[1] || ''
-    const cleaned = raw
-      .replace(/^(你知道|知道|请问|帮我看看|帮我查查|那个|这个|这位|那位|明星|叫|是|叫做|名叫)\s*/, '')
-      .replace(/^(你知道|知道|请问|那个|这个|这位|那位)\s*/, '')
-      .replace(/[，。！？?!.、：:；;].*$/, '')
-      .trim()
-    if (cleaned) return cleaned
-  }
-  return ''
-}
-
 export function setPersonCardPanelState({ active, source = 'unknown', card = null, name = '' } = {}) {
   const nextActive = typeof active === 'boolean' ? active : panelState.active
   const nextCard = card
@@ -366,32 +343,20 @@ function persistMentionedPerson(card, message = '') {
   })
 }
 
-export function buildPersonCardRuntimeContext(message = '') {
-  const query = extractPersonCardQuery(message)
-  const matchedCard = query ? getPersonCard(query) : null
+export function buildPersonCardRuntimeContext() {
   const state = getPersonCardPanelState()
-  const card = matchedCard || (state.contextActive ? state.card : null)
+  const card = state.contextActive ? state.card : null
   if (!card?.name) return ''
 
-  let persistedId = ''
-  if (matchedCard) {
-    try {
-      const result = persistMentionedPerson(matchedCard, message)
-      persistedId = result?.mem_id || ''
-    } catch (err) {
-      console.warn('[PersonCard] failed to auto-archive person memory:', err.message)
-    }
-  }
-
   return `## Person Card Context
-Source: person-card mode, automatically collected by the system or triggered by the user. Sender: SYSTEM. Purpose: help explain public figures the user may not know; this does not mean the user created a separate new task.
+Source: person-card mode, triggered by the agent. Sender: SYSTEM. Purpose: help explain public figures the user may not know; this does not mean the user created a separate new task.
 
 Current person: ${card.name}
 Identity: ${card.title || 'unknown'}
 Summary: ${card.summary || 'none'}
 Known for: ${card.knownFor?.length ? card.knownFor.join(', ') : 'none'}
 Tags: ${card.tags?.length ? card.tags.join(', ') : 'none'}
-Source: ${card.source || 'person_card'}${persistedId ? `\nAutomatically archived as long-term person memory: ${persistedId}` : ''}
+Source: ${card.source || 'person_card'}
 
 Usage rule: explain proactively only when the user explicitly asks who someone is, says they do not know someone, or the person is directly related to the current topic. Keep the explanation concise and avoid inventing uncertain biographical details.`
 }

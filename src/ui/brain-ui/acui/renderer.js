@@ -15,6 +15,7 @@ const instances = new Map()
 
 // 三个独立的 layer，分别承担三种 placement。client.js 传进来的 rootEl 用作 notification 层，
 // 另外两层在 init 时自动挂到 document.body，互不干扰。
+// 注意：只支持注册组件（Mode A），不支持 inline-template / inline-script。
 let notificationHost = null
 let centerHost = null
 let floatingHost = null
@@ -64,13 +65,6 @@ export async function reloadRegistry() {
 
 export function mount(msg) {
   if (!notificationHost) return
-
-  if (msg.mode === 'inline-template') {
-    return mountInlineTemplate(msg)
-  }
-  if (msg.mode === 'inline-script') {
-    return mountInlineScript(msg)
-  }
   return mountRegistered(msg)
 }
 
@@ -86,191 +80,6 @@ function mountRegistered({ id, component, props, hint }) {
   attachLifecycle(el, id, component, hint)
   el.props = props
   appendAndAnimate(el, id, component, hint)
-}
-
-// ── 模式 B：内联模板 ────────────────────────────────────────
-const inlineTplCache = new Map()
-
-function escapeHtml(s) {
-  if (s == null) return ''
-  return String(s)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;')
-}
-
-function hashStr(s) {
-  let h = 0
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) - h + s.charCodeAt(i)) | 0
-  }
-  return Math.abs(h).toString(36)
-}
-
-function buildInlineTplClass(template, styles) {
-  return class extends HTMLElement {
-    constructor() {
-      super()
-      this.attachShadow({ mode: 'open' })
-      this._props = {}
-    }
-    set props(v) {
-      this._props = v || {}
-      this._render()
-    }
-    get props() { return this._props }
-    connectedCallback() { this._render() }
-    _render() {
-      // 第一步：替换顶层 ${字段名}（只对非数组、非对象字段生效；对象/数组字段如果直接被替换会出现 [object Object]）
-      const html = template.replace(/\$\{(\w+)\}/g, (m, name) => {
-        const v = this._props?.[name]
-        if (v == null) return ''
-        if (typeof v === 'object') return '' // 数组/对象字段不在顶层模板里直接展开，请用 data-acui-each
-        return escapeHtml(v)
-      })
-      const styleBlock = styles ? `<style>${styles}</style>` : ''
-      const closeBtn = `<button class="acui-inline-close" aria-label="close" style="position:absolute;top:8px;right:8px;background:transparent;border:0;color:rgba(255,255,255,.55);cursor:pointer;font-size:16px;padding:4px 8px;z-index:2">✕</button>`
-      this.shadowRoot.innerHTML = `${styleBlock}<div style="position:relative">${html}${closeBtn}</div>`
-      // 第二步：处理 data-acui-each="字段名" 元素 —— 取数组，按元素自身作为模板克隆 N 份，用 item 替换内部 ${...}
-      expandEach(this.shadowRoot, this._props)
-      const btn = this.shadowRoot.querySelector('.acui-inline-close')
-      if (btn) btn.onclick = () => this.dispatchEvent(new CustomEvent('acui:dismiss', { detail: { by: 'user' }, bubbles: true, composed: true }))
-      bindDataActions(this, this.shadowRoot)
-    }
-  }
-}
-
-// data-acui-each="forecast" → 取 props.forecast（数组），把当前元素当行模板克隆 length 份。
-// 行内可写 ${day}、${high}、${low} 等子字段；item 是对象就按字段查，是字符串就用 ${item}。
-function expandEach(root, props) {
-  const eachEls = root.querySelectorAll('[data-acui-each]')
-  eachEls.forEach((tplEl) => {
-    const name = tplEl.getAttribute('data-acui-each')
-    if (!name) return
-    const list = props?.[name]
-    if (!Array.isArray(list)) {
-      tplEl.remove()
-      return
-    }
-    const parent = tplEl.parentNode
-    if (!parent) return
-
-    const rawHtml = tplEl.outerHTML.replace(/\sdata-acui-each="[^"]*"/g, '')
-    const out = []
-    for (let i = 0; i < list.length; i++) {
-      const item = list[i]
-      const itemProps = (item && typeof item === 'object' && !Array.isArray(item))
-        ? { ...item, item, index: i }
-        : { item, index: i }
-      const filled = rawHtml.replace(/\$\{(\w+)\}/g, (_, key) => {
-        const v = itemProps[key]
-        if (v == null) return ''
-        if (typeof v === 'object') return ''
-        return escapeHtml(v)
-      })
-      out.push(filled)
-    }
-
-    const tmp = document.createElement('template')
-    tmp.innerHTML = out.join('')
-    parent.insertBefore(tmp.content, tplEl)
-    tplEl.remove()
-  })
-}
-
-// 给模板里 data-acui-action / data-acui-bind 元素自动绑事件，
-// 让模式 B 也能上报交互信号到 Agent，避免被迫升级到模式 C。
-function bindDataActions(host, root) {
-  // 1) data-acui-action="<name>"：click → 派发 acui:action
-  //    所有以 data-payload-* 开头的属性都作为 payload 字段（kebab-case 自动转 snake/原样）
-  const actionables = root.querySelectorAll('[data-acui-action]')
-  actionables.forEach((el) => {
-    if (el.__acuiBound) return
-    el.__acuiBound = true
-    el.addEventListener('click', () => {
-      const action = el.getAttribute('data-acui-action')
-      const payload = {}
-      for (const attr of el.attributes) {
-        if (attr.name.startsWith('data-payload-')) {
-          const key = attr.name.slice('data-payload-'.length)
-          payload[key] = attr.value
-        }
-      }
-      // 同时收集当前所有 data-acui-bind 字段，方便表单类卡片一键提交
-      const binds = root.querySelectorAll('[data-acui-bind]')
-      const fields = {}
-      binds.forEach((b) => {
-        const k = b.getAttribute('data-acui-bind')
-        if (k) fields[k] = b.value ?? b.textContent ?? ''
-      })
-      if (Object.keys(fields).length) payload.fields = fields
-
-      host.dispatchEvent(new CustomEvent('acui:action', {
-        bubbles: true, composed: true,
-        detail: { action, payload },
-      }))
-    })
-  })
-}
-
-function mountInlineTemplate({ id, template, styles, props, hint }) {
-  if (!template) {
-    signalSink?.({ type: 'card.error', target: id, payload: { phase: 'mount', message: 'missing_template' } })
-    return
-  }
-  try {
-    const key = hashStr(template + '|' + (styles || ''))
-    let tag = inlineTplCache.get(key)
-    if (!tag) {
-      tag = `acui-inline-tpl-${key}`
-      if (!customElements.get(tag)) {
-        customElements.define(tag, buildInlineTplClass(template, styles || ''))
-      }
-      inlineTplCache.set(key, tag)
-    }
-    const el = document.createElement(tag)
-    attachLifecycle(el, id, '__inline_template__', hint)
-    el.props = props || {}
-    appendAndAnimate(el, id, '__inline_template__', hint)
-  } catch (e) {
-    signalSink?.({ type: 'card.error', target: id, payload: { phase: 'mount', message: String(e?.message || e) } })
-  }
-}
-
-// ── 模式 C：内联组件 ───────────────────────────────────────
-async function mountInlineScript({ id, code, props, hint }) {
-  if (!code) {
-    signalSink?.({ type: 'card.error', target: id, payload: { phase: 'mount', message: 'missing_code' } })
-    return
-  }
-
-  const safeCode = `
-    var customElements = { define: () => {}, get: () => undefined, whenDefined: () => Promise.resolve() }
-    ${code}
-  `
-
-  let url = null
-  try {
-    const blob = new Blob([safeCode], { type: 'text/javascript' })
-    url = URL.createObjectURL(blob)
-    const mod = await import(/* @vite-ignore */ url)
-    const Cls = mod.default
-    if (typeof Cls !== 'function' || !(Cls.prototype instanceof HTMLElement)) {
-      throw new Error('not_html_element')
-    }
-    const tag = `acui-inline-${id}`
-    if (!customElements.get(tag)) customElements.define(tag, Cls)
-    const el = document.createElement(tag)
-    attachLifecycle(el, id, '__inline_script__', hint)
-    el.props = props || {}
-    appendAndAnimate(el, id, '__inline_script__', hint)
-  } catch (e) {
-    signalSink?.({ type: 'card.error', target: id, payload: { phase: 'load', message: String(e?.message || e) } })
-  } finally {
-    if (url) URL.revokeObjectURL(url)
-  }
 }
 
 // ── 公共：生命周期 + 入场 ─────────────────────────────────────

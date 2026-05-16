@@ -60,5 +60,13 @@
     },
     "enter": "slide-from-right",
     "exit":  "slide-to-right"
+  },
+  "SecurityConfirmCard": {
+    "propsSchema": {
+      "reason":       { "type": "string",  "required": false },
+      "file_sandbox": { "type": "boolean", "required": false },
+      "exec_sandbox": { "type": "boolean", "required": false }
+    },
+    "placement": "center"
   }
 }

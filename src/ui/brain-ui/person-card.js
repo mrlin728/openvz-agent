@@ -1,4 +1,4 @@
-import { apiUrl } from './api-client.js';
+﻿import { apiUrl } from './api-client.js';
 
 let personCardActive = false;
 let currentCard = null;
@@ -7,8 +7,8 @@ let revealTimer = null;
 let animationTimer = null;
 
 const PERSON_CARD_REVEAL_DELAY_MS = 1000;
-const PERSON_CARD_LEAVE_MS = 420;
-const PERSON_CARD_ENTER_MS = 520;
+const PERSON_CARD_LEAVE_MS = 220;
+const PERSON_CARD_ENTER_MS = 280;
 
 const $ = (id) => document.getElementById(id);
 
@@ -28,50 +28,6 @@ function cleanLine(value = '') {
     .replace(/\*\*/g, '')
     .replace(/\s+/g, ' ')
     .trim();
-}
-
-function escapeRegExp(value = '') {
-  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function firstMatch(text = '', patterns = []) {
-  for (const pattern of patterns) {
-    const match = text.match(pattern);
-    if (match?.[1]) return cleanLine(match[1]);
-  }
-  return '';
-}
-
-function splitKnownFor(value = '') {
-  const text = String(value || '').trim();
-  const bracketWorks = [...text.matchAll(/《([^》]{1,40})》/g)].map(match => match[1]);
-  const plain = text
-    .replace(/《([^》]+)》/g, '$1')
-    .replace(/(?:等|等等|以及|还有|还参加过|参加过).*$/g, '')
-    .split(/[,，、;；/]/)
-    .map(cleanLine)
-    .filter(item => item && item.length <= 40);
-  return uniqueList([...bracketWorks, ...plain]).slice(0, 8);
-}
-
-function inferTags(title = '', summary = '') {
-  const text = `${title} ${summary}`;
-  const tags = [];
-  for (const tag of ['企业家', '慈善家', '歌手', '演员', '导演', '音乐人', '舞者', '制片人', '主持人', '作家']) {
-    if (text.includes(tag)) tags.push(tag);
-  }
-  if (/阿里巴巴|淘宝|支付宝|互联网|电商/.test(text)) tags.push('互联网');
-  if (/华语|流行|音乐|演唱/.test(text)) tags.push('华语音乐');
-  return uniqueList(tags).slice(0, 6);
-}
-
-function inferTitle(summary = '') {
-  const text = String(summary || '');
-  if (/阿里巴巴.*创始人|创办.*阿里巴巴/.test(text)) return '企业家 / 阿里巴巴集团创始人';
-  if (/创始人|创办/.test(text) && /企业|公司|集团|淘宝|支付宝/.test(text)) return '企业家 / 创始人';
-  if (/华语|流行|演唱|歌曲|音乐/.test(text) && /歌手|唱作|创作/.test(text)) return '歌手 / 音乐人';
-  if (/演员|出演|电影|电视剧/.test(text)) return '演员';
-  return '';
 }
 
 function formatUpdatedAt(value) {
@@ -182,53 +138,6 @@ function renderPersonCard(card = {}) {
   }
 }
 
-function parseAssistantPersonInfo(text = '', card = currentCard) {
-  const name = String(card?.name || '').trim();
-  const content = String(text || '').trim();
-  if (!name || !content || !content.includes(name)) return null;
-  const safeName = escapeRegExp(name);
-
-  const compact = content.replace(/\n+/g, '\n');
-  const title = firstMatch(compact, [
-    /身份[：:]\s*([^\n]+)/,
-    new RegExp(`${safeName}[，,\\s]*(?:\\d{4}年生[，,\\s]*)?(?:是|就是)([^。；;\\n]+)`),
-  ]);
-  const summary = firstMatch(compact, [
-    /简介[：:]\s*([^\n]+)/,
-    new RegExp(`(${safeName}[^。！？!?\\n]{8,140}[。！？!?]?)`),
-  ]);
-  const knownText = firstMatch(compact, [
-    /(?:代表事件|代表作品|代表作|识别点)[：:]\s*([^\n]+)/,
-    /代表(?:作|作品)?(?:包括|有)?[：:]?\s*([^。；;\n]+)/,
-    /创办了?\s*([^。；;\n]+)/,
-  ]);
-  const knownFor = splitKnownFor(knownText);
-  const inferredTitle = title || inferTitle(summary);
-  const tags = inferTags(inferredTitle, summary);
-
-  if (!title && !summary && !knownFor.length && !tags.length) return null;
-
-  return {
-    ...card,
-    name,
-    title: inferredTitle || card.title,
-    summary: summary || card.summary,
-    knownFor: uniqueList([...normalizeList(card.knownFor), ...knownFor]),
-    tags: uniqueList([...normalizeList(card.tags).filter(tag => tag !== '待补充' && tag !== 'standby'), ...tags]),
-    source: 'assistant_reply',
-    updatedAt: new Date().toISOString(),
-  };
-}
-
-export function updatePersonCardFromAssistantText(text = '') {
-  if (!personCardActive || !currentCard?.name) return false;
-  const nextCard = parseAssistantPersonInfo(text, currentCard);
-  if (!nextCard) return false;
-  renderPersonCard(nextCard);
-  reportPersonCardState(true, 'assistant_reply', nextCard);
-  return true;
-}
-
 function reportPersonCardState(visible, source = 'brain-ui', card = currentCard) {
   fetch(apiUrl('/person-card-state'), {
     method: 'POST',
@@ -239,18 +148,12 @@ function reportPersonCardState(visible, source = 'brain-ui', card = currentCard)
 
 export function setPersonCardMode(visible, { source = 'brain-ui', card = null } = {}) {
   const nextVisible = !!visible;
-  if (card) renderPersonCard(card);
   const panel = $('person-card-panel');
-  if (revealTimer) {
-    clearTimeout(revealTimer);
-    revealTimer = null;
-  }
-  if (animationTimer) {
-    clearTimeout(animationTimer);
-    animationTimer = null;
-  }
+  if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
+  if (animationTimer) { clearTimeout(animationTimer); animationTimer = null; }
 
   if (!nextVisible) {
+    if (card) renderPersonCard(card);
     personCardActive = false;
     if (panel && panel.classList.contains('pc-visible')) {
       panel.classList.remove('pc-entering');
@@ -268,6 +171,28 @@ export function setPersonCardMode(visible, { source = 'brain-ui', card = null } 
     return;
   }
 
+  // 切换不同人物：先退场，退场结束后立即入场新卡片（跳过初始延迟）
+  const isDifferentPerson = card?.name && currentCard?.name && card.name !== currentCard.name;
+  if (personCardActive && isDifferentPerson && panel?.classList.contains('pc-visible')) {
+    panel.classList.remove('pc-entering');
+    panel.classList.add('pc-leaving');
+    animationTimer = setTimeout(() => {
+      animationTimer = null;
+      panel.classList.remove('pc-visible', 'pc-leaving');
+      renderPersonCard(card);
+      panel.classList.add('pc-visible', 'pc-entering');
+      personCardActive = true;
+      animationTimer = setTimeout(() => {
+        animationTimer = null;
+        panel.classList.remove('pc-entering');
+      }, PERSON_CARD_ENTER_MS);
+      reportPersonCardState(true, source, currentCard);
+    }, PERSON_CARD_LEAVE_MS);
+    return;
+  }
+
+  // 正常打开（面板关闭状态，或同一人物更新数据）
+  if (card) renderPersonCard(card);
   revealTimer = setTimeout(() => {
     revealTimer = null;
     personCardActive = true;
@@ -313,25 +238,6 @@ export async function showPersonCardByName(name, { source = 'brain-ui' } = {}) {
   }
 }
 
-export function extractPersonCardQuery(text = '') {
-  const message = String(text || '').trim();
-  if (!message) return '';
-  const patterns = [
-    /(?:我)?(?:不认识|不了解|不知道|没听过)\s*([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·.\-\s]{1,24})/u,
-    /([\u4e00-\u9fa5A-Za-z][\u4e00-\u9fa5A-Za-z0-9·.\-\s]{1,24})\s*(?:是谁|是什么人|哪位|干嘛的|为什么火|为什么红)/u,
-  ];
-  for (const pattern of patterns) {
-    const match = message.match(pattern);
-    const raw = match?.[1] || '';
-    const cleaned = raw
-      .replace(/^(你知道|知道|请问|帮我看看|帮我查查|那个|这个|这位|那位|明星|叫|是|叫做|名叫)\s*/, '')
-      .replace(/^(你知道|知道|请问|那个|这个|这位|那位)\s*/, '')
-      .replace(/[，。！？?!.、：:；;].*$/, '')
-      .trim();
-    if (cleaned) return cleaned;
-  }
-  return '';
-}
 
 export function initPersonCard() {
   renderPersonCard(currentCard || {

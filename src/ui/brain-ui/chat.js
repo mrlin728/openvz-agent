@@ -26,7 +26,7 @@ export function initChat({
     inputLocked = locked;
     msgInput.disabled = locked;
     sendBtn.disabled = locked;
-    msgInput.placeholder = locked ? (reason || "系统正在准备中…") : defaultInputPlaceholder();
+    msgInput.placeholder = locked ? (reason || "System is preparing…") : defaultInputPlaceholder();
   }
 
   function releaseWarmupLock() {
@@ -51,7 +51,7 @@ export function initChat({
     }
 
     const seconds = Math.max(1, Math.ceil(remaining / 1000));
-    setComposerLocked(true, `系统刚激活，正在准备模型…约 ${seconds}s`);
+    setComposerLocked(true, `Just activated — preparing model… ~${seconds}s`);
     if (warmupTimer) clearTimeout(warmupTimer);
     warmupTimer = setTimeout(releaseWarmupLock, remaining);
   }
@@ -62,7 +62,7 @@ export function initChat({
 
   function ensureAudioContext() {
     if (!audioCtx) {
-      if (!audioUnlocked) return null;  // 手势前不创建，避免 Chrome autoplay 警告
+      if (!audioUnlocked) return null;  // Don't create before a user gesture — avoids Chrome autoplay warning
       const AudioCtx = window.AudioContext || window.webkitAudioContext;
       if (!AudioCtx) return null;
       try { audioCtx = new AudioCtx(); } catch { return null; }
@@ -74,7 +74,7 @@ export function initChat({
     const unlock = () => {
       if (audioUnlocked) return;
       audioUnlocked = true;
-      // 首次手势后才创建/恢复 AudioContext，避免 Chrome autoplay 策略警告
+      // Create/resume AudioContext only after the first user gesture — avoids Chrome autoplay policy warning
       const ctx = ensureAudioContext();
       if (ctx && ctx.state === "suspended") {
         ctx.resume().catch(() => {});
@@ -203,7 +203,7 @@ export function initChat({
     const text = msgInput.value.trim();
     if (!text) return;
     msgInput.value = "";
-    // onUserMessage 返回字符串则用作后端 payload；返回 false 则不发后端
+    // If onUserMessage returns a string, use it as the backend payload; if it returns false, skip the backend call
     const override = onUserMessage?.(text);
     addMsg("user", text, { label: label || undefined });
     openChat();
@@ -229,7 +229,7 @@ export function initChat({
       }
     } catch (error) {
       console.warn("[send]", error.message);
-      addMsg("jarvis", "消息发送失败，请检查本地服务是否启动。");
+      addMsg("jarvis", "Failed to send message — please check that the local service is running.");
       openChat(true);
     }
   }
@@ -282,7 +282,7 @@ export function initChat({
     const msgs = chatMessages.querySelectorAll('.msg-jarvis');
     if (!msgs.length) return;
     const last = msgs[msgs.length - 1];
-    // 移除原 markdown body（label span 之后的所有子节点）
+    // Remove the original markdown body (all child nodes after the label span)
     const children = Array.from(last.children);
     for (let i = 1; i < children.length; i++) children[i].remove();
     last.appendChild(createMarkdownBody(newText));

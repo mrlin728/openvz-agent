@@ -662,30 +662,26 @@ To play music, use media_mode with mode=music and src=file_path to show the reco
     type: 'function',
     function: {
       name: 'ui_show',
-      description: 'Push a visual card to the user interface. Two usage modes: (1) Registered component — provide component + props; (2) Inline ad-hoc — provide mode="inline-template" (safe HTML+CSS) or mode="inline-script" (full Web Component with JS/state/animation). Use inline when no registered component fits; after it proves useful, call ui_register to promote it. Use only when UI expression is clearer than plain text.',
+      description: 'Push a registered visual card to the user interface. Always specify component + props matching the registered component\'s propsSchema. Use only when UI expression is clearer than plain text.',
       parameters: {
         type: 'object',
         properties: {
-          component: { type: 'string', description: 'Registered component type name, e.g. WeatherCard. Required when not using mode.' },
-          props:     { type: 'object', description: 'Component props. For registered components must follow propsSchema; for inline omit unused fields (falls back to {}).' },
-          mode:     { type: 'string', enum: ['inline-template', 'inline-script'], description: 'Inline mode. inline-template=pure HTML+CSS template; inline-script=complete Web Component.' },
-          template: { type: 'string', description: 'Required for mode=inline-template. HTML structure using ${propName} placeholders. Never put <style> tags here; CSS goes in styles.' },
-          styles:   { type: 'string', description: 'CSS rules for mode=inline-template, injected into Shadow DOM (no <style> tags).' },
-          code:     { type: 'string', description: 'Required for mode=inline-script. Must start with: export default class extends HTMLElement ... and include set props(v).' },
+          component: { type: 'string', description: 'Registered component type name, e.g. WeatherCard. Required.' },
+          props:     { type: 'object', description: 'Component props following the component\'s propsSchema.' },
           hint: {
             type: 'object',
-            description: 'Optional display hint controlling card presentation. All fields have reasonable defaults.',
+            description: 'Optional display hint. All fields have reasonable defaults.',
             properties: {
-              placement: { type: 'string', enum: ['notification', 'center', 'floating', 'stage'], description: 'notification=top-right stacked slide-in, default; center=centered with overlay for important/confirmation content; floating=free draggable long-lived tool card; stage=fullscreen immersive app.' },
-              size:      { description: 'Size: sm | md | lg | xl, or pixel object { w, h }. Default md.', oneOf: [{ type: 'string', enum: ['sm', 'md', 'lg', 'xl'] }, { type: 'object', properties: { w: { type: ['number', 'string'] }, h: { type: ['number', 'string'] } } }] },
-              draggable: { type: 'boolean', description: 'Whether draggable. floating defaults true; others default false.' },
-              modal:     { type: 'boolean', description: 'Whether to show a translucent overlay. center defaults true.' },
+              placement: { type: 'string', enum: ['notification', 'center', 'floating', 'stage'], description: 'notification=top-right stacked slide-in (default); center=centered with overlay; floating=free draggable; stage=fullscreen.' },
+              size:      { description: 'Size: sm | md | lg | xl, or pixel object { w, h }.', oneOf: [{ type: 'string', enum: ['sm', 'md', 'lg', 'xl'] }, { type: 'object', properties: { w: { type: ['number', 'string'] }, h: { type: ['number', 'string'] } } }] },
+              draggable: { type: 'boolean', description: 'Whether draggable. floating defaults true.' },
+              modal:     { type: 'boolean', description: 'Show translucent overlay. center defaults true.' },
               enter:     { type: 'string', description: 'Enter animation, inferred from placement by default.' },
               exit:      { type: 'string', description: 'Exit animation, inferred from placement by default.' }
             }
           }
         },
-        required: []
+        required: ['component']
       }
     }
   },

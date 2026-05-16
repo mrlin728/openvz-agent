@@ -42,12 +42,12 @@ const SANDBOX_PATH       = paths.sandboxDir
 const DEFAULT_AGENT_NAME = 'Longma'
 const DEFAULT_API_HOST = '127.0.0.1'
 
-// card.action 信号中属于生命周期/系统内部的 action 名，只落库供 injector 被动注入，不推 agent 队列
+// card.action signals that are lifecycle/system-internal — stored in DB for passive injector use only, not pushed to the agent queue
 const SILENT_CARD_ACTIONS = new Set([
-  'card.dismissed',  // 卡片关闭（组件应改用 acui:dismiss，此处兜底防御）
-  'card.mounted',    // 挂载完成
-  'card.dwell',      // 停留心跳
-  'card.error',      // 渲染错误（已由 card.error type 信号处理）
+  'card.dismissed',  // card closed (components should use acui:dismiss; this is a fallback guard)
+  'card.mounted',    // mount complete
+  'card.dwell',      // dwell heartbeat
+  'card.error',      // render error (already handled by the card.error type signal)
 ])
 
 function getApiHost() {
@@ -212,13 +212,13 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     const url = new URL(req.url, base)
     const origin = req.headers.origin
 
-    // GET /social/wechat-clawbot/qr — 获取当前二维码状态和 URL
+    // GET /social/wechat-clawbot/qr — get current QR code status and URL
     if (req.method === 'GET' && url.pathname === '/social/wechat-clawbot/qr') {
       if (!hasAllowedAccess(req, url)) return jsonResponse(res, 403, { ok: false, error: 'forbidden' })
       return jsonResponse(res, 200, { ok: true, ...getClawbotQR() })
     }
 
-    // POST /social/wechat-clawbot/logout — 清除凭证并断开连接
+    // POST /social/wechat-clawbot/logout — clear credentials and disconnect
     if (req.method === 'POST' && url.pathname === '/social/wechat-clawbot/logout') {
       if (!requireLocalOrToken(req, res, url)) return
       logoutClawbot()
@@ -252,7 +252,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /message — 发消息给意识体
+    // POST /message — send message to agent
     if (req.method === 'POST' && url.pathname === '/message') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -272,7 +272,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /events — SSE 实时事件流（双向通讯的出口）
+    // GET /events — SSE real-time event stream (outbound channel for bidirectional communication)
     if (req.method === 'GET' && url.pathname === '/events') {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -317,7 +317,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /conversations?limit=60 — 聊天记录（按时间升序，最新的在最后）
+    // GET /conversations?limit=60 — chat history (ascending by time, most recent last)
     if (req.method === 'GET' && url.pathname === '/conversations') {
       const db = getDB()
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '60'), 500)
@@ -349,7 +349,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /hotspots — 统一热点数据，默认 30 分钟缓存
+    // GET /hotspots — unified trending data, 30-minute cache by default
     if (req.method === 'GET' && url.pathname === '/hotspots') {
       getHotspots({
         force: /^(1|true|yes)$/i.test(url.searchParams.get('refresh') || ''),
@@ -384,8 +384,8 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       }
     }
 
-    // GET /doc-panel-state — 文档面板状态
-    // POST /doc-panel-state — 设置文档面板状态 { active, topicId, source }
+    // GET /doc-panel-state — document panel state
+    // POST /doc-panel-state — set document panel state { active, topicId, source }
     if (url.pathname === '/doc-panel-state') {
       if (req.method === 'GET') {
         jsonResponse(res, 200, { ok: true, state: getDocPanelState() })
@@ -405,7 +405,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       }
     }
 
-    // GET /docs/:topicId — 获取指定文档主题内容
+    // GET /docs/:topicId — get content for a specific document topic
     if (req.method === 'GET' && url.pathname.startsWith('/docs/')) {
       const topicId = url.pathname.slice(6)
       const doc = DOC_TOPICS[topicId]
@@ -417,7 +417,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /docs — 所有文档主题列表
+    // GET /docs — list all document topics
     if (req.method === 'GET' && url.pathname === '/docs') {
       const topics = Object.values(DOC_TOPICS).map(({ id, title, subtitle, icon, summary }) => ({ id, title, subtitle, icon, summary }))
       jsonResponse(res, 200, { ok: true, topics })
@@ -500,7 +500,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // DELETE /memories/:id — 删除记忆
+    // DELETE /memories/:id — delete a memory
     if (req.method === 'DELETE' && url.pathname.startsWith('/memories/')) {
       const id = parseInt(url.pathname.split('/')[2])
       if (!id) return jsonResponse(res, 400, { error: 'invalid id' })
@@ -510,7 +510,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // PATCH /memories/:id — 修改记忆 content/detail
+    // PATCH /memories/:id — update memory content/detail
     if (req.method === 'PATCH' && url.pathname.startsWith('/memories/')) {
       const id = parseInt(url.pathname.split('/')[2])
       if (!id) return jsonResponse(res, 400, { error: 'invalid id' })
@@ -530,7 +530,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /media/music/:filename — 提供 musicDir 音频文件（避免 file:// 跨源限制）
+    // GET /media/music/:filename — serve musicDir audio files (avoids file:// cross-origin restriction)
     if (req.method === 'GET' && url.pathname.startsWith('/media/music/')) {
       const raw = url.pathname.slice('/media/music/'.length)
       const filename = path.basename(decodeURIComponent(raw))
@@ -577,7 +577,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /audio/:filename — 提供 sandbox 音频文件
+    // GET /audio/:filename — serve sandbox audio files
     if (req.method === 'GET' && url.pathname.startsWith('/audio/')) {
       const filename = path.basename(url.pathname)
       const filePath = path.join(SANDBOX_PATH, 'audio', filename)
@@ -596,13 +596,13 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /activation-status — 查询是否已经激活
+    // GET /activation-status — check whether the system is activated
     if (req.method === 'GET' && url.pathname === '/activation-status') {
       jsonResponse(res, 200, getActivationStatus())
       return
     }
 
-    // POST /activate — 填入 API Key 完成激活
+    // POST /activate — submit API key to complete activation
     if (req.method === 'POST' && url.pathname === '/activate') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -612,9 +612,9 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
           const { apiKey, model, provider, baseURL } = JSON.parse(body || '{}')
           const info = await activateLLM({ provider, apiKey, model, baseURL })
           emitEvent('activated', info)
-          // 通知 index.js 启动主循环
+          // Notify index.js to start the main loop
           if (typeof onActivatedCallback === 'function') {
-            try { onActivatedCallback() } catch (err) { console.error('[API] onActivated 回调出错:', err) }
+            try { onActivatedCallback() } catch (err) { console.error('[API] onActivated callback error:', err) }
           }
           jsonResponse(res, 200, { ok: true, ...info })
         } catch (err) {
@@ -624,7 +624,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /settings — 返回当前 LLM + MiniMax 配置状态
+    // GET /settings — return current LLM + MiniMax configuration status
     if (req.method === 'GET' && url.pathname === '/settings') {
       const status = getActivationStatus()
       const minimaxKey = getMinimaxKey()
@@ -645,7 +645,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /settings/model — 仅切换模型（不需重新输入 Key）
+    // POST /settings/model — switch model only (no need to re-enter the key)
     if (req.method === 'POST' && url.pathname === '/settings/model') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -662,7 +662,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /settings/temperature — 设置 LLM temperature
+    // POST /settings/temperature — set LLM temperature
     if (req.method === 'POST' && url.pathname === '/settings/temperature') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -678,14 +678,14 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /settings/security — 读取安全沙箱配置
+    // GET /settings/security — read security sandbox configuration
     if (req.method === 'GET' && url.pathname === '/settings/security') {
       if (!hasAllowedAccess(req, url)) return jsonResponse(res, 403, { ok: false, error: 'forbidden' })
       jsonResponse(res, 200, { ok: true, security: getSecurity() })
       return
     }
 
-    // POST /settings/security — 保存安全沙箱配置
+    // POST /settings/security — save security sandbox configuration
     if (req.method === 'POST' && url.pathname === '/settings/security') {
       if (!requireLocalOrToken(req, res, url)) return
       const chunks = []
@@ -702,13 +702,13 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /settings/social — 读取各平台配置状态（不返回明文 key）
+    // GET /settings/social — read per-platform configuration status (plaintext keys not returned)
     if (req.method === 'GET' && url.pathname === '/settings/social') {
       jsonResponse(res, 200, { ok: true, social: getSocialConfig() })
       return
     }
 
-    // POST /settings/social — 保存平台凭证，并热重启受影响的连接器
+    // POST /settings/social — save platform credentials and hot-restart affected connectors
     if (req.method === 'POST' && url.pathname === '/settings/social') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -716,7 +716,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         try {
           const updates = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
           setSocialConfig(updates)
-          // 哪些平台的 key 被更新了，就重启对应连接器
+          // Restart the connector for each platform whose key was updated
           const PLATFORM_KEYS = {
             discord: ['DISCORD_BOT_TOKEN'],
           }
@@ -727,7 +727,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
               )
             }
           }
-          // 用户点击「连接微信」时触发 ClawBot 连接器重启
+          // Restart the ClawBot connector when the user clicks "Connect WeChat"
           if (updates._clawbot_connect) {
             restartConnector('wechat-clawbot', { pushMessage, emitEvent }).catch(err =>
               console.warn('[social] restart wechat-clawbot failed:', err.message)
@@ -741,7 +741,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /settings/minimax — 设置 MiniMax API Key
+    // POST /settings/minimax — set MiniMax API key
     if (req.method === 'POST' && url.pathname === '/settings/minimax') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -749,7 +749,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         try {
           const { apiKey } = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
           const trimmed = String(apiKey || '').trim()
-          if (!trimmed) throw new Error('API Key 不能为空')
+          if (!trimmed) throw new Error('API key cannot be empty')
           setMinimaxKey(trimmed)
           replaceProvider(new MinimaxProvider({ apiKey: trimmed }))
           jsonResponse(res, 200, { ok: true, configured: true })
@@ -760,7 +760,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /activation — 激活引导页
+    // GET /activation — activation guide page
     if (req.method === 'GET' && (url.pathname === '/activation' || url.pathname === '/activation.html')) {
       try {
         const html = fs.readFileSync(ACTIVATION_PATH, 'utf-8')
@@ -773,7 +773,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET / — 未激活时进入激活页，已激活时进入 brain-ui
+    // GET / — redirect to activation page if not activated, brain-ui if activated
     if (req.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) {
       if (config.needsActivation) {
         res.writeHead(302, { Location: '/activation' })
@@ -785,7 +785,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
         res.end(html)
       } catch {
-        // 没有 index.html 时，直接去 brain-ui
+        // No index.html — go directly to brain-ui
         res.writeHead(302, { Location: '/brain-ui' })
         res.end()
       }
@@ -817,7 +817,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /brain-ui — Brain UI（记忆图谱 + 思考流 + 聊天）
+    // GET /brain-ui — Brain UI (memory graph + thought stream + chat)
     if (req.method === 'GET' && (url.pathname === '/site' || url.pathname === '/site.html')) {
       try {
         const html = fs.readFileSync(WEBSITE_PATH, 'utf-8')
@@ -907,7 +907,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /admin/stop — 暂停意识循环（保留 HTTP 服务）
+    // POST /admin/stop — pause the consciousness loop (keep HTTP service running)
     if (req.method === 'POST' && url.pathname === '/admin/stop') {
       stopLoop()
       emitEvent('admin', { action: 'stop', running: false })
@@ -915,7 +915,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /admin/start — 恢复意识循环
+    // POST /admin/start — resume the consciousness loop
     if (req.method === 'POST' && url.pathname === '/admin/start') {
       startLoop()
       emitEvent('admin', { action: 'start', running: true })
@@ -923,9 +923,9 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /admin/restart — 重启 Jarvis 进程（spawn 新进程后退出）
+    // POST /admin/restart — restart the Jarvis process (spawn new process then exit)
     if (req.method === 'POST' && url.pathname === '/admin/restart') {
-      jsonResponse(res, 200, { ok: true, message: '正在重启…' })
+      jsonResponse(res, 200, { ok: true, message: 'Restarting…' })
       setTimeout(() => {
         const child = spawn('npm', ['start'], {
           cwd: path.join(__dirname, '../'),
@@ -939,7 +939,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /admin/reset-memories — 清除所有记忆和对话
+    // POST /admin/reset-memories — clear all memories and conversations
     if (req.method === 'POST' && url.pathname === '/admin/reset-memories') {
       const db = getDB()
       db.prepare('DELETE FROM memories').run()
@@ -952,7 +952,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /admin/reset-files — 清除 sandbox 用户文件（保留 readme.txt、world.txt）
+    // POST /admin/reset-files — clear sandbox user files (keeping readme.txt and world.txt)
     if (req.method === 'POST' && url.pathname === '/admin/reset-files') {
       const sandboxPath = SANDBOX_PATH
       const KEEP = new Set(['readme.txt', 'world.txt'])
@@ -973,13 +973,13 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /settings/voice — 读取语音配置（凭证只返回 configured 状态）
+    // GET /settings/voice — read voice configuration (credentials returned as configured-status only)
     if (req.method === 'GET' && url.pathname === '/settings/voice') {
       jsonResponse(res, 200, { ok: true, voice: getVoiceConfig() })
       return
     }
 
-    // POST /settings/voice — 保存语音配置 { whisperModel?, aliyunApiKey?, ... }
+    // POST /settings/voice — save voice configuration { whisperModel?, aliyunApiKey?, ... }
     if (req.method === 'POST' && url.pathname === '/settings/voice') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -995,13 +995,13 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // GET /settings/tts — 读取 TTS 配置状态（不返回明文密钥）
+    // GET /settings/tts — read TTS configuration status (plaintext keys not returned)
     if (req.method === 'GET' && url.pathname === '/settings/tts') {
       jsonResponse(res, 200, { ok: true, tts: getTTSConfig(), providers: TTS_PROVIDERS, voices: TTS_VOICES })
       return
     }
 
-    // POST /settings/tts — 保存 TTS 配置
+    // POST /settings/tts — save TTS configuration
     if (req.method === 'POST' && url.pathname === '/settings/tts') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -1017,7 +1017,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /tts/stream — 流式 TTS 合成，返回 audio/mpeg 流
+    // POST /tts/stream — streaming TTS synthesis, returns audio/mpeg stream
     if (req.method === 'POST' && url.pathname === '/tts/stream') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -1025,7 +1025,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
           const { text } = body
-          if (!text?.trim()) { jsonResponse(res, 400, { ok: false, error: '缺少 text 参数' }); return }
+          if (!text?.trim()) { jsonResponse(res, 400, { ok: false, error: 'Missing text parameter' }); return }
           const creds = getTTSCredentials()
           const audioStream = await streamTTS({
             text: text.slice(0, 800),
@@ -1063,15 +1063,15 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
           })
           audioStream.on('end', () => {
             if (!headersWritten) {
-              const errMsg = streamError?.message || '语音合成失败：API 未返回音频，请检查声音 ID 是否在账户中开通'
-              console.warn('[TTS] 空流:', errMsg)
+              const errMsg = streamError?.message || 'TTS synthesis failed: API returned no audio — check whether the voice ID is enabled on your account'
+              console.warn('[TTS] Empty stream:', errMsg)
               errorRes(errMsg)
             } else {
               finishRes()
             }
           })
           audioStream.on('error', (err) => {
-            console.warn('[TTS] 音频流错误:', err.message)
+            console.warn('[TTS] Audio stream error:', err.message)
             streamError = err
             if (!headersWritten) {
               errorRes(err.message)
@@ -1080,7 +1080,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
             }
           })
         } catch (err) {
-          console.warn('[TTS] 流式合成失败:', err.message)
+          console.warn('[TTS] Streaming synthesis failed:', err.message)
           if (!res.headersSent) jsonResponse(res, 500, { ok: false, error: err.message })
           else try { res.end() } catch {}
         }
@@ -1088,7 +1088,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
-    // POST /tts/interrupted — TTS 被用户打断，裁剪最后一条 jarvis 消息至已说出部分
+    // POST /tts/interrupted — TTS interrupted by user; trim the last jarvis message to the spoken portion
     if (req.method === 'POST' && url.pathname === '/tts/interrupted') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
@@ -1110,19 +1110,19 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     jsonResponse(res, 404, { error: 'not found' })
   })
 
-  // Cloud ASR ws 通道：前端 PCM → 后端代理 → 云端 ASR
+  // Cloud ASR WebSocket channel: frontend PCM → backend proxy → cloud ASR
   const cloudWss = new WebSocketServer({ noServer: true })
   cloudWss.on('connection', (ws) => {
     let session = null
     let configured = false
 
     ws.on('message', (raw) => {
-      // 第一帧必须是 JSON config 帧
+      // First frame must be a JSON config frame
       if (!configured) {
         try {
           const msg = JSON.parse(raw.toString())
           if (msg.type !== 'config') return
-          // 从 config.json 读取凭证原始值
+          // Read raw credentials from config.json
           let rawCfg = {}
           try { rawCfg = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))?.voice || {} } catch {}
           session = createCloudASRSession(
@@ -1139,7 +1139,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         } catch {}
         return
       }
-      // 后续帧为 PCM 二进制
+      // Subsequent frames are PCM binary
       if (raw instanceof Buffer) {
         session?.sendAudio(raw)
       } else {
@@ -1154,7 +1154,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     ws.on('error', () => { session?.close(); session = null })
   })
 
-  // ACUI ws 通道：双向控制 + 感知
+  // ACUI WebSocket channel: bidirectional control + perception
   const acuiWss = new WebSocketServer({ noServer: true })
   acuiWss.on('connection', (ws) => {
     addACUIClient(ws)
@@ -1171,21 +1171,21 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
             ts: msg.ts || Date.now(),
           })
           emitEvent('ui_signal', { id, type: msg.type, target: msg.target, payload: msg.payload })
-          // card.dismissed：从服务端存活表移除
+          // card.dismissed: remove from server-side active card table
           if (msg.type === 'card.dismissed') {
             removeActiveUICard(msg.target)
           }
-          // 只有用户主动交互（card.action）才推入 agent 队列
-          // card.dismissed 等生命周期信号已由 insertUISignal 落库，injector 被动注入即可
+          // Only push to the agent queue on explicit user interaction (card.action).
+          // Lifecycle signals like card.dismissed are already persisted by insertUISignal for passive injector use.
           if (msg.type === 'card.action') {
             const appId = msg.target || 'ui'
             const action = msg.payload?.action || 'unknown'
             const payload = msg.payload?.payload || msg.payload || {}
             if (action === 'app:saveState') {
-              // 组件自动上报的状态快照：直接落盘，不触发 agent
+              // Auto-reported state snapshot from the component: persist directly, do not trigger agent
               persistAppState(appId, payload)
             } else if (action === 'confirm_security_change') {
-              // 用户确认安全设置变更，直接应用，不推入 agent 队列
+              // User confirmed a security settings change: apply directly, do not push to agent queue
               const updates = {}
               if (payload.file_sandbox !== undefined) updates.fileSandbox = String(payload.file_sandbox) === 'true'
               if (payload.exec_sandbox !== undefined) updates.execSandbox = String(payload.exec_sandbox) === 'true'
@@ -1193,17 +1193,17 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
               emitUICommand({ op: 'unmount', id: appId })
               removeActiveUICard(appId)
               const desc = Object.entries(updates).map(([k, v]) => `${k}=${v}`).join(', ')
-              pushMessage('SYSTEM', `[安全设置已更新] 用户确认变更：${desc}`, 'APP_SIGNAL')
+              pushMessage('SYSTEM', `[security settings updated] User confirmed changes: ${desc}`, 'APP_SIGNAL')
             } else if (action === 'cancel_security_change') {
-              // 用户取消，关闭卡片，不应用变更
+              // User cancelled — close the card, do not apply changes
               emitUICommand({ op: 'unmount', id: appId })
               removeActiveUICard(appId)
-              pushMessage('SYSTEM', '[安全设置变更] 用户取消，设置未变更', 'APP_SIGNAL')
+              pushMessage('SYSTEM', '[security settings change] User cancelled — settings unchanged', 'APP_SIGNAL')
             } else if (action.startsWith('app:') || SILENT_CARD_ACTIONS.has(action)) {
-              // app: 前缀 = 系统内部信号；SILENT_CARD_ACTIONS = 生命周期信号
-              // 均已由 insertUISignal 写库，injector 下次 tick 被动注入，无需立即触发 agent
+              // app: prefix = system-internal signal; SILENT_CARD_ACTIONS = lifecycle signals.
+              // Both are already written to DB by insertUISignal; injector picks them up passively on the next tick.
             } else {
-              const signalContent = `[App信号 app=${appId} action=${action}]\n${JSON.stringify(payload, null, 2)}`
+              const signalContent = `[App signal app=${appId} action=${action}]\n${JSON.stringify(payload, null, 2)}`
               pushMessage(`APP:${appId}`, signalContent, 'APP_SIGNAL')
             }
           }
@@ -1211,7 +1211,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
           // ignore
         }
       } catch (e) {
-        // 拒绝非 JSON 帧
+        // Reject non-JSON frames
       }
     })
 
@@ -1241,7 +1241,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     }
   })
 
-  // 心跳：每 30s 给所有 ACUI 客户端发 ping
+  // Heartbeat: send ping to all ACUI clients every 30s
   const acuiHeartbeat = setInterval(() => {
     for (const client of acuiWss.clients) {
       try { client.send(JSON.stringify({ v: 1, kind: 'ping' })) } catch {}
@@ -1250,12 +1250,12 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
   acuiHeartbeat.unref?.()
 
   server.listen(port, host, () => {
-    console.log(`[API] 监听 http://${host}:${port}`)
-    console.log(`[API]   POST /message  — 发消息给意识体`)
-    console.log(`[API]   GET  /events   — SSE 实时流（接收意识体消息）`)
-    console.log(`[API]   GET  /memories — 查询记忆`)
-    console.log(`[API]   GET  /status   — 状态`)
-    console.log(`[API]   WS   /acui     — ACUI 双向通道（控制 + 感知）`)
+    console.log(`[API] Listening at http://${host}:${port}`)
+    console.log(`[API]   POST /message  — send message to agent`)
+    console.log(`[API]   GET  /events   — SSE real-time stream (receive agent messages)`)
+    console.log(`[API]   GET  /memories — query memories`)
+    console.log(`[API]   GET  /status   — status`)
+    console.log(`[API]   WS   /acui     — ACUI bidirectional channel (control + perception)`)
   })
 
   return server

@@ -2464,62 +2464,7 @@ function mergeHint(hint, def) {
   }
 }
 
-function execUIShow({ component, mode, template, styles, code, props, hint }) {
-  // ── inline 分支 ──
-  if (mode) {
-    if (mode !== 'inline-template' && mode !== 'inline-script') return `错误：mode 必须为 inline-template / inline-script，当前 "${mode}"`
-    if (props == null) props = {}
-    if (typeof props !== 'object' || Array.isArray(props)) return '错误：props 必须为对象（可省略，但传了就必须是对象）'
-
-    if (mode === 'inline-template') {
-      if (!template || typeof template !== 'string') return '错误：mode=inline-template 时 template 为必填字符串'
-      if (template.length > 8000) return '错误：template 过长（>8000 字符），请精简或转用 ui_register 注册组件'
-    } else {
-      if (!code || typeof code !== 'string') return '错误：mode=inline-script 时 code 为必填字符串'
-      if (code.length > 32000) return '错误：code 过长（>32000 字符），请精简或转用 ui_register'
-      if (!/export\s+default\s+class\s+\w*\s*extends\s+HTMLElement/.test(code)) {
-        return '错误：code 必须以 `export default class extends HTMLElement` 形式开头'
-      }
-      try {
-        new Function(code.replace(/^\s*export\s+default\s+/m, 'return '))
-      } catch (e) {
-        return `错误：代码语法预检失败 — ${e.message}`
-      }
-    }
-
-    if (!hasACUIClient()) return '错误：当前没有 UI 客户端连接，请改用文字回答'
-
-    const id = `scratch-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`
-    const payload = { op: 'mount', mode, id, props, hint: mergeHint(hint, null) }
-    if (mode === 'inline-template') {
-      payload.template = template
-      if (styles) payload.styles = styles
-    } else {
-      payload.code = code
-    }
-
-    if (mode === 'inline-script') {
-      addDraftCode(id, code)
-      try {
-        const draftDir = path.resolve(SANDBOX_ROOT, 'apps', '.drafts')
-        fs.mkdirSync(draftDir, { recursive: true })
-        fs.writeFileSync(path.resolve(draftDir, `${id}.js`), code, 'utf-8')
-      } catch (_) {}
-    }
-
-    addActiveUICard(id, { component: mode })
-    emitUICommand(payload)
-    emitEvent('action', {
-      tool: 'ui_show',
-      summary: `临场组件 (${mode})`,
-      detail: id,
-      code: mode === 'inline-script' ? code.slice(0, 800) : undefined,
-      template: mode === 'inline-template' ? template.slice(0, 800) : undefined,
-    })
-    return JSON.stringify({ ok: true, id, mode })
-  }
-
-  // ── 注册组件分支 ──
+function execUIShow({ component, props, hint }) {
   console.log(`[ui_show] component=${component} props=${JSON.stringify(props)}`)
   if (!component) return '错误：未提供 component 或 mode'
   const components = loadACUIComponents()
@@ -2569,7 +2514,7 @@ function execUIUpdate({ id, props }) {
   if (!props || typeof props !== 'object' || Array.isArray(props)) return '错误：props 必须为对象'
   const card = getActiveUICards().find(c => c.id === id)
   if (!card) return `错误：卡片 "${id}" 不存在或已关闭`
-  if (card.component && card.component !== 'inline-template' && card.component !== 'inline-script') {
+  if (card.component) {
     const def = loadACUIComponents()[card.component]
     if (def) {
       const propsErr = validateProps(def.propsSchema, props)
@@ -2865,41 +2810,13 @@ function execSetSecurity({ file_sandbox, exec_sandbox, reason = '' }) {
     return toolJson({ ok: false, error: '当前没有 UI 客户端，无法弹出确认框。请告知用户到设置页面手动修改安全沙箱配置。' })
   }
 
-  const changeLines = [
-    file_sandbox !== undefined ? `文件沙箱：${file_sandbox ? '开启' : '<span style="color:#e74c3c">关闭</span>'}` : null,
-    exec_sandbox !== undefined ? `执行沙箱：${exec_sandbox ? '开启' : '<span style="color:#e74c3c">关闭</span>'}` : null,
-  ].filter(Boolean).join('<br>')
-
-  const payloadAttrs = [
-    file_sandbox !== undefined ? `data-payload-file_sandbox="${file_sandbox}"` : '',
-    exec_sandbox !== undefined ? `data-payload-exec_sandbox="${exec_sandbox}"` : '',
-  ].filter(Boolean).join(' ')
-
-  const reasonHtml = reason
-    ? `<div style="font-size:12px;color:var(--ink1,#aaa);margin-bottom:10px;">${reason}</div>`
-    : ''
-
-  const template = `
-    <div style="padding:16px 20px;min-width:260px;background:var(--bg1,#1a1a2e);border:1px solid var(--ink3,#333);border-radius:8px;box-shadow:0 8px 32px rgba(0,0,0,0.6);">
-      <div style="font-size:13px;font-weight:600;color:var(--ink0,#e0e0e0);margin-bottom:6px;">⚠ 安全设置变更请求</div>
-      ${reasonHtml}
-      <div style="font-size:12px;color:var(--ink2,#888);margin-bottom:14px;line-height:1.8;">${changeLines}</div>
-      <div style="display:flex;gap:8px;">
-        <button data-acui-action="confirm_security_change" ${payloadAttrs}
-          style="padding:5px 14px;border:none;border-radius:4px;background:#c0392b;color:#fff;font-size:12px;cursor:pointer;">
-          确认变更
-        </button>
-        <button data-acui-action="cancel_security_change"
-          style="padding:5px 14px;border:1px solid var(--ink3,#555);border-radius:4px;background:transparent;color:var(--ink1,#aaa);font-size:12px;cursor:pointer;">
-          取消
-        </button>
-      </div>
-    </div>
-  `
+  const props = { reason: reason || '' }
+  if (file_sandbox !== undefined) props.file_sandbox = file_sandbox
+  if (exec_sandbox !== undefined) props.exec_sandbox = exec_sandbox
 
   const id = `security-confirm-${Date.now()}-${crypto.randomBytes(3).toString('hex')}`
-  emitUICommand({ op: 'mount', mode: 'inline-template', id, template, hint: { placement: 'center' } })
-  addActiveUICard(id, { component: 'security-confirm' })
+  emitUICommand({ op: 'mount', id, component: 'SecurityConfirmCard', props, hint: { placement: 'center' } })
+  addActiveUICard(id, { component: 'SecurityConfirmCard' })
   emitEvent('action', { tool: 'set_security', summary: '等待用户确认安全设置变更', detail: id })
   return toolJson({ ok: true, id, status: 'pending_confirmation', message: '已弹出确认卡片，等待用户确认。' })
 }

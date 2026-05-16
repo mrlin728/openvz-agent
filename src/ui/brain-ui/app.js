@@ -6,7 +6,7 @@ import { initPanelCollapse } from "./panel-collapse.js";
 import { ThoughtStream } from "./thought-stream.js";
 import { initVoicePanel } from "./voice-panel.js";
 import { initHotspot, toggleHotspot, setHotspotMode, moveVoicePanelToBody, restoreVoicePanel } from "./hotspot.js";
-import { initPersonCard, setPersonCardMode, showPersonCardByName, extractPersonCardQuery, updatePersonCardFromAssistantText } from "./person-card.js";
+import { initPersonCard, setPersonCardMode, showPersonCardByName } from "./person-card.js";
 import { initDocPanel, setDocPanelMode } from "./doc.js";
 import { initWechatPopup, showWechatPopup } from "./wechat-popup.js";
 renderBrainUiApp(document.body);
@@ -58,7 +58,7 @@ function updateLastJarvisMsg(...args) { return chat?.updateLastJarvisMsg(...args
 function isTyping() { return chat?.isTyping() || false; }
 
 function defaultInputPlaceholder() {
-  return `向 ${agentName} 发送消息…`;
+  return `Message ${agentName}…`;
 }
 
 function setUpdateStatus(message, state = "idle") {
@@ -72,7 +72,7 @@ function setUpdateCardHidden(hidden) {
   updateCardEl.classList.toggle("hidden", Boolean(hidden));
 }
 
-function setUpdateButtons({ check = false, checkDisabled = false, checkLabel = "检查更新", download = false, install = false, ignore = false } = {}) {
+function setUpdateButtons({ check = false, checkDisabled = false, checkLabel = "Check for updates", download = false, install = false, ignore = false } = {}) {
   checkUpdateBtn?.classList.toggle("hidden", !check);
   if (checkUpdateBtn) { checkUpdateBtn.disabled = checkDisabled; checkUpdateBtn.textContent = checkLabel; }
   downloadUpdateBtn?.classList.toggle("hidden", !download);
@@ -219,44 +219,44 @@ async function initUpdaterUi() {
 
     switch (stage) {
       case "checking":
-        setUpdateStatus("正在检查更新…", "checking");
-        setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "检查中" });
+        setUpdateStatus("Checking for updates…", "checking");
+        setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "Checking…" });
         break;
 
       case "available":
         pendingVersion = ver;
         if (isSuppressed() || (ver && getIgnoredVersion() === ver)) break;
         setUpdateCardHidden(false);
-        setUpdateStatus(`发现新版本 ${ver}`, "available");
+        setUpdateStatus(`New version available: ${ver}`, "available");
         setUpdateButtons({ download: true, ignore: true });
         break;
 
       case "downloading":
         setUpdateCardHidden(false);
-        setUpdateStatus(`正在下载${percent !== null ? ` ${percent}%` : "…"}`, "downloading");
+        setUpdateStatus(`Downloading${percent !== null ? ` ${percent}%` : "…"}`, "downloading");
         setUpdateButtons({});
         break;
 
       case "downloaded":
         setUpdateCardHidden(false);
-        setUpdateStatus(`新版本 ${ver} 已就绪，重启后安装`, "ready");
+        setUpdateStatus(`Version ${ver} ready — will install on restart`, "ready");
         setUpdateButtons({ install: true });
         break;
 
       case "up-to-date":
-        setUpdateStatus(`已是最新版本 ${ver}`, "idle");
-        setUpdateButtons({ check: true, checkLabel: "检查更新" });
+        setUpdateStatus(`Already on latest version ${ver}`, "idle");
+        setUpdateButtons({ check: true, checkLabel: "Check for updates" });
         setUpdateCardHidden(true);
         break;
 
       case "error":
         setUpdateCardHidden(false);
-        setUpdateStatus(`更新出错：${payload.message || "请稍后重试"}`, "error");
-        setUpdateButtons({ check: true, checkLabel: "重试" });
+        setUpdateStatus(`Update error: ${payload.message || "Please try again later"}`, "error");
+        setUpdateButtons({ check: true, checkLabel: "Retry" });
         break;
 
       case "dev":
-        setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "开发模式" });
+        setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "Dev mode" });
         break;
 
       default:
@@ -266,31 +266,31 @@ async function initUpdaterUi() {
   }) || null;
 
   checkUpdateBtn?.addEventListener("click", async () => {
-    setUpdateStatus("正在检查更新…", "checking");
-    setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "检查中" });
+    setUpdateStatus("Checking for updates…", "checking");
+    setUpdateButtons({ check: true, checkDisabled: true, checkLabel: "Checking…" });
     try {
       const result = await bridge.checkForUpdates?.();
       if (!result?.ok && result?.message) {
         setUpdateCardHidden(false);
-        setUpdateStatus(`更新出错：${result.message}`, "error");
-        setUpdateButtons({ check: true, checkLabel: "重试" });
+        setUpdateStatus(`Update error: ${result.message}`, "error");
+        setUpdateButtons({ check: true, checkLabel: "Retry" });
       }
     } catch (err) {
       setUpdateCardHidden(false);
-      setUpdateStatus(`更新出错：${err?.message || "请稍后重试"}`, "error");
-      setUpdateButtons({ check: true, checkLabel: "重试" });
+      setUpdateStatus(`Update error: ${err?.message || "Please try again later"}`, "error");
+      setUpdateButtons({ check: true, checkLabel: "Retry" });
     }
   });
 
   downloadUpdateBtn?.addEventListener("click", async () => {
-    setUpdateStatus("正在下载…", "downloading");
+    setUpdateStatus("Downloading…", "downloading");
     setUpdateButtons({});
     try {
       await bridge.startDownload?.();
     } catch (err) {
       setUpdateCardHidden(false);
-      setUpdateStatus(`下载失败：${err?.message || "请稍后重试"}`, "error");
-      setUpdateButtons({ check: true, checkLabel: "重试" });
+      setUpdateStatus(`Download failed: ${err?.message || "Please try again later"}`, "error");
+      setUpdateButtons({ check: true, checkLabel: "Retry" });
     }
   });
 
@@ -301,7 +301,7 @@ async function initUpdaterUi() {
   ignoreVersionBtn?.addEventListener("click", () => {
     if (pendingVersion) {
       localStorage.setItem(IGNORED_VERSION_KEY, pendingVersion);
-      // 同步更新 settings 面板（如果已挂载）
+      // Sync the settings panel if already mounted
       const ignoredSection = document.getElementById("settings-ignored-section");
       const ignoredVal = document.getElementById("settings-ignored-version-val");
       if (ignoredSection) ignoredSection.style.display = "";
@@ -822,10 +822,10 @@ function renderLegend() {
   const decayed = nodeData.filter(n => (Date.now() - (n._ts || 0)) > 60000).length;
 
   const items = [
-    { name: "限制", count: 1, color: themeColors.warm },
-    { name: "记忆", count: active, color: themeColors.nodeHigh },
-    { name: "知识", count: known, color: themeColors.cool },
-    { name: "衰减", count: decayed, color: themeColors.dim },
+    { name: "Constraint", count: 1, color: themeColors.warm },
+    { name: "Memory", count: active, color: themeColors.nodeHigh },
+    { name: "Knowledge", count: known, color: themeColors.cool },
+    { name: "Decayed", count: decayed, color: themeColors.dim },
   ];
 
   el.innerHTML = items.map(i =>
@@ -1121,20 +1121,20 @@ function formatMsgTime(stamp) {
 
 const L1 = new ThoughtStream("si-l1", "cool", {
   readCSSVar,
-  thinkingLabel: "正在思考中",
-  thinkingDoneLabel: "思考完成",
+  thinkingLabel: "Thinking…",
+  thinkingDoneLabel: "Done thinking",
   toolDetailLength: 140,
 });
 const L2 = new ThoughtStream("si-l2", "warm", {
   readCSSVar,
-  thinkingLabel: "思考中",
-  thinkingDoneLabel: "思考完成",
+  thinkingLabel: "Thinking",
+  thinkingDoneLabel: "Done thinking",
   toolDetailLength: 220,
 });
 
-// L1 = 用户消息触发的处理流；L2 = TICK 触发的处理流。
-// 后端 emit 的 stream_*/tool_call 事件不带路径标记，
-// 通过最近一次 message_received / tick 事件来决定路由到哪块面板。
+// L1 = processing flow triggered by user messages; L2 = processing flow triggered by TICK.
+// stream_*/tool_call events emitted by the backend carry no path tag;
+// routing to the correct panel is determined by the most recent message_received / tick event.
 let currentPath = "l2";
 function currentStream() { return currentPath === "l1" ? L1 : L2; }
 
@@ -1167,7 +1167,7 @@ function connectSSE() {
   setConnectionState("connecting", true);
   const es = new EventSource(`${API}/events`);
 
-  es.onopen = () => setConnectionState("已连接", true);
+  es.onopen = () => setConnectionState("connected", true);
 
   es.onmessage = event => {
     try { handle(JSON.parse(event.data)); } catch (_) {}
@@ -1191,7 +1191,7 @@ function handle({ type, data = {} }) {
     case "message_received": {
       currentPath = "l1";
       const parsed = parseUserMessageInput(data.input);
-      L1.newLine("收到用户消息", {
+      L1.newLine("user message received", {
         content: parsed.content,
         time: parsed.time || undefined,
       });
@@ -1199,13 +1199,13 @@ function handle({ type, data = {} }) {
     }
     case "tick":
       currentPath = "l2";
-      L2.newLine("心跳 tick");
+      L2.newLine("heartbeat tick");
       break;
     case "stream_start":
       currentStream().startThinkingSession();
       break;
     case "stream_chunk":
-      // 不再显示具体思考内容，仅用于驱动 token 速率指示
+      // No longer rendering thought content — only drives the token-rate indicator
       currentStream().clearStatus();
       bumpTokens(data.text);
       break;
@@ -1216,7 +1216,7 @@ function handle({ type, data = {} }) {
       currentStream().tool(data.name, data.args, data.result, data.ok);
       break;
     case "response":
-      // 一轮完成：停所有动画
+      // Round complete — stop all animations
       currentStream().end();
       break;
     case "llm_retry": {
@@ -1256,7 +1256,6 @@ function handle({ type, data = {} }) {
       if (data.from === "consciousness") {
         lastJarvisContent = data.content;
         addMsg("jarvis", data.content);
-        updatePersonCardFromAssistantText(data.content);
         openChat(true);
       }
       break;
@@ -1303,21 +1302,21 @@ function handle({ type, data = {} }) {
       break;
     case "startup_self_check_started":
       playJarvisStartupSound();
-      setTimeout(() => playTTSReply("系统启动，正在进行自检"), 1500);
+      setTimeout(() => playTTSReply("System starting, running self-check"), 1500);
       break;
     default:
       break;
   }
 }
 
-// ── Jarvis 风格启动自检音效 ───────────────────────────────────────────────────
+// ── Jarvis-style startup self-check sound ────────────────────────────────────
 function playJarvisStartupSound() {
   try {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     if (ctx.state === "suspended") ctx.resume();
     const t = ctx.currentTime;
 
-    // Layer 1: 低频机械嗡鸣（锯齿波，模拟机器上电）
+    // Layer 1: low-frequency mechanical hum (sawtooth, simulates power-on)
     const drone = ctx.createOscillator();
     const droneGain = ctx.createGain();
     const droneFilter = ctx.createBiquadFilter();
@@ -1337,7 +1336,7 @@ function playJarvisStartupSound() {
     drone.start(t);
     drone.stop(t + 0.7);
 
-    // Layer 2: 系统上线频率扫描（正弦波，从低到高）
+    // Layer 2: system-online frequency sweep (sine, low to high)
     const sweep = ctx.createOscillator();
     const sweepGain = ctx.createGain();
     sweep.type = "sine";
@@ -1351,7 +1350,7 @@ function playJarvisStartupSound() {
     sweep.start(t + 0.12);
     sweep.stop(t + 1.1);
 
-    // Layer 3: 三声确认哔哔（方波，模拟系统自检通过）
+    // Layer 3: three confirmation beeps (square wave, self-check passed)
     [[880, 1.15], [1100, 1.28], [1320, 1.41]].forEach(([freq, bt]) => {
       const beep = ctx.createOscillator();
       const beepGain = ctx.createGain();
@@ -1372,21 +1371,20 @@ function playJarvisStartupSound() {
 
     setTimeout(() => ctx.close().catch(() => {}), 2500);
   } catch (_) {
-    // 浏览器不支持 AudioContext 时静默忽略
+    // silently ignore if browser does not support AudioContext
   }
 }
 
-// ── TTS 语音回复播放 ──────────────────────────────────────────────────────────
+// ── TTS reply playback ────────────────────────────────────────────────────────
 let ttsAudioEl = null;
-let ttsCurrentText = '';          // 当前正在播放的完整文本（TTS 清理后的纯文本）
-let ttsInterruptedRemaining = ''; // 被打断时剩余未播放的文本
-let lastJarvisContent = '';       // 最近一条 jarvis 消息的原始内容（含 markdown）
-let ttsInterruptedOriginalContent = ''; // 打断时保存的原始消息，用于误触发恢复
-let ttsInterruptionApplied = false;     // 是否已将打断标记应用到聊天界面
-let ttsInterruptionDbTimer = null;      // 延迟提交 DB 更新的计时器（误触发时取消）
+let ttsCurrentText = '';
+let ttsInterruptedRemaining = '';
+let lastJarvisContent = '';
+let ttsInterruptedOriginalContent = '';
+let ttsInterruptionApplied = false;
+let ttsInterruptionDbTimer = null;
 
-// 从音频播放进度估算已播放文本的字符数，找到合适的断句点
-// 返回 { remaining: 未播放文本, spokenUpTo: 已播放到的字符位置 }
+// Estimate spoken char count from audio progress, snapping to a sentence boundary
 function calcRemainingText(text, currentTime, duration) {
   if (!text || !duration || duration <= 0) return { remaining: '', spokenUpTo: 0 };
   const progress = Math.min(1, currentTime / duration);
@@ -1404,7 +1402,7 @@ function calcRemainingText(text, currentTime, duration) {
   return { remaining: text.slice(bestPos).trim(), spokenUpTo: bestPos };
 }
 
-// 根据 TTS 纯文本中的说话比例，估算原始 markdown 中的截断位置
+// Estimate cut position in original markdown based on spoken ratio in TTS plain text
 function findMarkdownCutPos(markdown, ttsFullLen, ttsSpokenUpTo) {
   if (!markdown || ttsFullLen <= 0) return 0;
   const ratio = ttsSpokenUpTo / ttsFullLen;
@@ -1419,7 +1417,7 @@ function findMarkdownCutPos(markdown, ttsFullLen, ttsSpokenUpTo) {
   return bestPos;
 }
 
-// 将打断标记应用到聊天界面，并延迟提交 DB 更新（3.5s 内误触发则撤销）
+// Apply interruption marker to chat UI; delay DB write so false triggers can be undone
 function applyTTSInterruption(spokenUpTo) {
   const originalContent = lastJarvisContent || ttsCurrentText;
   if (!originalContent) return;
@@ -1433,7 +1431,6 @@ function applyTTSInterruption(spokenUpTo) {
 
   updateLastJarvisMsg(displayText);
 
-  // 延迟写 DB：若随后判定为误触发（resumeTTSIfNoSpeech），计时器会被取消
   if (ttsInterruptionDbTimer) clearTimeout(ttsInterruptionDbTimer);
   ttsInterruptionDbTimer = setTimeout(() => {
     ttsInterruptionDbTimer = null;
@@ -1445,7 +1442,7 @@ function applyTTSInterruption(spokenUpTo) {
   }, 4000);
 }
 
-// 供 voice-panel 打断检测调用：停止当前 TTS 播放，记录打断位置
+// Called by voice-panel interruption detection: stop current TTS and record cut point
 window.stopTTS = () => {
   if (!ttsAudioEl) return;
   const { remaining, spokenUpTo } = calcRemainingText(
@@ -1453,7 +1450,7 @@ window.stopTTS = () => {
     ttsAudioEl.currentTime,
     ttsAudioEl.duration,
   );
-  // duration 未加载时（NaN）spokenUpTo=0，remaining=''，fallback 到完整文本
+  // When duration is not yet loaded (NaN): spokenUpTo=0, remaining='', falls back to full text
   ttsInterruptedRemaining = remaining || ttsCurrentText;
   applyTTSInterruption(spokenUpTo);
   ttsAudioEl.pause();
@@ -1461,22 +1458,22 @@ window.stopTTS = () => {
   ttsAudioEl = null;
 };
 
-// 供 voice-panel 在检测到冲击噪音时调用：降低 TTS 音量但不停止
+// Called by voice-panel on impact noise: duck TTS volume without stopping
 window.duckTTS = () => {
   if (ttsAudioEl) ttsAudioEl.volume = 0.15;
 };
 
-// 供 voice-panel 在判定为噪音后调用：恢复原音量
+// Called by voice-panel after confirming noise: restore original volume
 window.unduckTTS = () => {
   if (ttsAudioEl) ttsAudioEl.volume = 1.0;
 };
 
-// 供 voice-panel 在"噪音误触发"时调用：从打断处继续播放，并恢复聊天记录
+// Called by voice-panel on false-positive noise: resume TTS from interruption point and restore chat
 window.resumeTTSIfNoSpeech = () => {
   const text = ttsInterruptedRemaining;
   ttsInterruptedRemaining = '';
   if (!text) return;
-  // 取消 DB 更新并还原聊天界面
+  // Cancel the pending DB write and restore chat UI
   if (ttsInterruptionDbTimer) { clearTimeout(ttsInterruptionDbTimer); ttsInterruptionDbTimer = null; }
   if (ttsInterruptionApplied && ttsInterruptedOriginalContent) {
     updateLastJarvisMsg(ttsInterruptedOriginalContent);
@@ -1506,8 +1503,8 @@ async function playTTSReply(text) {
     const url = URL.createObjectURL(blob);
     if (ttsAudioEl) { ttsAudioEl.pause(); URL.revokeObjectURL(ttsAudioEl.src); }
     ttsAudioEl = new Audio(url);
-    ttsAudioEl.volume = 1.0; // 确保从满音量开始（避免上一次 duck 状态残留）
-    // 停掉云端 ASR，但保持 mic 硬件开着以便打断检测
+    ttsAudioEl.volume = 1.0; // ensure full volume (avoid residual duck state from previous play)
+    // Suspend cloud ASR but keep the mic hardware open for interruption detection
     window.bailongmaVoice?.suspendForTTS?.();
     ttsAudioEl.onended = () => {
       URL.revokeObjectURL(url);
@@ -1580,10 +1577,6 @@ chat = initChat({
       setPersonCardMode(false, { source: 'chat_input' });
       return;
     }
-    const personQuery = extractPersonCardQuery(text);
-    if (personQuery) {
-      showPersonCardByName(personQuery, { source: 'chat_input' });
-    }
     if (/热点|热搜/.test(text) && !document.body.classList.contains('hotspot-mode')) {
       toggleHotspot();
     }
@@ -1600,7 +1593,7 @@ if (MEMORY_GRAPH_ENABLED) {
 connectSSE();
 loadAgentProfile();
 initPersonCard();
-initDocPanel().catch((err) => console.warn('[DocPanel] 初始化失败:', err));
+initDocPanel().catch((err) => console.warn('[DocPanel] init failed:', err));
 chat.restoreChatHistory();
 initUpdaterUi();
 chat.unlockAudioOnFirstGesture();
@@ -1609,7 +1602,7 @@ bootstrapACUI();
 initPanelCollapse();
 initWechatPopup();
 
-// ── TTS 设置面板初始化 ────────────────────────────────────────────────────────
+// ── TTS settings panel init ───────────────────────────────────────────────────
 function initTTSSettings() {
   const providerSel = document.getElementById("tts-provider-select");
   const voiceSel    = document.getElementById("tts-voice-select");
@@ -1649,7 +1642,6 @@ function initTTSSettings() {
     updateVoiceOptions(providerSel.value);
   });
 
-  // 加载现有配置 + 声音列表
   fetch(`${API}/settings/tts`).then(r => r.json()).then(({ tts, voices }) => {
     if (voices) allVoices = voices;
     const provider = tts?.ttsProvider || "doubao";
@@ -1665,7 +1657,6 @@ function initTTSSettings() {
 
   showCredSection(providerSel.value);
 
-  // TTS 配置写入 saveVoiceBtn 的保存流程（通过独立请求）
   const origSaveBtn = document.getElementById("settings-save-voice");
   if (origSaveBtn) {
     origSaveBtn.addEventListener("click", () => {
@@ -1700,13 +1691,11 @@ function initTTSSettings() {
     });
   }
 
-  // 试听按钮：先保存当前服务商+声音选择，再触发合成
   if (testBtn) {
     testBtn.addEventListener("click", async () => {
       testBtn.disabled = true;
-      if (testStatus) testStatus.textContent = "保存配置中…";
+      if (testStatus) testStatus.textContent = "Saving config…";
       try {
-        // 先把当前 UI 的服务商+声音写入后端，确保试听用的是当前选择
         const preBody = { ttsProvider: providerSel.value };
         const currentVoice = voiceSel?.value?.trim();
         if (currentVoice) preBody.ttsVoiceId = currentVoice;
@@ -1727,32 +1716,32 @@ function initTTSSettings() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(preBody),
         });
-        if (testStatus) testStatus.textContent = "合成中…";
+        if (testStatus) testStatus.textContent = "Synthesizing…";
         const ttsResp = await fetch(`${API}/tts/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: "你好，这是语音合成测试，声音是否清晰自然？" }),
+          body: JSON.stringify({ text: "Hello, this is a voice synthesis test. Is the audio clear and natural?" }),
         });
         if (!ttsResp.ok) {
-          let errMsg = `合成失败 (HTTP ${ttsResp.status})`;
+          let errMsg = `Synthesis failed (HTTP ${ttsResp.status})`;
           try { const j = await ttsResp.json(); errMsg = j.error || errMsg; } catch {}
           if (testStatus) testStatus.textContent = errMsg;
           return;
         }
         const ttsBlob = await ttsResp.blob();
         if (ttsBlob.size === 0) {
-          if (testStatus) testStatus.textContent = "合成失败：API 返回空数据，请检查 Key 和账户配置";
+          if (testStatus) testStatus.textContent = "Synthesis failed: API returned empty data. Check your key and account settings.";
           return;
         }
         const ttsUrl = URL.createObjectURL(ttsBlob);
         const ttsAudio = new Audio(ttsUrl);
         ttsAudio.onended = () => { URL.revokeObjectURL(ttsUrl); if (testStatus) testStatus.textContent = ""; };
-        ttsAudio.onerror = () => { URL.revokeObjectURL(ttsUrl); if (testStatus) testStatus.textContent = "播放失败"; };
+        ttsAudio.onerror = () => { URL.revokeObjectURL(ttsUrl); if (testStatus) testStatus.textContent = "Playback failed"; };
         await ttsAudio.play();
-        if (testStatus) testStatus.textContent = "播放中";
-        setTimeout(() => { if (testStatus && testStatus.textContent === "播放中") testStatus.textContent = ""; }, 8000);
+        if (testStatus) testStatus.textContent = "Playing";
+        setTimeout(() => { if (testStatus && testStatus.textContent === "Playing") testStatus.textContent = ""; }, 8000);
       } catch {
-        if (testStatus) testStatus.textContent = "失败，请检查配置和 API Key";
+        if (testStatus) testStatus.textContent = "Failed — check config and API key";
       } finally {
         testBtn.disabled = false;
       }
@@ -1795,7 +1784,6 @@ window.addEventListener("beforeunload", () => {
 
   let cachedProviders = null;
 
-  // ── Tab 切换 ──
   overlay.querySelectorAll(".settings-nav-item").forEach(btn => {
     btn.addEventListener("click", () => {
       overlay.querySelectorAll(".settings-nav-item").forEach(b => b.classList.remove("active"));
@@ -1816,7 +1804,6 @@ window.addEventListener("beforeunload", () => {
     setTimeout(() => { el.textContent = ""; el.className = "settings-feedback"; }, 3000);
   }
 
-  // ── LLM / 媒体 ──
   function refreshConfigSummary({ llm, minimax }) {
     const cfgLlm = document.getElementById("settings-cfg-llm");
     const cfgLlmDot = document.getElementById("settings-cfg-llm-dot");
@@ -1826,9 +1813,9 @@ window.addEventListener("beforeunload", () => {
     if (cfgLlmDot) {
       cfgLlmDot.textContent = "●";
       cfgLlmDot.className = `settings-config-dot ${llm.activated ? "active" : "inactive"}`;
-      cfgLlmDot.title = llm.activated ? "运行中" : "未激活";
+      cfgLlmDot.title = llm.activated ? "Running" : "Inactive";
     }
-    if (cfgMedia) cfgMedia.textContent = `minimax · ${minimax.configured ? "已配置" : "未配置"}`;
+    if (cfgMedia) cfgMedia.textContent = `minimax · ${minimax.configured ? "configured" : "not configured"}`;
     if (cfgMediaDot) {
       cfgMediaDot.textContent = "●";
       cfgMediaDot.className = `settings-config-dot ${minimax.configured ? "active" : "inactive"}`;
@@ -1846,7 +1833,7 @@ window.addEventListener("beforeunload", () => {
   function populateProviderSelect(providers, current) {
     if (!providerSelect || !providers) return;
     const selected = current || providerSelect.value || "auto";
-    const options = [`<option value="auto">自动识别</option>`]
+    const options = [`<option value="auto">Auto-detect</option>`]
       .concat(Object.entries(providers).map(([id, provider]) => {
         const label = provider.label || id;
         return `<option value="${id}">${label}</option>`;
@@ -1881,7 +1868,6 @@ window.addEventListener("beforeunload", () => {
       if (providerSelect && llm.provider) providerSelect.value = llm.provider;
       applyCustomProviderUI(llm);
       if (llm.provider !== "custom") populateModelSelect(llm.models, llm.model);
-      // 同步 temperature 滑块
       if (typeof llm.temperature === "number" && tempSlider) {
         tempSlider.value = String(llm.temperature);
         if (tempVal) tempVal.textContent = llm.temperature.toFixed(2);
@@ -1889,7 +1875,6 @@ window.addEventListener("beforeunload", () => {
     } catch {}
   }
 
-  // ── 社交媒体 ──
   const SOCIAL_FIELD_MAP = {
     "social-discord-token":  "DISCORD_BOT_TOKEN",
     "social-feishu-appid":   "FEISHU_APP_ID",
@@ -1917,20 +1902,19 @@ window.addEventListener("beforeunload", () => {
         if (!el) continue;
         const configuredCount = keys.filter(k => social[k]?.configured).length;
         if (configuredCount === keys.length) {
-          el.textContent = "● 已配置";
+          el.textContent = "● Configured";
           el.className = "settings-platform-status ok";
         } else if (configuredCount > 0) {
-          el.textContent = `● 部分配置 (${configuredCount}/${keys.length})`;
+          el.textContent = `● Partial (${configuredCount}/${keys.length})`;
           el.className = "settings-platform-status miss";
         } else {
-          el.textContent = "○ 未配置";
+          el.textContent = "○ Not configured";
           el.className = "settings-platform-status miss";
         }
       }
     } catch {}
   }
 
-  // ── 安全沙箱 ──
   const fileSandboxToggle = document.getElementById("security-file-sandbox");
   const execSandboxToggle = document.getElementById("security-exec-sandbox");
   const saveSecurityBtn   = document.getElementById("settings-save-security");
@@ -1966,12 +1950,12 @@ window.addEventListener("beforeunload", () => {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(securityFeedback, "已保存，立即生效");
+          showFeedback(securityFeedback, "Saved — effective immediately");
         } else {
-          showFeedback(securityFeedback, data.error || "保存失败", true);
+          showFeedback(securityFeedback, data.error || "Save failed", true);
         }
       } catch {
-        showFeedback(securityFeedback, "请求失败", true);
+        showFeedback(securityFeedback, "Request failed", true);
       } finally {
         saveSecurityBtn.disabled = false;
       }
@@ -1994,25 +1978,23 @@ window.addEventListener("beforeunload", () => {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(socialFeedback, "已保存");
-          // 清空输入框并刷新状态指示
+          showFeedback(socialFeedback, "Saved");
           Object.keys(SOCIAL_FIELD_MAP).forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = "";
           });
           loadSocialSettings();
         } else {
-          showFeedback(socialFeedback, data.error || "保存失败", true);
+          showFeedback(socialFeedback, data.error || "Save failed", true);
         }
       } catch {
-        showFeedback(socialFeedback, "请求失败", true);
+        showFeedback(socialFeedback, "Request failed", true);
       } finally {
         saveSocialBtn.disabled = false;
       }
     });
   }
 
-  // ── temperature 滑块 ──
   if (tempSlider && tempVal) {
     tempSlider.addEventListener("input", () => {
       tempVal.textContent = parseFloat(tempSlider.value).toFixed(2);
@@ -2030,16 +2012,15 @@ window.addEventListener("beforeunload", () => {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(tempFeedback, `已设置 ${data.temperature.toFixed(2)}`);
+          showFeedback(tempFeedback, `Set to ${data.temperature.toFixed(2)}`);
         } else {
-          showFeedback(tempFeedback, data.error || "保存失败", true);
+          showFeedback(tempFeedback, data.error || "Save failed", true);
         }
-      } catch { showFeedback(tempFeedback, "请求失败", true); }
+      } catch { showFeedback(tempFeedback, "Request failed", true); }
       finally { saveTempBtn.disabled = false; }
     });
   }
 
-  // ── 语音设置持久化 ──
   const VOICE_LANG_KEY       = "bailongma-voice-lang";
   const VOICE_AUTO_SEND_KEY  = "bailongma-voice-auto-send";
   const VOICE_AUTO_MIC_KEY   = "bailongma-voice-auto-mic";
@@ -2098,7 +2079,6 @@ window.addEventListener("beforeunload", () => {
 
       window.dispatchEvent(new CustomEvent("bailongma:voice-threshold", { detail: { threshold } }));
 
-      // 将云端 ASR 凭证发送到后端
       const body = {};
       const aliyunKey = document.getElementById("voice-aliyun-key")?.value?.trim();
       if (aliyunKey) body.aliyunApiKey = aliyunKey;
@@ -2121,25 +2101,22 @@ window.addEventListener("beforeunload", () => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
-          if (!resp.ok) throw new Error("保存失败");
-          // 清空密钥输入框（避免再次保存时误传旧值）
+          if (!resp.ok) throw new Error("Save failed");
           ["voice-aliyun-key","voice-tencent-sid","voice-tencent-skey","voice-xunfei-apikey"].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = "";
           });
-          showFeedback(voiceFeedback, "已保存");
-        } catch { showFeedback(voiceFeedback, "保存失败", true); }
+          showFeedback(voiceFeedback, "Saved");
+        } catch { showFeedback(voiceFeedback, "Save failed", true); }
         finally { saveVoiceBtn.disabled = false; }
       } else {
-        showFeedback(voiceFeedback, "已保存");
+        showFeedback(voiceFeedback, "Saved");
       }
     });
   }
 
-  // ── TTS 设置 ──
   initTTSSettings();
 
-  // ── 记忆节点图开关 ──
   const memoryGraphToggle = document.getElementById("settings-memory-graph-toggle");
   const memoryGraphFeedback = document.getElementById("settings-memory-graph-feedback");
   if (memoryGraphToggle) {
@@ -2147,14 +2124,13 @@ window.addEventListener("beforeunload", () => {
     memoryGraphToggle.addEventListener("change", () => {
       localStorage.setItem(MEMORY_GRAPH_STORAGE_KEY, String(memoryGraphToggle.checked));
       if (memoryGraphFeedback) {
-        memoryGraphFeedback.textContent = "下次刷新页面后生效";
+        memoryGraphFeedback.textContent = "Takes effect on next page reload";
         memoryGraphFeedback.className = "settings-feedback";
         setTimeout(() => { memoryGraphFeedback.textContent = ""; }, 3000);
       }
     });
   }
 
-  // ── 开关 ──
   function openSettings(tab = null) {
     overlay.hidden = false;
     loadSettings();
@@ -2203,12 +2179,11 @@ window.addEventListener("beforeunload", () => {
     const apiKey = llmKeyInput.value.trim();
     saveLlmBtn.disabled = true;
 
-    // 自定义端点走独立激活流程
     if (provider === "custom") {
       const baseURL = document.getElementById("settings-custom-baseurl")?.value?.trim();
       const model   = document.getElementById("settings-custom-model")?.value?.trim();
       if (!baseURL || !model) {
-        showFeedback(llmFeedback, "请填写 Base URL 和模型名称", true);
+        showFeedback(llmFeedback, "Please fill in Base URL and model name", true);
         saveLlmBtn.disabled = false;
         return;
       }
@@ -2220,13 +2195,13 @@ window.addEventListener("beforeunload", () => {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(llmFeedback, `已连接：${data.model}`);
+          showFeedback(llmFeedback, `Connected: ${data.model}`);
           llmKeyInput.value = "";
           loadSettings();
         } else {
-          showFeedback(llmFeedback, data.error || "连接失败", true);
+          showFeedback(llmFeedback, data.error || "Connection failed", true);
         }
-      } catch { showFeedback(llmFeedback, "请求失败", true); }
+      } catch { showFeedback(llmFeedback, "Request failed", true); }
       finally { saveLlmBtn.disabled = false; }
       return;
     }
@@ -2243,19 +2218,19 @@ window.addEventListener("beforeunload", () => {
       });
       const data = await res.json();
       if (data.ok) {
-        showFeedback(llmFeedback, "已保存");
+        showFeedback(llmFeedback, "Saved");
         llmKeyInput.value = "";
         loadSettings();
       } else {
-        showFeedback(llmFeedback, data.error || "保存失败", true);
+        showFeedback(llmFeedback, data.error || "Save failed", true);
       }
-    } catch { showFeedback(llmFeedback, "请求失败", true); }
+    } catch { showFeedback(llmFeedback, "Request failed", true); }
     finally { saveLlmBtn.disabled = false; }
   });
 
   saveMinimaxBtn?.addEventListener("click", async () => {
     const apiKey = minimaxKeyInput.value.trim();
-    if (!apiKey) { showFeedback(minimaxFeedback, "Key 不能为空", true); return; }
+    if (!apiKey) { showFeedback(minimaxFeedback, "Key cannot be empty", true); return; }
     saveMinimaxBtn.disabled = true;
     try {
       const res = await fetch(`${API}/settings/minimax`, {
@@ -2265,17 +2240,16 @@ window.addEventListener("beforeunload", () => {
       });
       const data = await res.json();
       if (data.ok) {
-        showFeedback(minimaxFeedback, "已保存");
+        showFeedback(minimaxFeedback, "Saved");
         minimaxKeyInput.value = "";
         loadSettings();
       } else {
-        showFeedback(minimaxFeedback, data.error || "保存失败", true);
+        showFeedback(minimaxFeedback, data.error || "Save failed", true);
       }
-    } catch { showFeedback(minimaxFeedback, "请求失败", true); }
+    } catch { showFeedback(minimaxFeedback, "Request failed", true); }
     finally { saveMinimaxBtn.disabled = false; }
   });
 
-  // ── 微信 ClawBot 扫码 ──
   const clawbotConnectBtn = document.getElementById("clawbot-connect-btn");
   const clawbotLogoutBtn  = document.getElementById("clawbot-logout-btn");
   const clawbotQrArea     = document.getElementById("clawbot-qr-area");
@@ -2301,35 +2275,33 @@ window.addEventListener("beforeunload", () => {
       if (data.status === "connected") {
         stopClawbotPoll();
         if (clawbotQrArea) clawbotQrArea.style.display = "none";
-        setClawbotStatus("已连接", true);
-        if (clawbotFeedback) showFeedback(clawbotFeedback, "微信绑定成功！");
+        setClawbotStatus("Connected", true);
+        if (clawbotFeedback) showFeedback(clawbotFeedback, "WeChat linked successfully!");
         loadSocialSettings();
       } else if (data.status === "qr_ready" && data.qr_url) {
         if (clawbotQrImg) clawbotQrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(data.qr_url)}`;
         if (clawbotQrArea) clawbotQrArea.style.display = "block";
-        if (clawbotQrHint) clawbotQrHint.textContent = "等待扫码…";
-        setClawbotStatus("等待扫码", false);
+        if (clawbotQrHint) clawbotQrHint.textContent = "Waiting for scan…";
+        setClawbotStatus("Waiting for scan", false);
       } else if (data.status === "qr_pending") {
-        if (clawbotQrHint) clawbotQrHint.textContent = "正在生成二维码…";
+        if (clawbotQrHint) clawbotQrHint.textContent = "Generating QR code…";
       } else if (data.status === "error") {
         stopClawbotPoll();
         if (clawbotQrArea) clawbotQrArea.style.display = "none";
-        setClawbotStatus("连接失败", false);
-        if (clawbotFeedback) showFeedback(clawbotFeedback, data.error || "连接失败", true);
+        setClawbotStatus("Connection failed", false);
+        if (clawbotFeedback) showFeedback(clawbotFeedback, data.error || "Connection failed", true);
       }
     } catch {}
   }
 
-  // 初始化时检查一次当前状态
   if (clawbotConnectBtn) {
     pollClawbotQR();
   }
 
   clawbotConnectBtn?.addEventListener("click", async () => {
     if (clawbotQrArea) clawbotQrArea.style.display = "none";
-    setClawbotStatus("正在启动…", false);
+    setClawbotStatus("Starting…", false);
     stopClawbotPoll();
-    // 触发后端重启 ClawBot 连接器
     try {
       await fetch(`${API}/settings/social`, {
         method: "POST",
@@ -2337,7 +2309,6 @@ window.addEventListener("beforeunload", () => {
         body: JSON.stringify({ _clawbot_connect: "1" }),
       });
     } catch {}
-    // 开始轮询 QR 状态
     await pollClawbotQR();
     clawbotPollTimer = setInterval(pollClawbotQR, 2000);
   });
@@ -2347,33 +2318,31 @@ window.addEventListener("beforeunload", () => {
     if (clawbotQrArea) clawbotQrArea.style.display = "none";
     try {
       await fetch(`${API}/social/wechat-clawbot/logout`, { method: "POST" });
-      setClawbotStatus("已断开", false);
-      showFeedback(clawbotFeedback, "已断开微信连接");
+      setClawbotStatus("Disconnected", false);
+      showFeedback(clawbotFeedback, "WeChat disconnected");
     } catch {
-      showFeedback(clawbotFeedback, "请求失败", true);
+      showFeedback(clawbotFeedback, "Request failed", true);
     }
   });
 
-  // 监听 SSE 事件更新 ClawBot 状态
   window.addEventListener("bailongma:social_status", (e) => {
     const d = e.detail;
     if (d?.platform !== "wechat-clawbot") return;
     if (d.status === "connected") {
       stopClawbotPoll();
       if (clawbotQrArea) clawbotQrArea.style.display = "none";
-      setClawbotStatus("已连接", true);
+      setClawbotStatus("Connected", true);
     } else if (d.status === "qr_ready") {
       if (!clawbotPollTimer) clawbotPollTimer = setInterval(pollClawbotQR, 2000);
       pollClawbotQR();
     } else if (d.status === "session_expired") {
       stopClawbotPoll();
-      setClawbotStatus("会话过期，请重新扫码", false);
+      setClawbotStatus("Session expired — please scan again", false);
     } else if (d.status === "idle") {
-      setClawbotStatus("未连接", false);
+      setClawbotStatus("Not connected", false);
     }
   });
 
-  // ── 更新 tab ──
   const settingsCheckUpdateBtn   = document.getElementById("settings-check-update-btn");
   const settingsUpdateFeedback   = document.getElementById("settings-update-feedback");
   const settingsCurrentVersion   = document.getElementById("settings-current-version");
@@ -2394,7 +2363,7 @@ window.addEventListener("beforeunload", () => {
     syncUpdateSettings();
     const bridge = window.bailongma;
     if (!bridge?.isElectron) {
-      if (settingsCurrentVersion) settingsCurrentVersion.textContent = "仅桌面版可用";
+      if (settingsCurrentVersion) settingsCurrentVersion.textContent = "Desktop app only";
       if (settingsCheckUpdateBtn) settingsCheckUpdateBtn.disabled = true;
       return;
     }
@@ -2417,20 +2386,20 @@ window.addEventListener("beforeunload", () => {
   settingsCheckUpdateBtn?.addEventListener("click", async () => {
     const bridge = window.bailongma;
     if (!bridge?.isElectron) return;
-    if (settingsCheckUpdateBtn) { settingsCheckUpdateBtn.disabled = true; settingsCheckUpdateBtn.textContent = "检查中…"; }
+    if (settingsCheckUpdateBtn) { settingsCheckUpdateBtn.disabled = true; settingsCheckUpdateBtn.textContent = "Checking…"; }
     if (settingsUpdateFeedback) settingsUpdateFeedback.textContent = "";
     try {
       const result = await bridge.checkForUpdates?.();
       if (result?.ok === false && result?.message) {
-        if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = `失败：${result.message}`; settingsUpdateFeedback.className = "settings-feedback error"; }
+        if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = `Failed: ${result.message}`; settingsUpdateFeedback.className = "settings-feedback error"; }
       } else {
-        if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = "检查完毕"; settingsUpdateFeedback.className = "settings-feedback"; }
+        if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = "Check complete"; settingsUpdateFeedback.className = "settings-feedback"; }
         setTimeout(() => { if (settingsUpdateFeedback) settingsUpdateFeedback.textContent = ""; }, 3000);
       }
     } catch (err) {
-      if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = `失败：${err?.message || "请稍后重试"}`; settingsUpdateFeedback.className = "settings-feedback error"; }
+      if (settingsUpdateFeedback) { settingsUpdateFeedback.textContent = `Failed: ${err?.message || "Please try again later"}`; settingsUpdateFeedback.className = "settings-feedback error"; }
     } finally {
-      if (settingsCheckUpdateBtn) { settingsCheckUpdateBtn.disabled = false; settingsCheckUpdateBtn.textContent = "检查更新"; }
+      if (settingsCheckUpdateBtn) { settingsCheckUpdateBtn.disabled = false; settingsCheckUpdateBtn.textContent = "Check for updates"; }
     }
   });
 })();
@@ -2451,7 +2420,7 @@ initVoicePanel({
 });
 
 // ── Hotspot mode ──
-initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
+initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
 
 // ── Media modes (video / image) ──
 (function initMediaModes() {
@@ -2482,7 +2451,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     const s = String(src || "").trim();
     if (!s) return "";
     if (/^https?:\/\//i.test(s)) return s;
-    // Local path (file:// or absolute) → backend HTTP media endpoint，避免 file:// 跨源限制
+    // Local path (file:// or absolute) → backend HTTP media endpoint to avoid file:// CORS restriction
     let resolved = s;
     if (/^file:\/\//i.test(s)) {
       resolved = decodeURIComponent(s.replace(/^file:\/\/\//i, "").replace(/^file:\/\//i, ""));
@@ -2534,7 +2503,6 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     return youtubeEmbedUrl(url, options) || bilibiliEmbedUrl(url, options);
   }
 
-  // ── 历史记录 ──────────────────────────────────────────────────────────────
   function saveMediaHistory({ url, title, kind, videoId = null, platform = null }) {
     fetch(`${API}/media/history`, {
       method: "POST",
@@ -2543,24 +2511,21 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     }).catch(() => {});
   }
 
-  // ── YouTube oEmbed 预验证（异步，不阻塞显示） ────────────────────────────
   async function validateYoutubeUrl(url) {
     try {
       const oembed = `https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`;
       const res = await fetch(oembed, { signal: AbortSignal.timeout(5000) });
       return res.ok;
     } catch {
-      return null; // 网络失败时不做判断，允许继续
+      return null; // network failure — don't block, allow playback to proceed
     }
   }
 
-  // ── 摄像头 ────────────────────────────────────────────────────────────────
   function stopCamera() {
     videoStream?.getTracks().forEach(t => t.stop());
     videoStream = null;
   }
 
-  // ── 面板纯显示状态（不销毁内容）────────────────────────────────────────
   function setPanelVisible(visible) {
     videoActive = Boolean(visible);
     document.body.classList.toggle("video-mode", videoActive);
@@ -2572,7 +2537,6 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     }));
   }
 
-  // ── 暂停当前视频 ──────────────────────────────────────────────────────────
   function pauseCurrentVideo() {
     if (videoKind === "youtube") {
       postFrameCommand("pauseVideo");
@@ -2583,7 +2547,6 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     }
   }
 
-  // ── 恢复当前视频 ──────────────────────────────────────────────────────────
   function resumeCurrentVideo() {
     if (videoKind === "youtube") {
       postFrameCommand("playVideo");
@@ -2594,7 +2557,6 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     }
   }
 
-  // ── 清空内容（退出按钮专用）────────────────────────────────────────────
   function resetVideoSurface() {
     stopCamera();
     if (videoFeed) {
@@ -2615,7 +2577,6 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     currentVideoStart = null;
   }
 
-  // ── V 键 / 顶栏按钮：暂停+收起 / 继续播放+展开 ────────────────────────
   function toggleVideoPanelVisibility() {
     if (videoActive) {
       pauseCurrentVideo();
@@ -2627,13 +2588,11 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     }
   }
 
-  // ── 退出按钮：完全关闭并销毁 ─────────────────────────────────────────
   function closeAndDestroyVideo() {
     setPanelVisible(false);
     resetVideoSurface();
   }
 
-  // ── Agent 调用 hide/close 时：同退出按钮 ────────────────────────────────
   function setVideoModeActive(active) {
     if (!active) {
       closeAndDestroyVideo();
@@ -2652,7 +2611,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
         return;
       }
     }
-    // Bilibili / file / camera：纯色兜底（CSS 已有 #000 背景）
+    // Bilibili / file / camera: solid color fallback (CSS already sets #000 background)
     videoBackdrop.style.backgroundImage = "";
   }
 
@@ -2671,7 +2630,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
       videoSurface?.classList.add("has-media");
       videoKind = "camera";
     } catch (e) {
-      console.warn("摄像头访问失败:", e);
+      console.warn("Camera access failed:", e);
     }
   }
 
@@ -2705,10 +2664,9 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
         platform: videoKind,
       });
 
-      // 后台验证 YouTube 可访问性，不可用时给控制台警告
       if (videoKind === "youtube") {
         validateYoutubeUrl(source).then(ok => {
-          if (ok === false) console.warn("[Media] YouTube 视频可能无法播放（区域限制/私有/已删除）:", source);
+          if (ok === false) console.warn("[Media] YouTube video may not play (region block / private / deleted):", source);
         });
       }
       return;
@@ -2910,7 +2868,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
     musicAudio.src = localPathToUrl(track.src || "");
     musicAudio.volume = parseFloat(musicVolInput?.value ?? "0.8");
 
-    const title  = track.title  || "未知曲目";
+    const title  = track.title  || "Unknown track";
     const artist = track.artist || "";
     if (musicMetaTitle)  musicMetaTitle.textContent  = title;
     if (musicMetaArtist) musicMetaArtist.textContent = artist;
@@ -3040,13 +2998,10 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
   window.bailongmaMedia = { handle: handleMediaCommand, showVideo, controlVideo, showImage, showCamera, showMusic, controlMusic };
   window.addEventListener("bailongma:media", (event) => handleMediaCommand(event.detail || {}));
 
-  // 顶栏按钮：暂停+收起 / 展开+继续（不销毁）
   videoBtn?.addEventListener("click", toggleVideoPanelVisibility);
-  // 退出按钮：完全关闭
   videoExitBtn?.addEventListener("click", closeAndDestroyVideo);
   imageExitBtn?.addEventListener("click", () => setImageModeActive(false));
 
-  // V 键：同顶栏按钮逻辑
   window.addEventListener("keydown", (e) => {
     if (e.target?.tagName === "INPUT" || e.target?.tagName === "TEXTAREA" || e.target?.isContentEditable) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
@@ -3054,7 +3009,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] 初始化失败:', err));
       e.preventDefault();
       toggleVideoPanelVisibility();
     }
-    // H 键：切换热点模式
+    // H key: toggle hotspot mode
     if (e.key === "h" || e.key === "H") {
       e.preventDefault();
       toggleHotspot();

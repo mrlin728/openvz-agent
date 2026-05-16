@@ -33,30 +33,30 @@ import { collectTrending, getTrendingBlock } from './trending.js'
 import { collectAgents, buildAgentContextBlock, buildDelegationAskDirections } from './agents/registry.js'
 import { tryAutoConfigureKey } from './key-auto-config.js'
 
-// 首次启动时把资源目录里的 sandbox 种子文件拷到用户数据目录（Electron 安装场景）
+// On first launch, copy sandbox seed files from the resource directory to the user data directory (Electron install)
 seedSandboxOnce()
 seedMusicOnce()
 
-// 收集宿主机系统环境信息（首次完整扫描+落盘，后续刷新动态字段）
-// 必须在意识循环启动前完成，以便 buildSystemPrompt 能直接注入环境块
+// Collect host system environment info (full scan + persist on first run, then refresh dynamic fields).
+// Must complete before the main loop starts so buildSystemPrompt can inject the env block.
 await collectSystemInfo()
 
-// 扫描用户桌面（快捷方式按 mtime 缓存，普通文件每次扫）
+// Scan the user's desktop (shortcuts cached by mtime, regular files scanned every time)
 collectDesktopInfo(getDesktopPath())
 
-// 采集地理位置 + 实时天气（位置 IP 变更或超 7 天刷新，天气每次刷新）
+// Collect geo-location + live weather (refresh on IP change or after 7 days; weather refreshed every time)
 const geoResult = await collectGeoWeather()
 
-// 采集网络热点（CN → 微博+知乎，其他 → HN+Reddit；1h 缓存）
+// Collect trending topics (CN → Weibo+Zhihu, others → HN+Reddit; 1h cache)
 await collectTrending(geoResult?.location?.country_code)
 
-// 扫描本地已安装的 AI Agent（Claude Code、Codex、Hermes、OpenClaw 等），落盘到 known_agents 表
+// Scan locally installed AI agents (Claude Code, Codex, Hermes, OpenClaw, etc.) and persist to known_agents table
 await collectAgents()
 
-// 加载持久化的已安装工具
+// Load persisted installed tools
 await loadInstalledTools()
 
-// 当前 LLM 处理的 AbortController（主循环打断用）
+// AbortController for the current LLM call (used to interrupt the main loop)
 let currentAbortController = null
 let currentExecution = null
 
@@ -71,15 +71,15 @@ const L2_CONTEXT_HOURS = 24 * 7
 const STARTUP_SELF_CHECK_VERSION = 'v1'
 const STARTUP_SELF_CHECK_CONFIG_KEY = 'l2_startup_self_check'
 
-// 初始化数据库
+// Initialize database
 getDB()
 if (getMemoryCount() === 0) {
-  console.log('[系统] 记忆库为空，注入默认 seed memories')
+  console.log('[system] Memory store is empty — injecting default seed memories')
   await import('../scripts/seed-memories.js')
 }
 const birthTime = getOrInitBirthTime()
 
-// 觉醒期：首次激活后前10轮心跳固定10s节奏
+// Awakening phase: first 10 heartbeat ticks after initial activation run at a fixed 10s cadence
 const AWAKENING_CONFIG_KEY = 'awakening_ticks_remaining'
 function getAwakeningTicks() {
   const raw = getConfig(AWAKENING_CONFIG_KEY)
@@ -91,29 +91,29 @@ function decrementAwakeningTick() {
   if (current > 0) setConfig(AWAKENING_CONFIG_KEY, String(current - 1))
 }
 
-// 觉醒期探索任务：自检完成后，每个自主心跳轮次依序完成一项
+// Awakening exploration tasks: after self-check completes, each autonomous heartbeat tick completes one in order
 const EXPLORATION_INDEX_KEY = 'awakening_exploration_index'
-// AwakeningCard 调用模板：完成每项探索后必须执行
-// ui_show("AwakeningCard", { index: N, total: 3, title: "标题", finding: "一句话发现", emoji: "emoji" })
+// AwakeningCard call template — must be executed after completing each exploration step:
+// ui_show("AwakeningCard", { index: N, total: 3, title: "title", finding: "one-sentence finding", emoji: "emoji" })
 const AWAKENING_EXPLORATION_TASKS = [
-  // 1. 读取已有记忆
-  `探索（1/3）：看看自己已经知道什么。
-从已注入的记忆里整理：你认识谁，知道哪些事，有没有什么没有下文的线索。
-这一步安静地做。如果发现了一件被遗忘的事——比如用户几个月前提过但再没提起的某件事——可以顺口说一句，但别问"需要我帮你处理吗"。
-完成后调用 ui_show("AwakeningCard", { index:1, total:3, title:"读取记忆", finding:"（一句话：记忆库里最值得一提的线索，或"记忆库已就绪"）", emoji:"🧠" })。`,
+  // 1. Read existing memories
+  `Exploration (1/3): See what you already know.
+Go through the injected memories and take stock: who do you know, what do you know, are there any threads with no follow-up.
+Do this quietly. If you find something forgotten — something the user mentioned months ago but never brought up again — you can mention it in passing, but do not ask "do you need me to handle it?".
+When done, call ui_show("AwakeningCard", { index:1, total:3, title:"Reading memories", finding:"(one sentence: the most notable lead in the memory store, or 'memory store ready')", emoji:"🧠" }).`,
 
-  // 2. 挖未竟线索
-  `探索（2/3）：找一条被遗忘的线。
-翻一翻记忆——用户之前提过什么，但后来再也没提？是一个计划，一个想法，还是一件说想做但没做的事？
-如果找到了，顺口提出来。不要问"需要我帮你推进吗"，就是随口一提，看他怎么反应。
-完成后调用 ui_show("AwakeningCard", { index:2, total:3, title:"未竟线索", finding:"（一句话描述找到的被遗忘线索，若无则写"暂无悬而未决的线索"）", emoji:"🔍" })。`,
+  // 2. Surface an unfinished thread
+  `Exploration (2/3): Find a forgotten thread.
+Look through memories — what did the user mention before but never bring up again? A plan, an idea, something they said they wanted to do but never did?
+If you find one, bring it up casually. Do not ask "do you need me to move this forward?" — just mention it and see how they react.
+When done, call ui_show("AwakeningCard", { index:2, total:3, title:"Unfinished thread", finding:"(one sentence describing the forgotten thread, or 'no open threads found')", emoji:"🔍" }).`,
 
-  // 3. 根据时刻主动做一件事
-  `探索（3/3）：根据现在的时刻，主动做一件事。
-不是问"需要什么"，而是自己判断：现在是什么时间，用户大概在做什么，有没有一件可以直接做的事——
-工作时间就考虑放一首适合专注的音乐；发现有个提醒快到了就提前说一声。
-选一件，直接做，不要先问。
-完成后调用 ui_show("AwakeningCard", { index:3, total:3, title:"主动行动", finding:"（一句话写出做了什么）", emoji:"⚡" })。`,
+  // 3. Proactively do one thing based on the current moment
+  `Exploration (3/3): Based on the current time, do one thing on your own.
+Not "what do you need?" — instead, judge: what time is it, what is the user probably doing, is there something you can just do right now?
+During work hours, consider queuing a focus-friendly track; if a reminder is coming up soon, mention it early.
+Pick one thing and do it without asking first.
+When done, call ui_show("AwakeningCard", { index:3, total:3, title:"Proactive action", finding:"(one sentence saying what you did)", emoji:"⚡" }).`,
 ]
 
 function getExplorationIndex() {
@@ -131,12 +131,12 @@ function buildAwakeningExplorationDirections() {
   if (getAwakeningTicks() <= 0) return null  // 觉醒期已结束，不再注入探索任务
   const index = getExplorationIndex()
   if (index < AWAKENING_EXPLORATION_TASKS.length) return AWAKENING_EXPLORATION_TASKS[index]
-  // 所有探索任务完成后，检查是否需要询问 Agent 委托权限
+  // All exploration tasks done — check whether to ask about agent delegation permissions
   const delegationAsk = buildDelegationAskDirections()
   return delegationAsk || null
 }
 
-// 从数据库恢复持久化任务（重启后不丢失）
+// Restore persisted task from database (survives restarts)
 const persistedTask = getConfig('current_task')
 let persistedTaskSteps = []
 try {
@@ -144,12 +144,12 @@ try {
   if (raw) persistedTaskSteps = JSON.parse(raw)
 } catch {}
 if (persistedTask) {
-  console.log(`[系统] 恢复进行中的任务：${persistedTask.slice(0, 80)}`)
-  if (persistedTaskSteps.length) console.log(`[系统] 恢复任务步骤：${persistedTaskSteps.length} 步`)
+  console.log(`[system] Resuming in-progress task: ${persistedTask.slice(0, 80)}`)
+  if (persistedTaskSteps.length) console.log(`[system] Restoring task steps: ${persistedTaskSteps.length} step(s)`)
 }
 
-// 注册 Provider（多媒体能力用 MiniMax，独立于 LLM 选择）
-// 本文件下方的 `function process(...)` 会遮蔽全局 process，所以用 globalThis.process 访问环境变量。
+// Register provider (MiniMax handles multimedia capabilities, independent of the LLM choice).
+// The `function process(...)` defined later in this file shadows the global, so use globalThis.process for env vars.
 function registerMinimaxIfAvailable() {
   const envKey = globalThis.process.env.MINIMAX_API_KEY
   const configKey = config.provider === 'minimax' ? config.apiKey : null
@@ -160,26 +160,26 @@ function registerMinimaxIfAvailable() {
 registerMinimaxIfAvailable()
 
 if (config.needsActivation) {
-  console.log('[LLM] 未激活，等待用户在激活页填入 API Key')
+  console.log('[LLM] Not activated — waiting for user to enter API key on the activation page')
 } else {
-  console.log(`[LLM] 使用 ${config.provider}（模型: ${config.model}）`)
+  console.log(`[LLM] Using ${config.provider} (model: ${config.model})`)
 }
 
-// 运行状态
+// Runtime state
 const state = {
   action: null,
   task: persistedTask || null,
-  taskSteps: persistedTaskSteps,  // [{ text, status, note }]，status: pending/done/failed/skipped
-  taskIdleTickCount: 0,           // 连续空转 tick 计数（task 模式下无工具调用则累加）
+  taskSteps: persistedTaskSteps,  // [{ text, status, note }], status: pending/done/failed/skipped
+  taskIdleTickCount: 0,           // consecutive idle tick count (increments when no tool calls in task mode)
   prev_recall: null,
-  lastToolResult: null, // 上一轮工具调用结果，下一个 TICK 由注入器注入后清空
+  lastToolResult: null, // result of the last tool call; injected by the injector on the next TICK then cleared
   sessionCounter: 0,
-  recentActions: [], // 最近几轮的行动摘要，格式：{ ts, summary }
-  thoughtStack: [],  // 念头栈，最多保留 3 个，格式：{ concept, line }
+  recentActions: [], // summaries of recent turns, format: { ts, summary }
+  thoughtStack: [],  // thought stack, max 3 entries, format: { concept, line }
   startupSelfCheck: null,
 }
 
-const TASK_IDLE_TICK_LIMIT = 5  // 连续 N 次 task tick 无工具调用则自动 clear
+const TASK_IDLE_TICK_LIMIT = 5  // auto-clear task after N consecutive task ticks with no tool calls
 
 function autoCompleteTask(reason) {
   const clearedTask = state.task
@@ -188,13 +188,13 @@ function autoCompleteTask(reason) {
   state.taskIdleTickCount = 0
   setConfig('current_task', '')
   setConfig('current_task_steps', '[]')
-  console.log(`[任务] 自动清除（${reason}）：${clearedTask}`)
-  emitEvent('task_cleared', { task: clearedTask, summary: `自动清除：${reason}` })
+  console.log(`[task] Auto-cleared (${reason}): ${clearedTask}`)
+  emitEvent('task_cleared', { task: clearedTask, summary: `Auto-cleared: ${reason}` })
   if (clearedTask) {
     insertMemory({
       event_type: 'task_complete',
-      content: `任务已自动清除：${clearedTask.slice(0, 60)}`,
-      detail: `清除原因：${reason}`,
+      content: `Task auto-cleared: ${clearedTask.slice(0, 60)}`,
+      detail: `Reason: ${reason}`,
       entities: [], concepts: [], tags: ['task_complete'],
       timestamp: nowTimestamp(),
     })
@@ -245,14 +245,14 @@ function ensureStartupSelfCheckState() {
 function buildStartupSelfCheckDirections(checkState) {
   if (!checkState?.active) return ''
   return [
-    `当前是 L2 启动自检流程（${STARTUP_SELF_CHECK_VERSION}）。这是一次性流程；完成后必须调用 complete_startup_self_check 记录结果，以后不再重复检查。`,
-    `【重要】自检期间严禁发送任何文字消息（不得输出"正在检查…"等文本），所有状态通过 speak（语音）和 ui_show（卡片）表达，文字通道保持静默。`,
-    `按顺序完成以下 3 项检测。每项开始前必须同时播报语音和显示进度卡片，检测完成后关闭卡片，再进行下一项：`,
-    `1. 调用 speak text="正在检查文件读写功能"；调用 ui_show("SelfCheckStepCard", {step:1, total:3, name:"文件读写功能", icon:"📁"}) 并记录返回的 id 为 step_card_id。然后：用 write_file 在 sandbox 根目录写入 self_check.txt（内容为当前时间戳），再用 read_file 读回校验一致。记录结果后调用 ui_hide(step_card_id)。`,
-    `2. 调用 speak text="正在检查界面热点功能"；调用 ui_show("SelfCheckStepCard", {step:2, total:3, name:"界面热点功能", icon:"🌐"}) 记录 id 为 step_card_id。然后：hotspot_mode action=show，确认返回 ok 后 hotspot_mode action=hide。记录结果后调用 ui_hide(step_card_id)。`,
-    `3. 调用 speak text="正在检查视频功能"；调用 ui_show("SelfCheckStepCard", {step:3, total:3, name:"视频功能", icon:"🎬"}) 记录 id 为 step_card_id。然后：web_search 搜索「bilibili 钢铁侠 贾维斯 JARVIS」找 BV 号；media_mode mode=video action=show url=https://www.bilibili.com/video/<BV号> autoplay=true；等约 5 秒后 media_mode mode=video action=hide。记录结果后调用 ui_hide(step_card_id)。`,
-    `结果记录规则：每项使用 ok、degraded、error 或 skipped_* 之一。即使某项失败也继续后续项目。`,
-    `【最后两步，必须执行】\n(a) 调用 ui_show 展示 SelfCheckCard，props 格式：{ results: [{name:"文件读写",status:"ok/error",...},{name:"热点面板",...},{name:"视频模式",...}], overall:"ok/degraded/error" }。overall 根据实际结果推断：全部 ok → ok；有 skipped → degraded；有 error → error。\n(b) 调用 complete_startup_self_check，传入 summary（一句话总结）和 results 对象。`,
+    `This is the L2 startup self-check flow (${STARTUP_SELF_CHECK_VERSION}). It runs once; when finished you must call complete_startup_self_check to record the results — it will not run again.`,
+    `[HARD RULE — DO NOT VIOLATE] During self-check, calling send_message is strictly forbidden. No text output of any kind (including "checking…", "self-check complete", or any other text). All status must be expressed through speak (voice) and ui_show (cards). The text channel must remain completely silent; any text output counts as self-check failure.`,
+    `Complete the following 3 checks in order. Before each one, you must simultaneously play a voice announcement and show a progress card. After the check completes, close the card before moving to the next:`,
+    `1. Call speak text="Checking file read/write"; call ui_show("SelfCheckStepCard", {step:1, total:3, name:"File read/write", icon:"📁"}) and save the returned id as step_card_id. Then: use write_file to write self_check.txt in the sandbox root (content = current timestamp), then read_file it back to verify consistency. Record the result and call ui_hide(step_card_id).`,
+    `2. Call speak text="Checking hotspot panel"; call ui_show("SelfCheckStepCard", {step:2, total:3, name:"Hotspot panel", icon:"🌐"}) and save the returned id as step_card_id. Then: hotspot_mode action=show; confirm it returns ok, then hotspot_mode action=hide. Record the result and call ui_hide(step_card_id).`,
+    `3. Call speak text="Checking video mode"; call ui_show("SelfCheckStepCard", {step:3, total:3, name:"Video mode", icon:"🎬"}) and save the returned id as step_card_id. Then: web_search for "bilibili Iron Man JARVIS" to find a BV number; media_mode mode=video action=show url=https://www.bilibili.com/video/<BV> autoplay=true; wait ~5 seconds; media_mode mode=video action=hide. Record the result and call ui_hide(step_card_id).`,
+    `Result values: use ok, degraded, error, or skipped_* for each item. Continue to the next item even if one fails.`,
+    `[FINAL TWO STEPS — REQUIRED]\n(a) Call ui_show to display SelfCheckCard with props: { results: [{name:"File read/write",status:"ok/error",...},{name:"Hotspot panel",...},{name:"Video mode",...}], overall:"ok/degraded/error" }. Infer overall from actual results: all ok → ok; any skipped → degraded; any error → error.\n(b) Call complete_startup_self_check with a summary (one sentence) and the results object.`,
   ].join('\n')
 }
 
@@ -308,7 +308,7 @@ export function buildToolContext({ currentTargetId = null, conversationWindow = 
     ...conversationWindow.flatMap(item => [item.from_id, item.to_id]),
   ].filter(id => id && id !== 'jarvis')
 
-  // TICK 场景：补充近期熟人和主用户，让意识体可主动联系已建立连接的对象。
+  // TICK scenario: add recent contacts and the primary user so the agent can proactively reach established connections.
   if (includeRecentPartners && !currentTargetId) {
     visibleTargetIds.push(PRIMARY_USER_ID, ...getRecentConversationPartners(L2_CONTEXT_HOURS, 20))
   }
@@ -332,7 +332,7 @@ function buildToolContextForProcess(msg, injection) {
       state.taskSteps = steps.map(s => ({ text: s, status: 'pending', note: '' }))
       setConfig('current_task', description)
       setConfig('current_task_steps', JSON.stringify(state.taskSteps))
-      console.log(`[任务] 已开启：${description}（${steps.length} 步）`)
+      console.log(`[task] Started: ${description} (${steps.length} step(s))`)
       emitEvent('task_set', { task: description, steps })
     },
 
@@ -343,13 +343,13 @@ function buildToolContextForProcess(msg, injection) {
       state.taskIdleTickCount = 0
       setConfig('current_task', '')
       setConfig('current_task_steps', '[]')
-      console.log(`[任务] 已完成：${clearedTask}`)
+      console.log(`[task] Completed: ${clearedTask}`)
       emitEvent('task_cleared', { task: clearedTask, summary })
       if (clearedTask) {
         insertMemory({
           event_type: 'task_complete',
-          content: `任务已完成：${clearedTask.slice(0, 60)}${summary ? ' — ' + summary.slice(0, 60) : ''}`,
-          detail: '任务已通过 complete_task 工具标记为完成',
+          content: `Task completed: ${clearedTask.slice(0, 60)}${summary ? ' — ' + summary.slice(0, 60) : ''}`,
+          detail: 'Task marked complete via the complete_task tool',
           entities: [], concepts: [], tags: ['task_complete'],
           timestamp: nowTimestamp(),
         })
@@ -357,15 +357,15 @@ function buildToolContextForProcess(msg, injection) {
     },
 
     onUpdateTaskStep: (idx, status, note) => {
-      if (!state.taskSteps[idx]) return { error: `步骤 ${idx + 1} 不存在（共 ${state.taskSteps.length} 步）` }
+      if (!state.taskSteps[idx]) return { error: `Step ${idx + 1} does not exist (${state.taskSteps.length} total)` }
       state.taskSteps[idx] = { ...state.taskSteps[idx], status, note }
       setConfig('current_task_steps', JSON.stringify(state.taskSteps))
       const done = state.taskSteps.filter(s => s.status === 'done').length
       emitEvent('task_step_updated', { index: idx, status, note, progress: `${done}/${state.taskSteps.length}` })
-      // 方案 C：全部步骤完成时自动清除任务
+      // Option C: auto-clear task when all steps reach a terminal state
       const terminal = ['done', 'failed', 'skipped']
       const allTerminal = state.taskSteps.length > 0 && state.taskSteps.every(s => terminal.includes(s.status))
-      if (allTerminal) autoCompleteTask('所有步骤已完成')
+      if (allTerminal) autoCompleteTask('all steps complete')
       return {}
     },
 
@@ -387,7 +387,7 @@ function buildToolContextForProcess(msg, injection) {
         mem_id: `system_l2_startup_self_check_${STARTUP_SELF_CHECK_VERSION}`,
         type: 'system',
         title: `L2 startup self-check ${STARTUP_SELF_CHECK_VERSION}`,
-        content: `L2 启动自检已完成：${summary || '无摘要'}`,
+        content: `L2 startup self-check completed: ${summary || 'no summary'}`,
         detail: JSON.stringify({ summary, results }, null, 2),
         tags: ['system', 'l2', 'startup_self_check', STARTUP_SELF_CHECK_VERSION],
         entities: [],
@@ -412,7 +412,7 @@ function formatConversationMessage(row, currentMsg = null) {
     }
   }
 
-  // 时间戳只保留到分钟（去掉秒和时区）
+  // Truncate timestamp to minute precision (drop seconds and timezone)
   const ts = row.timestamp ? row.timestamp.slice(0, 16).replace('T', ' ') : ''
   const channel = row.channel || currentMsg?.channel || ''
 
@@ -432,7 +432,7 @@ function formatConversationMessage(row, currentMsg = null) {
     && row.timestamp === currentMsg.timestamp
     && row.content === currentMsg.content
   const marker = isCurrent ? 'current user message' : 'user message'
-  // TUI/API 是默认渠道，不显示；只显示有意义的渠道
+  // TUI/API are default channels and are not shown; only display meaningful channel labels
   const channelLabel = (channel && channel !== 'TUI' && channel !== 'API') ? ` · ${channel}` : ''
 
   return {
@@ -451,7 +451,7 @@ function formatTaskSteps(taskSteps = []) {
   })
   const done = taskSteps.filter(s => s.status === 'done').length
   const total = taskSteps.length
-  return `任务步骤进度（${done}/${total}）：\n${lines.join('\n')}`
+  return `Task step progress (${done}/${total}):\n${lines.join('\n')}`
 }
 
 function buildRuntimeContextMessages({ recentActions = [], actionLog = [], lastToolResult = null, taskSteps = [], batteryBlock = '' } = {}) {
@@ -540,7 +540,7 @@ function getProcessPriority(msg) {
 }
 
 function isVoiceChannel(channel) {
-  return channel === '语音识别' || channel === 'FocusBanner'
+  return channel === 'voice' || channel === '语音识别' || channel === 'FocusBanner'
 }
 
 function isFastUserMessage(msg) {
@@ -552,8 +552,8 @@ function shouldPreemptFor(entry) {
   const incomingPriority = entry.priority || PRIORITY.background
   if (incomingPriority > currentExecution.priority) return true
 
-  // 用户实时消息之间也允许相互抢占。
-  // 这样当前如果正卡在工具调用里，新的用户消息仍然可以立刻打断并优先处理。
+  // Allow preemption between concurrent user messages.
+  // If the current execution is stuck in a tool call, a new user message can still interrupt immediately.
   if (incomingPriority >= PRIORITY.user && currentExecution.priority >= PRIORITY.user) return true
 
   return false
@@ -584,7 +584,7 @@ function enqueueDueReminders() {
         const config = JSON.parse(reminder.recurrence_config || '{}')
         nextDueIso = calculateNextDueAt(reminder.recurrence_type, config, new Date()).toISOString()
       } catch (err) {
-        console.error(`[提醒 #${reminder.id}] 周期下一次时间计算失败：${err.message}，回退为单次触发`)
+        console.error(`[reminder #${reminder.id}] Failed to calculate next recurrence time: ${err.message} — falling back to one-shot`)
         const marked = markReminderFired(reminder.id, now)
         if (!marked.changes) continue
       }
@@ -610,25 +610,25 @@ function enqueueDueReminders() {
   }
 }
 
-// LLM 失败后的通用处理：429 设限流，消息重入队列，超限放弃
+// Common LLM failure handler: set rate-limit on 429, requeue message, drop after max retries
 function handleLLMFailure(err, label, msg) {
-  console.error('LLM 调用失败:', err.message)
+  console.error('LLM call failed:', err.message)
   if (err.message?.includes('429') || err.status === 429) setRateLimited()
   emitEvent('error', { label, error: err.message })
   if (msg) {
     const nextRetry = (msg.retryCount || 0) + 1
     if (nextRetry <= MAX_MESSAGE_RETRIES) {
-      console.log(`[系统] 消息重入队列（第 ${nextRetry}/${MAX_MESSAGE_RETRIES} 次重试）`)
+      console.log(`[system] Message requeued (retry ${nextRetry}/${MAX_MESSAGE_RETRIES})`)
       emitEvent('message_requeued', { fromId: msg.fromId, retryCount: nextRetry, error: err.message })
       requeueMessage(msg, nextRetry)
     } else {
-      console.error(`[系统] 消息重试 ${MAX_MESSAGE_RETRIES} 次仍失败，放弃：${msg.content?.slice(0, 60)}`)
+      console.error(`[system] Message dropped after ${MAX_MESSAGE_RETRIES} retries: ${msg.content?.slice(0, 60)}`)
       emitEvent('message_dropped', { fromId: msg.fromId, retryCount: nextRetry - 1, reason: err.message })
     }
   }
 }
 
-// 按需组装 systemEnv：各 block 按消息关键词按需注入
+// Build systemEnv on demand: inject each block based on keywords in the message
 function buildSystemEnv(msg) {
   const text = (typeof msg === 'string' ? msg : msg?.content || '').toLowerCase()
   const blocks = []
@@ -656,7 +656,7 @@ async function process(input, label, msg = null) {
   console.log(`\n── ${label} ──`)
   emitEvent(isTick ? 'tick' : 'message_received', { label, input: input.slice(0, 300) })
 
-  // 用户消息已在 pushMessage 阶段写入 conversations（到达即入聊天记录），此处不再重复写。
+  // User messages are written to conversations at the pushMessage stage (recorded on arrival) — do not write them again here.
   try {
     beginExecution({
       priority,
@@ -667,29 +667,29 @@ async function process(input, label, msg = null) {
 
     if (isTick) ensureStartupSelfCheckState()
 
-    // Key 自动配置：用户消息含 API Key 时，静默配置后删库、通知前端、跳过 LLM
+    // Key auto-config: if the user message contains an API key, silently configure it, purge the DB entry, notify frontend, and skip LLM
     let keyConfigFailDir = null
     if (!isTick && msg) {
       const recentCtx = getRecentConversationTimeline(5, 1).map(r => r.content || '').join(' ')
       const autoConfigResult = await tryAutoConfigureKey(input, recentCtx)
       if (autoConfigResult?.ok) {
-        // 删除 DB 里的用户消息（key 不留痕迹）
+        // Delete the user message from DB (no key trace left)
         getDB().prepare(
           `DELETE FROM conversations WHERE role = 'user' AND from_id = ? AND timestamp = ?`
         ).run(msg.fromId, msg.timestamp)
-        // 通知前端：删除最后一条用户消息气泡 + 有 TTS 时播报
+        // Notify frontend: remove last user message bubble + speak via TTS if available
         emitEvent('key_configured', {
-          ttsText: autoConfigResult.hasTTS ? '语音成功合成' : null,
+          ttsText: autoConfigResult.hasTTS ? 'Voice synthesis successful' : null,
         })
-        return  // 跳过 LLM，整轮静默
+        return  // Skip LLM, silent round
       }
       if (autoConfigResult && !autoConfigResult.ok) {
-        // 识别到 key 但验证失败：保留消息，让 LLM 告知用户
-        keyConfigFailDir = `[系统检测] 用户消息中识别到 API Key，但验证失败：${autoConfigResult.error}。请告知用户该 Key 无效，建议检查 Key 是否正确或是否已过期。`
+        // Key detected but validation failed: keep message and let LLM inform the user
+        keyConfigFailDir = `[system] An API key was detected in the user message but validation failed: ${autoConfigResult.error}. Inform the user that the key is invalid and suggest checking whether it is correct or has expired.`
       }
     }
 
-    // 1. 注入器
+    // 1. Injector
     const injection = await runInjector({ message: input, state })
     throwIfAborted(controller.signal)
 
@@ -697,29 +697,29 @@ async function process(input, label, msg = null) {
     if (isTick) {
       const startupSelfCheckDirections = buildStartupSelfCheckDirections(state.startupSelfCheck)
       if (startupSelfCheckDirections) {
-        // 自检激活时，仅注入自检指令，不注入通用 tick 方向
-        // 避免"可以静默"选项与"必须执行自检"产生冲突
+        // When self-check is active, inject only the self-check instruction — not the generic tick directions.
+        // This prevents the "can stay silent" option from conflicting with "must run self-check".
         directions.unshift(startupSelfCheckDirections)
       } else {
         const explorationDirections = buildAwakeningExplorationDirections()
         if (explorationDirections) {
-          // 觉醒探索期：每个自主 tick 专注完成一项探索任务，不注入通用方向
+          // Awakening exploration phase: each autonomous tick focuses on one exploration task — skip generic directions.
           directions.unshift(explorationDirections)
         } else {
           directions.unshift(
-            `当前是 L2 自主心跳轮次，没有新的用户消息。你拥有完整工具权限，可以主动行动——不需要等用户发起。\n` +
-            `你可以主动做的事（示例，不限于此）：\n` +
-            `- 根据时间段（早晨/晚上/深夜）主动问候或关心用户\n` +
-            `- 查看 sandbox 文件夹，检查进行中的项目或文件变化，必要时汇报\n` +
-            `- 搜索记忆库，找出有未完成承诺、待跟进事项或到期提醒，主动推进\n` +
-            `- 发现近期对话里有值得延伸的话题，主动分享一个想法或信息\n` +
-            `- 网络搜索用户感兴趣的内容，把有价值的发现推送给用户\n` +
-            `- 检查任务进度或 prefetch 数据（天气/新闻），有变化时主动告知\n` +
-            `行动准则：\n` +
-            `- 主动但不骚扰：不重复说刚说过的话，不在深夜无故打扰（23:00–06:00 只在有明确价值时才发消息）\n` +
-            `- 有实质内容：发消息前确保有真正值得说的东西，不要只是"打个招呼"\n` +
-            `- 不需要全部都做：每轮选一件最有价值的事做，做完即可，不要在单轮里堆砌多个行动\n` +
-            `- 如果确实没有值得做的事，可以静默，不调用任何工具`
+            `This is an autonomous L2 heartbeat tick with no new user message. You have full tool access and may act proactively — no need to wait for the user.\n` +
+            `Things you can proactively do (examples, not exhaustive):\n` +
+            `- Check in with the user based on the time of day (morning/evening/late night)\n` +
+            `- Browse the sandbox folder and check for in-progress projects or file changes; report if relevant\n` +
+            `- Search memories for unfinished commitments, pending follow-ups, or upcoming reminders and move them forward\n` +
+            `- Find a topic worth expanding from recent conversation and share a thought or piece of information\n` +
+            `- Search the web for something the user cares about and push valuable findings\n` +
+            `- Check task progress or prefetched data (weather/news) and proactively report changes\n` +
+            `Guidelines:\n` +
+            `- Proactive but not intrusive: don't repeat what was just said; don't bother late at night without reason (23:00–06:00: only message when there is clear value)\n` +
+            `- Have substance: before sending, make sure there is something genuinely worth saying — not just "checking in"\n` +
+            `- One thing per tick: pick the most valuable action, do it, and stop — don't pile multiple actions into one tick\n` +
+            `- If there is truly nothing worth doing, stay silent and call no tools`
           )
         }
       }
@@ -738,19 +738,19 @@ async function process(input, label, msg = null) {
     const directionsText = directions.join('\n')
     const taskKnowledgeText = formatTaskKnowledge(injection.taskKnowledge)
 
-    // 用户实时消息走快速路径：跳过重型上下文采集，避免被任务背景拖慢。
+    // Real-time user messages take the fast path: skip heavy context gathering to avoid slowdowns from task background.
     const prefetchText = formatPrefetchedItems(injection.prefetchedItems)
     const hotspotStateText = buildHotspotPanelStateContext()
     const hotspotContextText = buildHotspotRuntimeContext(msg?.content || input)
     const personCardStateText = buildPersonCardPanelStateContext()
     const personCardContextText = buildPersonCardRuntimeContext(msg?.content || input)
     const weatherContextText = await buildWeatherRuntimeContext(msg?.content || input)
-    // 关键词检测只作为软提示注入上下文，由 Agent 自己判断是否需要打开文档面板
+    // Keyword detection is a soft hint injected into context; the agent decides whether to open the doc panel
     const detectedDocTopic = detectDocTopic(msg?.content || input)
     const docStateText = buildDocPanelStateContext(detectedDocTopic)
     const docContextText = buildDocRuntimeContext(msg?.content || input)
 
-    // 天气关键词触发时，延迟 1 秒自动弹出 WeatherCard
+    // When weather keywords are detected, auto-pop WeatherCard after 1 second
     if (weatherContextText && hasACUIClient()) {
       setTimeout(() => {
         getWeatherCardProps(msg?.content || input).then(cardProps => {
@@ -774,12 +774,12 @@ async function process(input, label, msg = null) {
       throwIfAborted(controller.signal)
       extraContextText = formatExtraContext(extraContext)
       if (extraContext.length > 0) {
-        console.log(`[采集器] 补充了 ${extraContext.length} 项上下文`)
+        console.log(`[context] Added ${extraContext.length} context item(s)`)
         emitEvent('context_gathered', { count: extraContext.length, items: extraContext.map(c => c.label) })
       }
     }
 
-    // 发出注入器结果事件（供 brain.html 展示）
+    // Emit injector result event (used by brain.html for display)
     emitEvent('injector_result', {
       directions,
       tools: injection.tools || [],
@@ -815,13 +815,13 @@ async function process(input, label, msg = null) {
       fastUserPath,
     })
 
-    // 更新念头栈
+    // Update thought stack
     if (injection.thought) {
       state.thoughtStack.push(injection.thought)
       if (state.thoughtStack.length > 3) state.thoughtStack.shift()
     }
 
-    // 2. 组装系统提示词
+    // 2. Build system prompt
     const persona = getConfig('persona') || ''
     const agentName = getConfig('agent_name') || 'Longma'
     const entities = getKnownEntities()
@@ -857,7 +857,7 @@ async function process(input, label, msg = null) {
       batteryBlock: getBatteryBlock(),
     })
 
-    // 记忆刷新注入（仅 L1 用户消息）
+    // Memory refresh injection (L1 user messages only)
     let enrichedSystemPrompt = systemPrompt
     if (!isTick && msg?.content && msg.content.trim()) {
       try {
@@ -875,7 +875,7 @@ async function process(input, label, msg = null) {
             extraParts.push(formatMemoriesForPrompt([], refreshResult.additionalMemories))
           }
           if (refreshResult.round3Results) {
-            extraParts.push(`[第3轮外部查询结果]\n${refreshResult.round3Results}`)
+            extraParts.push(`[Round 3 external query results]\n${refreshResult.round3Results}`)
           }
           const enrichedMemoriesText = memoriesText + '\n\n' + extraParts.join('\n\n')
           enrichedSystemPrompt = buildSystemPrompt({
@@ -897,17 +897,17 @@ async function process(input, label, msg = null) {
             systemEnv: buildSystemEnv(msg),
             roundInfo: { round: refreshResult.roundsRun },
           })
-          console.log(`[记忆刷新] 完成，${refreshResult.roundsRun} 轮，追加 ${refreshResult.additionalMemories.length} 条记忆`)
+          console.log(`[memory refresh] Done — ${refreshResult.roundsRun} round(s), appended ${refreshResult.additionalMemories.length} memory/memories`)
         }
       } catch (e) {
-        if (e.name !== 'AbortError') console.log('[记忆刷新] 出错:', e.message)
+        if (e.name !== 'AbortError') console.log('[memory refresh] Error:', e.message)
       }
     }
 
-    // 发出完整系统提示词事件
+    // Emit full system prompt event
     emitEvent('system_prompt', { content: enrichedSystemPrompt, fastUserPath })
 
-    // 3. 调用 Jarvis LLM（可被新消息打断）
+    // 3. Call Jarvis LLM (can be interrupted by a new message)
     const toolContext = buildToolContextForProcess(msg, injection)
     llmResult = await callLLM({
       systemPrompt: enrichedSystemPrompt,
@@ -926,11 +926,11 @@ async function process(input, label, msg = null) {
           const parsed = JSON.parse(resultText)
           if (parsed && parsed.ok === false) ok = false
         } catch {
-          ok = !/^(错误|请求失败|执行失败|命令超时|命令执行失败)/.test(resultText.trim())
+          ok = !/^(错误|请求失败|执行失败|命令超时|命令执行失败|error|failed|execution failed|command timed out)/.test(resultText.trim())
         }
         emitEvent('tool_call', { name, args, result: resultText.slice(0, 1000), ok })
         toolCallLog.push({ name, args, result: resultText.slice(0, 500), ok })
-        // 记录 Jarvis 发出的消息
+        // Record messages sent by Jarvis
         if (name === 'send_message' && args?.target_id && args?.content) {
           const cleanedContent = trimAssistantFluff(args.content)
           if (!cleanedContent) return
@@ -941,7 +941,7 @@ async function process(input, label, msg = null) {
             content: cleanedContent,
             timestamp: nowTimestamp(),
           })
-          // 用户用语音输入时，通知前端播放 TTS 语音回复
+          // When the user sent a voice message, notify frontend to play TTS reply
           if (isVoiceChannel(msg?.channel)) {
             autoSpeakForVoiceReply(cleanedContent)
           }
@@ -959,7 +959,7 @@ async function process(input, label, msg = null) {
     throwIfAborted(controller.signal)
   } catch (err) {
     if (err.name === 'AbortError') {
-      console.log('[系统] LLM 处理被打断（新消息到达）')
+      console.log('[system] LLM processing interrupted (new message arrived)')
       llmResult = { content: '', toolResult: null, aborted: true }
     } else {
       handleLLMFailure(err, label, msg)
@@ -970,23 +970,23 @@ async function process(input, label, msg = null) {
   }
 
   if (llmResult.aborted) {
-    // 微信式打断：丢弃半成品，下轮处理最新消息时从 conversationWindow 自然读到本条上下文。
-    // 标记本轮被打断，onTick finally 将跳过 tick 扣减和探索推进，下次重来。
-    console.log('[系统] 当前处理被新消息打断，丢弃半成品')
+    // WeChat-style interruption: discard partial output; the next round will naturally pick up this context from conversationWindow.
+    // Mark this tick as aborted so onTick's finally block skips tick decrement and exploration advance.
+    console.log('[system] Current processing interrupted by new message — partial output discarded')
     lastTickAborted = true
     return
   }
 
   const response = llmResult.content
 
-  // 存储工具结果供下一个 TICK 注入
+  // Store tool result for injection on the next TICK
   state.lastToolResult = llmResult.toolResult || null
 
   console.log('\nJarvis:', response)
   emitEvent('response', { sessionRef, label, content: response })
 
-  // 用户消息不能静默失败：如果模型生成了正文但忘记调用 send_message，
-  // 由运行时兜底投递给当前用户；TICK/主动消息仍必须走显式工具调用。
+  // User messages must not fail silently: if the model generated a response but forgot to call send_message,
+  // the runtime delivers it as a fallback; TICK/proactive messages must still go through explicit tool calls.
   if (msg && msg.fromId && !toolCallLog.some(t => t.name === 'send_message')) {
     const fallbackContent = trimAssistantFluff(
       response
@@ -1000,8 +1000,8 @@ async function process(input, label, msg = null) {
 
     if (fallbackContent && requiresToolForUserMessage(input) && !hasNonMessageToolCall(toolCallLog)) {
       const timestamp = nowTimestamp()
-      const blockedContent = '我刚才没有真正调用工具完成这个操作，所以不能声称已经完成。请重新发送一次，我会先执行对应工具，再基于工具结果回复。'
-      console.warn(`[协议兜底] 阻止了一次需要工具但未调用工具的文本回复。from=${msg.fromId}`)
+      const blockedContent = 'I did not actually call the required tool, so I cannot claim the operation completed. Please send again — I will execute the tool first, then reply based on the result.'
+      console.warn(`[protocol fallback] Blocked a text reply that required a tool call but made none. from=${msg.fromId}`)
       if (isVoiceChannel(msg.channel)) autoSpeakForVoiceReply(blockedContent)
       emitEvent('message', {
         from: 'consciousness',
@@ -1030,7 +1030,7 @@ async function process(input, label, msg = null) {
       })
     } else if (fallbackContent) {
       const timestamp = nowTimestamp()
-      console.warn(`[协议兜底] 模型未调用 send_message，已将正文发给 ${msg.fromId}`)
+      console.warn(`[protocol fallback] Model did not call send_message — delivering response body to ${msg.fromId}`)
       if (isVoiceChannel(msg.channel)) autoSpeakForVoiceReply(fallbackContent)
       emitEvent('message', {
         from: 'consciousness',
@@ -1058,7 +1058,7 @@ async function process(input, label, msg = null) {
         content: fallbackContent.slice(0, 500),
       })
     } else {
-      console.warn(`[协议违规] 模型未调用 send_message，且没有可兜底发送的正文。from=${msg.fromId}`)
+      console.warn(`[protocol violation] Model did not call send_message and there is no response body to fall back on. from=${msg.fromId}`)
       emitEvent('protocol_violation', {
         label,
         reason: 'missing_send_message',
@@ -1068,53 +1068,53 @@ async function process(input, label, msg = null) {
     }
   }
 
-  // 4. 检测 [RECALL: ...]
+  // 4. Detect [RECALL: ...]
   const recallMatch = response.match(/\[RECALL:\s*(.+?)\]/)
   if (recallMatch) {
     state.prev_recall = recallMatch[1]
-    console.log(`[系统] 回忆请求：${state.prev_recall}`)
+    console.log(`[system] Recall requested: ${state.prev_recall}`)
     emitEvent('recall_requested', { query: state.prev_recall })
   } else {
     state.prev_recall = null
   }
 
-  // 5. 检测 [UPDATE_PERSONA: ...]
+  // 5. Detect [UPDATE_PERSONA: ...]
   const personaMatch = response.match(/\[UPDATE_PERSONA:\s*([\s\S]+?)\]/)
   if (personaMatch) {
     const newPersona = personaMatch[1].trim()
     setConfig('persona', newPersona)
-    console.log(`[系统] 人格已更新`)
+    console.log('[system] Persona updated')
     emitEvent('persona_updated', { persona: newPersona.slice(0, 200) })
   }
 
-  // 6. 检测 [SET_TASK: ...] / [CLEAR_TASK]
+  // 6. Detect [SET_TASK: ...] / [CLEAR_TASK]
   const setTaskMatch = response.match(/\[SET_TASK:\s*([\s\S]+?)\]/)
   if (setTaskMatch) {
     state.task = setTaskMatch[1].trim()
     setConfig('current_task', state.task)
-    console.log(`[系统] 任务设置：${state.task}`)
+    console.log(`[system] Task set: ${state.task}`)
     emitEvent('task_set', { task: state.task })
   }
   if (/\[CLEAR_TASK\]/.test(response)) {
     const clearedTask = state.task
-    console.log(`[系统] 任务完成：${clearedTask}`)
+    console.log(`[system] Task completed: ${clearedTask}`)
     emitEvent('task_cleared', { task: clearedTask })
     state.task = null
     state.taskIdleTickCount = 0
     setConfig('current_task', '')
-    // 写入 task_complete 记忆，防止后续注入时旧任务记忆让 Jarvis 误以为任务仍在进行
+    // Write a task_complete memory to prevent old task memories from making Jarvis think the task is still active
     if (clearedTask) {
       insertMemory({
         event_type: 'task_complete',
-        content: `任务已完成：${clearedTask.slice(0, 60)}`,
-        detail: '任务已通过 [CLEAR_TASK] 标记为完成，不再继续执行',
+        content: `Task completed: ${clearedTask.slice(0, 60)}`,
+        detail: 'Task marked complete via [CLEAR_TASK] — no further execution',
         entities: [], concepts: [], tags: ['task_complete'],
         timestamp: nowTimestamp(),
       })
     }
   }
 
-  // 更新最近行动记录（保留最近 5 条）
+  // Update recent action log (keep last 5)
   if (toolCallLog.length > 0) {
     const summary = toolCallLog.map(t => {
       if (t.name === 'send_message') return `send_message → ${t.args.target_id}`
@@ -1127,21 +1127,21 @@ async function process(input, label, msg = null) {
     if (state.recentActions.length > 5) state.recentActions.shift()
   }
 
-  // 方案 B：task 空转检测——连续 N 次 tick 无工具调用则自动清除
+  // Option B: task idle detection — auto-clear after N consecutive ticks with no tool calls
   if (state.task && isTick) {
     if (toolCallLog.length === 0) {
       state.taskIdleTickCount++
-      console.log(`[任务] 空转计数 ${state.taskIdleTickCount}/${TASK_IDLE_TICK_LIMIT}`)
+      console.log(`[task] Idle tick count ${state.taskIdleTickCount}/${TASK_IDLE_TICK_LIMIT}`)
       if (state.taskIdleTickCount >= TASK_IDLE_TICK_LIMIT) {
-        autoCompleteTask(`连续 ${TASK_IDLE_TICK_LIMIT} 次 tick 无工具调用`)
+        autoCompleteTask(`${TASK_IDLE_TICK_LIMIT} consecutive ticks with no tool calls`)
       }
     } else {
       state.taskIdleTickCount = 0
     }
   }
 
-  // 6. 识别器：分离 think 块和正文，传入完整经历
-  //    后台运行，不阻塞下一轮消息/TICK 处理
+  // 6. Recognizer: split think block and response body, pass full experience.
+  //    Runs in the background — does not block the next message/TICK.
   const thinkMatch = response.match(/<think>([\s\S]*?)<\/think>/i)
   const jarvisThink = thinkMatch ? thinkMatch[1].trim() : ''
   const jarvisText = response.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
@@ -1155,13 +1155,13 @@ async function process(input, label, msg = null) {
   }).then(memories => {
     emitEvent('memories_written', { count: memories?.length || 0, memories: memories || [] })
   }).catch(err => {
-    console.error('[识别器] 后台运行失败:', err)
+    console.error('[recognizer] Background run failed:', err)
   })
 }
 
 let processing = false
 let lastTickAborted = false
-let currentTimer = null  // 当前 pending 的下一轮 timer，pushMessage 时可清掉以立即执行
+let currentTimer = null  // timer for the next pending tick; can be cleared by pushMessage to run immediately
 
 async function onTick() {
   if (processing) return
@@ -1175,7 +1175,7 @@ async function onTick() {
     if (hasMessages()) {
       const msg = popMessage()
       const lane = msg.queueName === 'background' ? 'BG' : 'L1'
-      await process(msg.raw, `${lane} 消息 from ${msg.fromId}`, msg)
+      await process(msg.raw, `${lane} message from ${msg.fromId}`, msg)
     } else {
       autoTick = true
       selfCheckActiveAtStart = !!state.startupSelfCheck?.active
@@ -1185,21 +1185,21 @@ async function onTick() {
   } finally {
     processing = false
     consumeTickerTick()
-    // 被用户打断时不扣 tick、不推进探索任务，下次心跳重来
+    // When interrupted by the user, do not decrement the tick or advance exploration — retry next heartbeat
     if (!lastTickAborted) {
       decrementAwakeningTick()
-      // 自检期间不推进探索索引；自检结束后才开始按序探索
+      // Do not advance exploration index during self-check; exploration begins sequentially after self-check ends
       if (autoTick && !selfCheckActiveAtStart) advanceExplorationTask()
     }
   }
 }
 
-// 调度优先级（从高到低）：
-//   1. 有消息待处理 → 0
-//   2. 429 rate-limited → quota 的 10 分钟
-//   3. L2 自定义节奏（ttl > 0）→ L2 指定值
-//   4. 有任务 → 30s
-//   5. 空闲 → config.tickInterval
+// Schedule priority (high to low):
+//   1. Messages pending → 0
+//   2. 429 rate-limited → quota's 10-minute interval
+//   3. L2 custom cadence (ttl > 0) → L2-specified value
+//   4. Task active → 30s
+//   5. Idle → config.tickInterval
 function scheduleNextTick() {
   if (!isRunning()) return
   if (currentTimer) { clearTimeout(currentTimer); currentTimer = null }
@@ -1218,24 +1218,24 @@ function scheduleNextTick() {
   let label
   if (hasPendingUser) {
     interval = 0
-    label = '立即（用户消息待处理）'
+    label = 'immediate (user message pending)'
   } else if (hasPending) {
     interval = 0
-    label = '立即（后台消息待处理）'
+    label = 'immediate (background message pending)'
   } else if (rateLimited) {
     interval = getTickInterval(config.tickInterval)
-    label = `限流中（${interval / 1000}s）`
+    label = `rate-limited (${interval / 1000}s)`
   } else if (customMs !== null) {
     const ticker = getTickerStatus()
     interval = customMs
-    label = `L2 自定义 ${interval / 1000}s（剩 ${ticker.ttl} 轮${ticker.reason ? ' · ' + ticker.reason : ''}）`
+    label = `L2 custom ${interval / 1000}s (${ticker.ttl} tick(s) remaining${ticker.reason ? ' · ' + ticker.reason : ''})`
   } else if (getAwakeningTicks() > 0) {
     const awTicks = getAwakeningTicks()
     interval = 10000
-    label = `觉醒期 10s（剩 ${awTicks} 轮）`
+    label = `awakening 10s (${awTicks} tick(s) remaining)`
   } else if (taskActive) {
     interval = 30000
-    label = '任务模式 30s'
+    label = 'task mode 30s'
   } else {
     interval = config.tickInterval
     label = `${interval / 1000}s`
@@ -1245,12 +1245,12 @@ function scheduleNextTick() {
     const dueInMs = Math.max(0, new Date(nextReminder.due_at).getTime() - Date.now())
     if (dueInMs < interval) {
       interval = dueInMs
-      label = `提醒触发 ${Math.ceil(dueInMs / 1000)}s`
+      label = `reminder fires in ${Math.ceil(dueInMs / 1000)}s`
     }
   }
 
   const quota = getQuotaStatus()
-  console.log(`[配额] ${quota.rpmUsed} RPM | ${quota.tpmUsed} TPM | 占用 ${quota.ratio} | 队列 U:${queueSnapshot.user} B:${queueSnapshot.background} | 下次 Tick ${label}`)
+  console.log(`[quota] ${quota.rpmUsed} RPM | ${quota.tpmUsed} TPM | ratio ${quota.ratio} | queue U:${queueSnapshot.user} B:${queueSnapshot.background} | next tick ${label}`)
   emitEvent('quota', { ...quota, nextTickMs: interval, ticker: getTickerStatus(), queue: queueSnapshot })
   currentTimer = setTimeout(async () => {
     currentTimer = null
@@ -1259,10 +1259,10 @@ function scheduleNextTick() {
   }, interval)
 }
 
-// 新消息到达时调用：清掉当前 pending timer，立即跑下一轮
-// 如果当前正在 processing，则依赖 abort 机制让它快速结束，finally 后 scheduleNextTick 会用 interval=0 立即续跑
+// Called when a new message arrives: clear the pending timer and run the next tick immediately.
+// If currently processing, rely on the abort mechanism to finish quickly; scheduleNextTick will use interval=0 to resume.
 function triggerImmediateTick() {
-  if (processing) return  // 由 abort + 结束后的 scheduleNextTick 接力
+  if (processing) return  // rely on abort + the post-finish scheduleNextTick to continue
   if (!isRunning()) return
   if (currentTimer) { clearTimeout(currentTimer); currentTimer = null }
   // 异步启动一轮，不等结果
@@ -1278,13 +1278,13 @@ async function startConsciousnessLoop({ runImmediateTick = true } = {}) {
   if (loopStarted) return
   loopStarted = true
 
-  // 注册调度函数，供控制层（stop/start）唤起
+  // Register the scheduler so the control layer (stop/start) can wake it up
   setScheduler(scheduleNextTick)
 
-  // 注册打断回调：新消息到达时打断当前 LLM 处理 + 立即触发下一轮（不等定时器）
+  // Register interrupt callback: when a new message arrives, interrupt the current LLM call and trigger the next tick immediately (don't wait for the timer)
   setInterruptCallback((entry) => {
     if (currentAbortController && shouldPreemptFor(entry)) {
-      console.log(`[系统] 更高优先级消息到达，打断当前处理：${entry.fromId} (${entry.queueName})`)
+      console.log(`[system] Higher-priority message arrived — interrupting current processing: ${entry.fromId} (${entry.queueName})`)
       emitEvent('processing_preempted', {
         by: entry.fromId,
         queueName: entry.queueName,
@@ -1296,16 +1296,16 @@ async function startConsciousnessLoop({ runImmediateTick = true } = {}) {
     triggerImmediateTick()
   })
 
-  // 在首次 tick 之前初始化自检状态，确保首轮 tick 就能执行自检
+  // Initialize self-check state before the first tick so the first tick can run self-check
   ensureStartupSelfCheckState()
   if (state.startupSelfCheck?.active) {
-    console.log('[系统] 启动自检开始')
+    console.log('[system] Startup self-check starting')
     const selfCheckPayload = { version: STARTUP_SELF_CHECK_VERSION }
     setStickyEvent('startup_self_check_started', selfCheckPayload)
     emitEvent('startup_self_check_started', selfCheckPayload)
   }
 
-  // 是否立即打一发 L2 TICK 由调用方决定；首次激活会用它触发启动自检。
+  // Whether to fire an immediate L2 TICK is up to the caller; initial activation uses it to trigger self-check.
   if (runImmediateTick) {
     await onTick()
   }
@@ -1313,19 +1313,19 @@ async function startConsciousnessLoop({ runImmediateTick = true } = {}) {
 }
 
 async function main() {
-  console.log('Jarvis 启动中...')
+  console.log('Jarvis starting...')
 
-  // 同步 ACUI 技能记忆（AGENT_GUIDE.md hash 比对，按需更新 skill-ui-* 条目）
+  // Sync ACUI skill memories (compare AGENT_GUIDE.md hash, update skill-ui-* entries as needed)
   ensureSkillMemories()
 
   const persona = getConfig('persona')
   if (persona) {
-    console.log(`[系统] 已加载人格：${persona.slice(0, 60)}...`)
+    console.log(`[system] Persona loaded: ${persona.slice(0, 60)}...`)
   } else {
-    console.log('[系统] 人格未设置，等待 Jarvis 自我定义')
+    console.log('[system] No persona set — waiting for Jarvis to self-define')
   }
 
-  // 启动 HTTP API —— 无论是否激活都要起，激活页本身就靠它
+  // Start HTTP API — must start regardless of activation status; the activation page depends on it
   const apiPort = Number(globalThis.process.env.BAILONGMA_PORT) || 3721
   startAPI(apiPort, {
     getStateSnapshot: () => ({
@@ -1341,22 +1341,22 @@ async function main() {
       thoughtStack: (state.thoughtStack || []).map(item => ({ ...item })),
     }),
     onActivated: () => {
-      console.log(`[LLM] 激活成功：${config.provider}（${config.model}）`)
+      console.log(`[LLM] Activated: ${config.provider} (${config.model})`)
       registerMinimaxIfAvailable()
-      startConsciousnessLoop({ runImmediateTick: true }).catch(err => console.error('[系统] 主循环启动失败:', err))
+      startConsciousnessLoop({ runImmediateTick: true }).catch(err => console.error('[system] Main loop failed to start:', err))
     },
   })
   startSocialConnectors({ pushMessage, emitEvent }).catch(err => console.warn('[social] startup failed:', err.message))
 
-  // 启动 TUI
+  // Start TUI
   startTUI('ID:000001')
 
   if (config.needsActivation) {
-    console.log(`输入消息前请先在浏览器打开 http://127.0.0.1:${apiPort}/activation 完成激活\n`)
+    console.log(`Please open http://127.0.0.1:${apiPort}/activation in your browser to activate before sending messages\n`)
     return
   }
 
-  console.log('输入消息后按回车发送给 Jarvis\n')
+  console.log('Type a message and press Enter to send it to Jarvis\n')
   await startConsciousnessLoop()
 }
 
