@@ -1,7 +1,7 @@
 // 自动测试脚本：模拟用户发消息，观察 Jarvis 的反应
 import { config } from './config.js'
 import { callLLM } from './llm.js'
-import { buildSystemPrompt } from './prompt.js'
+import { buildSystemPrompt, buildContextBlock } from './prompt.js'
 import { runRecognizer } from './memory/recognizer.js'
 import { runInjector, formatMemoriesForPrompt } from './memory/injector.js'
 import { getDB, getConfig, setConfig } from './db.js'
@@ -33,13 +33,18 @@ async function process(input, label) {
   const memoriesText = formatMemoriesForPrompt(injection.memories)
   const directionsText = injection.directions.join('\n')
   const persona = getConfig('persona') || ''
-  const systemPrompt = buildSystemPrompt({ persona, memories: memoriesText, directions: directionsText })
+  const systemPrompt = buildSystemPrompt({ persona })
+  const contextBlock = buildContextBlock({ memories: memoriesText, directions: directionsText })
+  // For the standalone test runner we don't have buildLLMMessages plumbing, so
+  // prepend the context to the user message directly — matches what the main
+  // loop does to the current user message in production.
+  const finalUserMessage = contextBlock ? `${contextBlock}\n\n${input}` : input
 
   let response
   try {
     response = await callLLM({
       systemPrompt,
-      message: input,
+      message: finalUserMessage,
       tools: injection.tools || ['send_message']
     })
     console.log('\nJarvis 回应：')

@@ -1,6 +1,6 @@
 import { config, getMinimaxKey as _getMinimaxKey, getSecurity } from './config.js'
 import { callLLM } from './llm.js'
-import { buildSystemPrompt } from './prompt.js'
+import { buildSystemPrompt, buildContextBlock, combinePromptForPreview } from './prompt.js'
 import { runRecognizer } from './memory/recognizer.js'
 import { runInjector, formatMemoriesForPrompt, formatTaskKnowledge, formatPrefetchedItems, formatActiveUICards } from './memory/injector.js'
 import { runMemoryRefreshLoop } from './memory/refresh-loop.js'
@@ -528,29 +528,47 @@ function buildRuntimeContextMessages({ recentActions = [], actionLog = [], lastT
   }]
 }
 
-function buildLLMMessages({ systemPrompt, conversationWindow = [], input, msg = null, recentActions = [], actionLog = [], lastToolResult = null, taskSteps = [], batteryBlock = '' }) {
+function buildLLMMessages({ systemPrompt, contextBlock = '', conversationWindow = [], input, msg = null, recentActions = [], actionLog = [], lastToolResult = null, taskSteps = [], batteryBlock = '' }) {
   const messages = [{ role: 'system', content: systemPrompt }]
   messages.push(...buildRuntimeContextMessages({ recentActions, actionLog, lastToolResult, taskSteps, batteryBlock }))
 
   const rows = Array.isArray(conversationWindow) ? conversationWindow : []
+  // Track which message in the array should receive this round's <context> block:
+  // it's the last user-role message representing the "current" turn — either the
+  // matched row from conversationWindow (when msg is already persisted to db) or
+  // the appended fallback message below (TICK / unmatched cases).
+  let currentMessageIndex = -1
+
   for (const row of rows) {
     if (!row?.content) continue
     const formatted = formatConversationMessage(row, msg)
-    if (formatted.content) messages.push(formatted)
+    if (!formatted.content) continue
+    messages.push(formatted)
+    const isCurrent = !!msg
+      && row.role === 'user'
+      && row.from_id === msg.fromId
+      && row.timestamp === msg.timestamp
+      && row.content === msg.content
+    if (isCurrent) currentMessageIndex = messages.length - 1
   }
 
-  const hasCurrentMessage = !!msg && rows.some(row =>
-    row.role === 'user'
-    && row.from_id === msg.fromId
-    && row.timestamp === msg.timestamp
-    && row.content === msg.content
-  )
+  const hasCurrentMessage = currentMessageIndex >= 0
 
   if (!hasCurrentMessage) {
     messages.push({
       role: 'user',
       content: input,
     })
+    currentMessageIndex = messages.length - 1
+  }
+
+  // Prepend this round's <context>...</context> to the current user message.
+  // The block is NOT persisted to db — conversations are written from the raw
+  // user content (see queue.pushMessage) and assistant outputs are stored
+  // verbatim, so the next round's conversationWindow stays clean.
+  if (contextBlock && currentMessageIndex >= 0) {
+    const target = messages[currentMessageIndex]
+    target.content = `${contextBlock}\n\n${target.content || ''}`
   }
 
   return messages
@@ -859,14 +877,22 @@ async function process(input, label, msg = null) {
       if (state.thoughtStack.length > 3) state.thoughtStack.shift()
     }
 
-    // 2. Build system prompt
+    // 2. Build system prompt (stable hard-floor) + context block (per-round dynamic)
     const persona = getConfig('persona') || ''
     const agentName = getConfig('agent_name') || 'Longma'
     const entities = getKnownEntities()
     const hasActiveTask = !!state.task
+    const extraContextJoined = [presenceText, hotspotStateText, hotspotContextText, personCardStateText, personCardContextText, weatherContextText, docStateText, docContextText, prefetchText, extraContextText, injection.uiSignalSummary, formatActiveUICards(injection.activeUICards)].filter(Boolean).join('\n\n')
+
     const systemPrompt = buildSystemPrompt({
       agentName,
       persona,
+      existenceDesc: describeExistence(birthTime),
+      security: getSecurity(),
+      systemEnv: buildSystemEnv(msg),
+    })
+
+    const baseContextArgs = {
       memories: memoriesText,
       directions: directionsText,
       constraints: injection.constraints || [],
@@ -876,15 +902,14 @@ async function process(input, label, msg = null) {
       hasActiveTask,
       task: state.task || null,
       taskKnowledge: taskKnowledgeText,
-      extraContext: [presenceText, hotspotStateText, hotspotContextText, personCardStateText, personCardContextText, weatherContextText, docStateText, docContextText, prefetchText, extraContextText, injection.uiSignalSummary, formatActiveUICards(injection.activeUICards)].filter(Boolean).join('\n\n'),
-      existenceDesc: describeExistence(birthTime),
-      security: getSecurity(),
+      extraContext: extraContextJoined,
       awakeningTicks: getAwakeningTicks(),
-      systemEnv: buildSystemEnv(msg),
-    })
+    }
+    let contextBlock = buildContextBlock(baseContextArgs)
 
-    const llmMessages = buildLLMMessages({
+    const buildMessagesWithContext = (ctxBlock) => buildLLMMessages({
       systemPrompt,
+      contextBlock: ctxBlock,
       conversationWindow: injection.conversationWindow || [],
       input,
       msg,
@@ -895,9 +920,10 @@ async function process(input, label, msg = null) {
       batteryBlock: getBatteryBlock(),
     })
 
+    let llmMessages = buildMessagesWithContext(contextBlock)
+
     // Memory refresh injection (L1 user messages only)
     // 实时用户消息（fastUserPath）跳过：刷新流程会先跑一次评估 LLM 调用，对实时聊天是硬性延迟税
-    let enrichedSystemPrompt = systemPrompt
     const shouldRefreshL1 = !isTick && !fastUserPath && msg?.content && msg.content.trim()
     const tickSinceLastRefresh = state.tickCounter - state.lastTaskRefreshTick
     const shouldRefreshTick = isTick && !!state.task && tickSinceLastRefresh >= 5
@@ -907,7 +933,7 @@ async function process(input, label, msg = null) {
           originalQuery: shouldRefreshL1 ? msg.content : state.task,
           baseMemories: injection.memories,
           formattedBaseMemories: memoriesText,
-          systemPromptBase: systemPrompt,
+          systemPromptBase: combinePromptForPreview(systemPrompt, contextBlock),
           signal: controller.signal,
           maxRounds: shouldRefreshTick ? 2 : 3,
         })
@@ -923,25 +949,13 @@ async function process(input, label, msg = null) {
             extraParts.push(`[Round 3 external query results]\n${refreshResult.round3Results}`)
           }
           const enrichedMemoriesText = memoriesText + '\n\n' + extraParts.join('\n\n')
-          enrichedSystemPrompt = buildSystemPrompt({
-            agentName,
-            persona,
+          // Rebuild only the context block — system stays stable so prompt cache survives.
+          contextBlock = buildContextBlock({
+            ...baseContextArgs,
             memories: enrichedMemoriesText,
-            directions: directionsText,
-            constraints: injection.constraints || [],
-            personMemory: injection.personMemory || null,
-            thoughtStack: state.thoughtStack,
-            entities,
-            hasActiveTask,
-            task: state.task || null,
-            taskKnowledge: taskKnowledgeText,
-            extraContext: [presenceText, hotspotStateText, hotspotContextText, personCardStateText, personCardContextText, weatherContextText, docStateText, docContextText, prefetchText, extraContextText, injection.uiSignalSummary, formatActiveUICards(injection.activeUICards)].filter(Boolean).join('\n\n'),
-            existenceDesc: describeExistence(birthTime),
-            security: getSecurity(),
-            awakeningTicks: getAwakeningTicks(),
-            systemEnv: buildSystemEnv(msg),
             roundInfo: { round: refreshResult.roundsRun },
           })
+          llmMessages = buildMessagesWithContext(contextBlock)
           console.log(`[memory refresh] Done — ${refreshResult.roundsRun} round(s), appended ${refreshResult.additionalMemories.length} memory/memories`)
         }
       } catch (e) {
@@ -949,13 +963,13 @@ async function process(input, label, msg = null) {
       }
     }
 
-    // Emit full system prompt event
-    emitEvent('system_prompt', { content: enrichedSystemPrompt, fastUserPath })
+    // Emit full prompt preview event (system + context, joined for human display)
+    emitEvent('system_prompt', { content: combinePromptForPreview(systemPrompt, contextBlock), fastUserPath })
 
     // 3. Call Jarvis LLM (can be interrupted by a new message)
     const toolContext = buildToolContextForProcess(msg, injection)
     llmResult = await callLLM({
-      systemPrompt: enrichedSystemPrompt,
+      systemPrompt,
       message: input,
       messages: llmMessages,
       tools: injection.tools || ['send_message'],

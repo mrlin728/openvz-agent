@@ -1,4 +1,4 @@
-import { buildSystemPrompt } from './prompt.js'
+import { buildSystemPrompt, buildContextBlock, combinePromptForPreview } from './prompt.js'
 import { runInjector, formatMemoriesForPrompt, formatTaskKnowledge } from './memory/injector.js'
 import { gatherContext, formatExtraContext } from './context/gatherer.js'
 import { getConfig, getKnownEntities, getOrInitBirthTime } from './db.js'
@@ -43,29 +43,35 @@ export async function buildHeartbeatSystemPromptPreview({
   const entities = getKnownEntities()
   const birthTime = getOrInitBirthTime()
 
-  const systemPrompt = buildSystemPrompt({
+  const systemPromptStable = buildSystemPrompt({
     agentName,
     persona,
+    existenceDesc: describeExistence(birthTime),
+  })
+
+  const contextBlock = buildContextBlock({
     memories: memoriesText,
     directions: directionsText,
     constraints: injection.constraints || [],
-    conversationWindow: injection.conversationWindow || [],
     personMemory: injection.personMemory || null,
     thoughtStack: workingState.thoughtStack || [],
     entities,
-    recentActions: workingState.recentActions || [],
-    actionLog: injection.actionLog || [],
     hasActiveTask: !!workingState.task,
     task: workingState.task || null,
     taskKnowledge: taskKnowledgeText,
     extraContext: extraContextText,
-    lastToolResult: injection.lastToolResult || null,
-    existenceDesc: describeExistence(birthTime),
   })
+
+  // For the preview UI (systemPrompt.html), surface a combined view so the
+  // existing renderer keeps working — and also expose the split parts for
+  // tools that want to inspect the new architecture directly.
+  const combined = combinePromptForPreview(systemPromptStable, contextBlock)
 
   return {
     message,
-    systemPrompt,
+    systemPrompt: combined,
+    system: systemPromptStable,
+    contextBlock,
     injection: {
       directions,
       tools: injection.tools || [],
