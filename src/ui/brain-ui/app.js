@@ -1193,8 +1193,25 @@ function renderFocusFrame(frame, { isTop }) {
   const hits = Number(frame?.hitCount || 0);
   const conclusions = Array.isArray(frame?.conclusions) ? frame.conclusions : [];
 
-  const conclusionsHTML = conclusions.map((c) =>
-    `<div class="focus-frame-conclusion">${escapeFocusText(truncateConclusion(c, isTop ? 120 : 60))}</div>`
+  // 新布局：conclusion 为主、topic 为辅。
+  // 主行 = 最近一条 conclusion（数组末尾）；其余早期 conclusion 作为弱化辅助行。
+  // 若没有 conclusion，退回展示 topic 为主 + 「（暂无沉淀结论）」斜体提示。
+  const latest = conclusions.length > 0 ? conclusions[conclusions.length - 1] : "";
+  const earlier = conclusions.length > 1 ? conclusions.slice(0, -1) : [];
+
+  const mainHTML = latest
+    ? `<div class="focus-frame-main">${escapeFocusText(truncateConclusion(latest, isTop ? 120 : 80))}</div>`
+    : `<div class="focus-frame-main focus-frame-main-fallback">${escapeFocusText(topic)}` +
+        `<span class="focus-frame-empty-note">（暂无沉淀结论）</span></div>`;
+
+  // 次行：topic ngram。若主行就是 topic（fallback），就不再重复显示。
+  const subHTML = latest
+    ? `<div class="focus-frame-sub">topic: ${escapeFocusText(topic)}</div>`
+    : "";
+
+  // 早期 conclusion 用更弱的样式串列在下方，方便回看演化轨迹。
+  const earlierHTML = earlier.map((c) =>
+    `<div class="focus-frame-conclusion focus-frame-conclusion-earlier">${escapeFocusText(truncateConclusion(c, isTop ? 100 : 60))}</div>`
   ).join("");
 
   const meta = isTop
@@ -1203,9 +1220,10 @@ function renderFocusFrame(frame, { isTop }) {
 
   return (
     `<div class="focus-frame${isTop ? " top" : ""}">` +
-      `<div class="focus-frame-topic">${escapeFocusText(topic)}</div>` +
+      mainHTML +
+      subHTML +
       `<div class="focus-frame-meta">${escapeFocusText(meta)}</div>` +
-      conclusionsHTML +
+      earlierHTML +
     `</div>`
   );
 }
@@ -1231,19 +1249,18 @@ function renderFocusStack(stack) {
 
 function flashFocusCompressed() {
   if (!focusBlockEl) return;
-  // 让栈顶帧最后一条 conclusion 走淡入动画；同时整块做一次柔和高光。
+  // 让栈顶帧的主行（最新 conclusion）走淡入动画；同时整块做一次柔和高光。
   focusBlockEl.classList.remove("focus-compress-pulse");
   // 强制 reflow 让动画重启
   void focusBlockEl.offsetWidth;
   focusBlockEl.classList.add("focus-compress-pulse");
 
   const topFrame = focusStackEl?.querySelector(".focus-frame.top");
-  const conclusions = topFrame?.querySelectorAll(".focus-frame-conclusion");
-  if (conclusions && conclusions.length > 0) {
-    const last = conclusions[conclusions.length - 1];
-    last.classList.remove("just-added");
-    void last.offsetWidth;
-    last.classList.add("just-added");
+  const mainEl = topFrame?.querySelector(".focus-frame-main");
+  if (mainEl) {
+    mainEl.classList.remove("just-added");
+    void mainEl.offsetWidth;
+    mainEl.classList.add("just-added");
   }
 }
 
@@ -1344,14 +1361,40 @@ function handle({ type, data = {} }) {
     case "focus_compressed": {
       // 后端 emit 顺序：先 focus_frame（栈已 pop 完）→ 异步压缩完再 focus_compressed。
       // 触发时栈顶帧的 conclusions 数组在后端已被追加，但前端 DOM 里还是旧的。
-      // 这里做最简处理：把 conclusion 追加到栈顶尾部 DOM + 走淡入动画。
+      // 新布局：把新 conclusion 写入「主行」(.focus-frame-main)；
+      // 若主行原本是 fallback（暂无沉淀结论），就把它升级为正常主行。
+      // 若主行已有旧 conclusion，把旧值降级追加到「早期 conclusion」列表里，再覆盖主行。
       // 下一次 focus_frame 事件会带最新 conclusions 全量覆盖，所以即使错位也很快收敛。
       const topFrame = focusStackEl?.querySelector(".focus-frame.top");
       if (topFrame && data.conclusion) {
-        const div = document.createElement("div");
-        div.className = "focus-frame-conclusion just-added";
-        div.textContent = truncateConclusion(data.conclusion, 120);
-        topFrame.appendChild(div);
+        const mainEl = topFrame.querySelector(".focus-frame-main");
+        const newText = truncateConclusion(data.conclusion, 120);
+        if (mainEl) {
+          const wasFallback = mainEl.classList.contains("focus-frame-main-fallback");
+          if (!wasFallback && mainEl.textContent) {
+            // 把旧主行降级到早期 conclusion 区
+            const earlier = document.createElement("div");
+            earlier.className = "focus-frame-conclusion focus-frame-conclusion-earlier";
+            earlier.textContent = mainEl.textContent;
+            // 插到 meta 之后（即在早期列表区开头/末尾都行，统一放在 meta 之后保持先后顺序）
+            const metaEl = topFrame.querySelector(".focus-frame-meta");
+            if (metaEl && metaEl.nextSibling) {
+              topFrame.insertBefore(earlier, metaEl.nextSibling);
+            } else {
+              topFrame.appendChild(earlier);
+            }
+          }
+          mainEl.classList.remove("focus-frame-main-fallback");
+          mainEl.innerHTML = "";
+          mainEl.textContent = newText;
+          // 若先前没有 sub 行（fallback 态），现在补一个，给 topic 一个去处
+          if (wasFallback && !topFrame.querySelector(".focus-frame-sub")) {
+            const sub = document.createElement("div");
+            sub.className = "focus-frame-sub";
+            // 从已有 topic 文本里取（fallback 主行里就是 topic 文本，但已被清空，所以
+            // 这一步交给下一次 focus_frame 全量重渲染补齐 sub 行；这里就不强行造）。
+          }
+        }
       }
       flashFocusCompressed();
       break;

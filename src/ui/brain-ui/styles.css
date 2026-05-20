@@ -294,6 +294,51 @@ body {
   line-height: 1.4;
 }
 
+/* 主行：最新 conclusion（视觉权重最高） */
+.focus-frame-main {
+  font-size: 12px;
+  color: var(--ink2);
+  line-height: 1.45;
+  word-break: break-word;
+}
+
+.focus-frame.top .focus-frame-main {
+  font-size: 14px;
+  color: var(--cool);
+  font-weight: 600;
+}
+
+/* fallback：当帧暂无 conclusion 时主行展示 topic */
+.focus-frame-main-fallback {
+  color: var(--ink2);
+  font-weight: 400;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.02em;
+}
+
+.focus-frame.top .focus-frame-main-fallback {
+  color: var(--cool);
+}
+
+.focus-frame-empty-note {
+  margin-left: 8px;
+  font-size: 10px;
+  color: var(--dim);
+  font-style: italic;
+  font-weight: 400;
+  letter-spacing: 0.04em;
+}
+
+/* 次行：topic ngram（辅助信息） */
+.focus-frame-sub {
+  font-size: 10px;
+  color: var(--dim);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  letter-spacing: 0.02em;
+  word-break: break-word;
+}
+
+/* 兼容旧选择器（如有外部依赖） */
 .focus-frame-topic {
   font-size: 11px;
   color: var(--ink2);
@@ -329,7 +374,17 @@ body {
   font-size: 11px;
 }
 
-.focus-frame-conclusion.just-added {
+/* 早期 conclusion：比主行弱、比 meta 强 */
+.focus-frame-conclusion-earlier {
+  opacity: 0.7;
+}
+
+.focus-frame.top .focus-frame-conclusion-earlier {
+  opacity: 0.75;
+}
+
+.focus-frame-conclusion.just-added,
+.focus-frame-main.just-added {
   animation: focus-conclusion-in 0.6s ease-out;
 }
 
