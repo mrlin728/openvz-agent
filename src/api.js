@@ -318,11 +318,14 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     }
 
     // GET /conversations?limit=60 — chat history (ascending by time, most recent last)
+    // Admin/debug endpoint: returns FULL history including focus_absorbed rows.
+    // The absorbed flag (dynamic memory pool 3.5) only filters main-line injection
+    // in injector.js; here the operator needs to see everything for debugging.
     if (req.method === 'GET' && url.pathname === '/conversations') {
       const db = getDB()
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '60'), 500)
       const rows = db.prepare(`
-        SELECT id, role, from_id, to_id, content, timestamp, channel, external_party_id
+        SELECT id, role, from_id, to_id, content, timestamp, channel, external_party_id, focus_absorbed
         FROM conversations
         ORDER BY id DESC
         LIMIT ?

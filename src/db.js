@@ -106,6 +106,14 @@ function initSchema() {
   `)
   try { db.exec(`ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT ''`) } catch {}
   try { db.exec(`ALTER TABLE conversations ADD COLUMN external_party_id TEXT DEFAULT ''`) } catch {}
+  // 迁移：focus_absorbed 标记（动态上下文记忆池 3.5 「主线深化时剔除残留噪声」）。
+  //   focus_absorbed=1 表示这条对话所属的专注帧已被压缩回填吸收（focus_conclusion 已写入仓库），
+  //   下一轮主线注入对话窗口时默认 WHERE focus_absorbed=0 把它隐去。
+  // 关键：absorbed != deleted。对话物理仍在 conversations 表，admin 端点 / 显式 includeAbsorbed=true
+  //   仍可拿到；这跟 memories.visibility 是平行的「软隐藏」概念。
+  // 已存在行默认 0（向后兼容，无需 backfill）。
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN focus_absorbed INTEGER NOT NULL DEFAULT 0`) } catch {}
+  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_conv_focus_absorbed ON conversations(focus_absorbed)`) } catch {}
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS memories (
@@ -1285,14 +1293,19 @@ export function getMemoriesByEntity(entityId, limit = 10) {
 }
 
 // 获取与某实体的近期对话记录（最近 limit 条，不超过 maxHours 小时）
-export function getRecentConversation(entityId, limit = 20, maxHours = 24) {
+// 动态上下文记忆池 3.5：默认 WHERE focus_absorbed=0，把已被压缩回填吸收的子帧对话隐去
+//   （主线深化时的「剔除残留噪声」）。absorbed != deleted——对话物理仍在表里，
+//   传 includeAbsorbed=true 即可拿全量（admin / 调试 / focus-compress 自身的回看）。
+export function getRecentConversation(entityId, limit = 20, maxHours = 24, { includeAbsorbed = false } = {}) {
   const db = getDB()
   const normalizedId = normalizeConversationPartyId(entityId)
   const cutoff = new Date(Date.now() - maxHours * 3600 * 1000).toISOString()
+  const absorbedClause = includeAbsorbed ? '' : 'AND focus_absorbed = 0'
   const rows = db.prepare(`
     SELECT * FROM conversations
     WHERE (from_id = ? OR to_id = ?)
     AND timestamp >= ?
+    ${absorbedClause}
     ORDER BY timestamp DESC
     LIMIT ?
   `).all(normalizedId, normalizedId, cutoff, limit)
@@ -1300,16 +1313,40 @@ export function getRecentConversation(entityId, limit = 20, maxHours = 24) {
 }
 
 // 获取全局近期对话时间线（用于 TICK/heartbeat 场景，无明确发送者时仍可注入最近聊天上下文）
-export function getRecentConversationTimeline(limit = 20, maxHours = 24) {
+// includeAbsorbed 语义同 getRecentConversation。
+export function getRecentConversationTimeline(limit = 20, maxHours = 24, { includeAbsorbed = false } = {}) {
   const db = getDB()
   const cutoff = new Date(Date.now() - maxHours * 3600 * 1000).toISOString()
+  const absorbedClause = includeAbsorbed ? '' : 'AND focus_absorbed = 0'
   const rows = db.prepare(`
     SELECT * FROM conversations
     WHERE timestamp >= ?
+    ${absorbedClause}
     ORDER BY timestamp DESC
     LIMIT ?
   `).all(cutoff, limit)
   return rows.reverse()
+}
+
+// 把 [startedAt, endedAt) 区间内未被吸收的对话标记为 focus_absorbed=1。
+// 动态上下文记忆池 3.5：仅在 focus-compress.js 真正成功写出 conclusion 后才调用——
+// 如果 LLM 调用失败、conclusion 为空就不标记，否则对话被错误地永久隐藏。
+// 返回受影响行数；任何错误一律吞掉返回 0（fire-and-forget 路径不能因为标记失败崩到主对话）。
+export function markConversationsAbsorbed(startedAt, endedAt = null) {
+  if (!startedAt) return 0
+  const db = getDB()
+  const end = endedAt || new Date().toISOString()
+  try {
+    const result = db.prepare(`
+      UPDATE conversations
+      SET focus_absorbed = 1
+      WHERE timestamp >= ? AND timestamp < ?
+      AND focus_absorbed = 0
+    `).run(startedAt, end)
+    return result.changes
+  } catch {
+    return 0
+  }
 }
 
 // 获取最近 N 小时内有过双向对话的所有他者 ID（按最近对话时间倒序）
