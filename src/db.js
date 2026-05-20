@@ -1358,11 +1358,16 @@ export function markConversationsAbsorbed(startedAt, endedAt = null) {
   if (!startedAt) return 0
   const db = getDB()
   const end = endedAt || new Date().toISOString()
+  // 时区注意：frame.startedAt 来自 new Date().toISOString() 是 UTC（"...Z"），
+  // 而 conversations.timestamp 来自 nowTimestamp() 是本地带偏移（"...+08:00"）。
+  // 直接字符串字典序比较会失败（"T17" vs "T09"），所以用 strftime('%s', ...) 转
+  // unixepoch 比较——SQLite 能识别 'Z' 和 '+HH:MM' 两种时区格式。
   try {
     const result = db.prepare(`
       UPDATE conversations
       SET focus_absorbed = 1
-      WHERE timestamp >= ? AND timestamp < ?
+      WHERE strftime('%s', timestamp) >= strftime('%s', ?)
+      AND   strftime('%s', timestamp) <  strftime('%s', ?)
       AND focus_absorbed = 0
     `).run(startedAt, end)
     return result.changes
