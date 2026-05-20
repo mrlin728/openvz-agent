@@ -133,7 +133,9 @@ export async function compressPoppedFrame(poppedFrame, currentTopFrame, { sessio
     let conversations = []
     let actionLogs = []
     try {
-      conversations = getRecentConversationTimeline(MAX_TIMELINE_LIMIT, hoursSince) || []
+      // includeAbsorbed: true —— 压缩器自身要看「全量历史」来生成结论；如果之前某个
+      // overlapping frame 已经把部分对话标 absorbed，默认过滤会让压缩器丢失上下文。
+      conversations = getRecentConversationTimeline(MAX_TIMELINE_LIMIT, hoursSince, { includeAbsorbed: true }) || []
       conversations = filterSince(conversations, poppedFrame.startedAt)
     } catch {}
     try {
@@ -199,6 +201,22 @@ export async function compressPoppedFrame(poppedFrame, currentTopFrame, { sessio
     } catch (err) {
       // 去重 / 写库失败都吞掉
     }
+
+    // 动态上下文记忆池 3.5：标记该帧覆盖区间的对话为 focus_absorbed=1。
+    // 关键先后：必须在 conclusion 真正成功写入后才标记——前面的 cleanConclusion 已经
+    // ensure conclusion 非空，且 insertMemory 走到这里说明压缩流程没崩。否则对话会被
+    // 错误地永久从下一轮主线注入中隐藏。
+    //
+    // 已知 race（v0 接受）：compressPoppedFrame 是 fire-and-forget。如果用户在 frame
+    // pop 之后毫秒级立刻发新消息，新消息进 injector 时本函数可能还没执行到这里，
+    // 子帧对话还没标记 absorbed → 对话被注入。v0 不保证「绝对不出现噪声」，只是
+    // 「绝大多数情况不出现」。
+    try {
+      const { markConversationsAbsorbed } = await import('../db.js')
+      const marked = markConversationsAbsorbed(poppedFrame.startedAt, new Date().toISOString())
+      const topicLabel = Array.isArray(poppedFrame.topic) ? poppedFrame.topic.join(',') : ''
+      console.log(`[focus-compress] 标记 ${marked} 条对话为 absorbed (frame: ${topicLabel})`)
+    } catch {}
 
     // emit 事件（如果给了回调）
     try {
