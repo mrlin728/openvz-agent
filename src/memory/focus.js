@@ -83,6 +83,27 @@ function frameOverlap(frame, kws) {
   return n
 }
 
+// async 模式专用：v0 在没拿到 LLM 结果之前直接按 pushed 或 returned 落地栈，
+// 返回 { event, poppedFrames }（跟 updateFocusFrame 同款返回结构）。
+// 提取出来是为了 async 路径在 fire LLM 之前就能 return 给上层。
+function applyV0Pushed_or_Returned({ state, v0Event, v0Topic, v0ReturnedIndex, tickCounter }) {
+  if (v0Event === 'returned') {
+    const popped = state.focusStack.splice(v0ReturnedIndex + 1)
+    const newTop = state.focusStack[v0ReturnedIndex]
+    newTop.lastSeenTick = tickCounter
+    newTop.hitCount += 1
+    return { event: 'returned', poppedFrames: popped }
+  }
+  // pushed
+  state.focusStack.push(makeFrame(v0Topic, tickCounter))
+  const popped = []
+  while (state.focusStack.length > MAX_FOCUS_DEPTH) {
+    const shifted = state.focusStack.shift()
+    if (shifted) popped.push(shifted)
+  }
+  return { event: 'pushed', poppedFrames: popped }
+}
+
 // 确保 state.focusStack 存在；向后兼容：如果旧 state.focusFrame 残留也清掉。
 function ensureStack(state) {
   if (!Array.isArray(state.focusStack)) {
@@ -100,12 +121,20 @@ function ensureStack(state) {
  * 第 5b 步起变成 async：v0 判 pushed/returned 时同步等 LLM 仲裁（800ms 硬超时）。
  * v0 判 created/kept/cleared/noop 走纯 ngram 启发式，零网络延迟。
  *
+ * 第 6a 步：新增 classifierMode='async' —— v0 先同步建帧，LLM 仲裁 fire-and-forget
+ * 在后台跑，拿到 refined topic 后回调 onClassifierRefined 让上层把改动 mutate 进帧 + 保存。
+ * 这样实时用户消息也能享受 LLM 语义化 topic，且零延迟。
+ *
  * @param {object} state          — 进程级 state 对象（必须可写）
  * @param {string} message        — 当前 process 拿到的裸消息字符串
  * @param {object} ctx
  * @param {boolean} ctx.isTick    — 当前是不是 TICK 心跳
  * @param {number}  ctx.tickCounter — 当前 tickCounter（用作帧的时间轴）
- * @param {boolean} [ctx.classifierEnabled=true] — 是否启用 v1 LLM 仲裁；fastUserPath 路径关掉
+ * @param {boolean} [ctx.classifierEnabled=true] — 是否启用 v1 LLM 仲裁
+ * @param {'sync'|'async'} [ctx.classifierMode='sync'] — sync = 阻塞等仲裁；async = fire-and-forget 后台仲裁
+ * @param {function} [ctx.onClassifierRefined] — async 模式下 LLM 返回后的回调：
+ *   ({ frameRef, llmResult, v0Event }) => void。frameRef 是栈里的帧对象引用（已被 v0 创建/选中）。
+ *   上层可在这里把 refined topic 写进 frameRef.topic 并触发持久化。
  * @param {AbortSignal} [ctx.signal] — 上层 abort 信号
  * @param {function} [ctx.classifierFn] — 注入用 stub（测试用）；默认走 classifyFocusEvent
  * @returns {Promise<{
@@ -128,6 +157,8 @@ export async function updateFocusFrame(state, message, {
   isTick = false,
   tickCounter = 0,
   classifierEnabled = true,
+  classifierMode = 'sync',
+  onClassifierRefined,
   signal,
   classifierFn,
 } = {}) {
@@ -181,7 +212,70 @@ export async function updateFocusFrame(state, message, {
   const v0Event = v0ReturnedIndex >= 0 ? 'returned' : 'pushed'
   const v0Topic = kws.slice(0, TOPIC_KEYWORDS_LIMIT)
 
-  // 调 v1 仲裁（如果启用）。失败/超时/抛错都回退 v0。
+  // ===== async 模式：v0 立刻建帧 + LLM 后台仲裁 + 拿到结果后 patch 帧 topic =====
+  // 这条路径专为 fastUserPath 实时聊天用：零延迟，下一轮 buildContextBlock 看到 refined topic。
+  if (classifierEnabled && classifierMode === 'async') {
+    const result = applyV0Pushed_or_Returned({
+      state,
+      v0Event,
+      v0Topic,
+      v0ReturnedIndex,
+      tickCounter,
+    })
+    // 拿到 v0 刚创建/复用的栈顶帧引用 —— LLM 回来后 patch 它的 topic
+    const frameRef = topOf(state.focusStack)
+    // fire-and-forget LLM 仲裁
+    const fn = classifierFn || classifyFocusEvent
+    // 给 LLM 看仲裁前的栈快照（深拷贝 topic 数组，避免后续 mutate 污染）
+    const stackSnapshot = state.focusStack.map(f => ({
+      topic: Array.isArray(f.topic) ? [...f.topic] : [],
+      conclusions: Array.isArray(f.conclusions) ? f.conclusions.slice(-1) : [],
+    }))
+    ;(async () => {
+      let llm = null
+      try {
+        llm = await fn({
+          newMessage: body,
+          v0Event,
+          v0Topic,
+          currentStack: stackSnapshot,
+          signal,
+        })
+      } catch (e) {
+        console.log(`[focus-classifier] async LLM 抛错: ${e?.message || 'unknown'} → 保留 v0 topic`)
+        llm = null
+      }
+      if (!llm) return
+      // 帧可能已经被后续轮次 pop 出栈了 —— 检查引用是否还在
+      const stillInStack = (state.focusStack || []).indexOf(frameRef) >= 0
+      if (!stillInStack) {
+        console.log('[focus-classifier] async LLM 返回但帧已出栈 → 丢弃 refined topic')
+        return
+      }
+      // 只在 LLM 给的 action 跟 v0 结构动作一致时才回填 topic。
+      // LLM 改判 kept/leaf/不同 action → 我们已经按 v0 建了帧，不再事后改栈结构（太复杂、风险高）。
+      // 只回填 topic 也已经解决了主要 bug（语义关键词替换 ngram）。
+      if (llm.action !== v0Event) {
+        console.log(`[focus-classifier] async LLM 改判 ${v0Event}→${llm.action}，async 模式不改栈结构，但仍回填 topic 以反映语义`)
+      }
+      if (Array.isArray(llm.topic) && llm.topic.length > 0) {
+        const oldTopic = Array.isArray(frameRef.topic) ? frameRef.topic.join(',') : ''
+        frameRef.topic = llm.topic.slice(0, TOPIC_KEYWORDS_LIMIT)
+        console.log(`[focus-classifier] async patch frame.topic: [${oldTopic}] → [${frameRef.topic.join(',')}]`)
+        if (typeof onClassifierRefined === 'function') {
+          try {
+            onClassifierRefined({ frameRef, llmResult: llm, v0Event })
+          } catch (e) {
+            console.log(`[focus-classifier] onClassifierRefined 回调抛错: ${e?.message || 'unknown'}`)
+          }
+        }
+      }
+    })().catch(() => {})
+
+    return result
+  }
+
+  // ===== sync 模式：阻塞等 LLM 仲裁（800ms 超时）。失败/超时/抛错都回退 v0。 =====
   let llmResult = null
   if (classifierEnabled) {
     const fn = classifierFn || classifyFocusEvent
