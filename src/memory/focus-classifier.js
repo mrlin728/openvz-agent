@@ -127,17 +127,25 @@ export async function classifyFocusEvent({
   if (!newMessage || typeof newMessage !== 'string') return null
   if (signal?.aborted) return null
 
+  const v0TopicStr = Array.isArray(v0Topic) ? v0Topic.join(',') : String(v0Topic || '')
+  const tag = `[focus-classifier] v0=${v0Event} topic=[${v0TopicStr}]`
+
   // 动态 import callLLM —— 跟 injector.js 同款，避免在测试环境/早期模块加载时拉起一切
   let callLLM
   try {
     const llm = await import('../llm.js')
     callLLM = llm.callLLM
-  } catch {
+  } catch (e) {
+    console.log(`${tag} → llm.js import 失败 (${e?.message || 'unknown'}) → 回退 v0`)
     return null
   }
-  if (typeof callLLM !== 'function') return null
+  if (typeof callLLM !== 'function') {
+    console.log(`${tag} → callLLM 不是函数 → 回退 v0`)
+    return null
+  }
 
   const userPrompt = buildUserPrompt({ newMessage, v0Event, v0Topic, currentStack })
+  const t0 = Date.now()
 
   // 800ms 硬超时 + LLM 调用赛跑
   let timeoutHandle = null
@@ -160,20 +168,42 @@ export async function classifyFocusEvent({
       }),
       timeoutPromise,
     ])
-  } catch {
+  } catch (e) {
     if (timeoutHandle) clearTimeout(timeoutHandle)
+    const dt = Date.now() - t0
+    console.log(`${tag} → LLM 抛错 (${dt}ms, ${e?.message || 'unknown'}) → 回退 v0`)
     return null
   }
   if (timeoutHandle) clearTimeout(timeoutHandle)
 
-  if (!result || result.__timeout) return null
-  if (result.aborted) return null
+  const dt = Date.now() - t0
+  if (!result || result.__timeout) {
+    console.log(`${tag} → LLM 超时 (${CLASSIFIER_TIMEOUT_MS}ms 硬超时, 实际 ${dt}ms) → 回退 v0`)
+    return null
+  }
+  if (result.aborted) {
+    console.log(`${tag} → LLM aborted (${dt}ms) → 回退 v0`)
+    return null
+  }
 
   const content = typeof result === 'string' ? result : (result.content || '')
+  const preview = String(content).replace(/\s+/g, ' ').slice(0, 200)
   const raw = parseClassifierJson(content)
-  if (!raw) return null
+  if (!raw) {
+    console.log(`${tag} → LLM 返回 (${dt}ms) 但 JSON 解析失败 raw="${preview}" → 回退 v0`)
+    return null
+  }
 
-  return normalizeClassifierResult(raw, currentStack)
+  const normalized = normalizeClassifierResult(raw, currentStack)
+  if (!normalized) {
+    console.log(`${tag} → LLM 返回 (${dt}ms) action=${raw.action} 但 normalize 拒掉 (非法 action 或越界 depth) raw="${preview}" → 回退 v0`)
+    return null
+  }
+
+  const refinedStr = normalized.topic.join(',')
+  const depthStr = normalized.action === 'returned' ? ` d=${normalized.returnsToDepth}` : ''
+  console.log(`${tag} → llm=${normalized.action}${depthStr} (${dt}ms) refined=[${refinedStr}] ok`)
+  return normalized
 }
 
 // 暴露内部辅助函数，便于测试

@@ -314,6 +314,123 @@ function stubClassifier(returnValue, capture) {
   assert(state.focusStack.length === 3, 'bad-depth fallback: stack pushed')
 }
 
+// ========== async 模式：v0 立刻建帧 + LLM 后台 patch refined topic ==========
+// 这条路径是 Step 6a 新增的，专为 fastUserPath 实时聊天用 —— 主调用立刻返回，
+// LLM 仲裁 fire-and-forget 跑完后把语义化 topic 写回 frame.topic + 触发 onClassifierRefined。
+{
+  const state = makeState()
+  state.focusStack = [makeFrame(['prompt', 'caching'])]
+  state.tickCounter = 5
+
+  // 用一个 deferred Promise 让 stub 可控地"晚一点"返回，确认主调用真的不等
+  let resolveLLM
+  const llmPending = new Promise(resolve => { resolveLLM = resolve })
+  const refinedCalls = []
+
+  const r = await updateFocusFrame(state, '广州今天天气怎么样啊预报呢', {
+    isTick: false,
+    tickCounter: state.tickCounter,
+    classifierEnabled: true,
+    classifierMode: 'async',
+    onClassifierRefined: (args) => refinedCalls.push(args),
+    classifierFn: async () => {
+      await llmPending
+      return { action: 'pushed', topic: ['天气', '广州', '预报'], returnsToDepth: -1 }
+    },
+  })
+
+  // 主调用应立刻返回 v0 pushed —— LLM 还没回
+  assert(r.event === 'pushed', `async-mode main return event=${r.event}`)
+  assert(state.focusStack.length === 2, `async-mode stack pushed sync depth=${state.focusStack.length}`)
+  // 此时 topic 还是 v0 的（基于 ngram 抽词），尚未被 LLM 改写
+  const topicBeforeRefine = state.focusStack[1].topic.join(',')
+  assert(topicBeforeRefine.length > 0, `async-mode pre-refine topic non-empty: ${topicBeforeRefine}`)
+  assert(refinedCalls.length === 0, 'async-mode onClassifierRefined NOT yet called')
+
+  // 现在解锁 LLM 让它返回
+  resolveLLM()
+  // 让 microtasks 跑完
+  await new Promise(r => setTimeout(r, 10))
+
+  // 帧的 topic 应该被 patch 为 LLM 给的语义化关键词
+  const topicAfter = state.focusStack[1].topic
+  assert(
+    JSON.stringify(topicAfter) === JSON.stringify(['天气', '广州', '预报']),
+    `async-mode post-refine topic=${JSON.stringify(topicAfter)}`
+  )
+  assert(refinedCalls.length === 1, `async-mode onClassifierRefined called once (got ${refinedCalls.length})`)
+  assert(refinedCalls[0].v0Event === 'pushed', 'async-mode callback got v0Event=pushed')
+}
+
+// ========== async 模式：LLM 返回 null（超时）→ 不调 onClassifierRefined，保留 v0 topic ==========
+{
+  const state = makeState()
+  state.focusStack = [makeFrame(['prompt', 'caching'])]
+  state.tickCounter = 5
+
+  const refinedCalls = []
+  const r = await updateFocusFrame(state, '广州今天天气怎么样啊预报呢', {
+    isTick: false,
+    tickCounter: state.tickCounter,
+    classifierEnabled: true,
+    classifierMode: 'async',
+    onClassifierRefined: (args) => refinedCalls.push(args),
+    classifierFn: async () => null,  // 模拟超时/解析失败
+  })
+  assert(r.event === 'pushed', `async-null event=${r.event}`)
+  assert(state.focusStack.length === 2, `async-null stack pushed`)
+  await new Promise(r => setTimeout(r, 10))
+  assert(refinedCalls.length === 0, 'async-null: onClassifierRefined NOT called when LLM returns null')
+  // topic 保留 v0 ngram，未被改写
+  const t = state.focusStack[1].topic.join(',')
+  assert(t.length > 0, `async-null v0 topic kept: ${t}`)
+}
+
+// ========== async 模式：帧在 LLM 返回前被后续操作 pop 出栈 → 丢弃 refine ==========
+// 模拟实战：用户连发两条无关消息，第一条建的帧被第二条挤掉栈底（栈深超 MAX）
+{
+  const state = makeState()
+  state.focusStack = [
+    makeFrame(['a', 'b', 'c']),
+    makeFrame(['d', 'e', 'f']),
+    makeFrame(['g', 'h', 'i']),
+    makeFrame(['j', 'k', 'l']),  // 已经 4 帧到上限
+  ]
+  state.tickCounter = 5
+
+  let resolveLLM
+  const llmPending = new Promise(resolve => { resolveLLM = resolve })
+  const refinedCalls = []
+
+  // 这条消息会触发 pushed → state.focusStack shift 出栈底（旧 ['a','b','c']）
+  const r = await updateFocusFrame(state, '完全新的主题 something brand new here unique', {
+    isTick: false,
+    tickCounter: state.tickCounter,
+    classifierEnabled: true,
+    classifierMode: 'async',
+    onClassifierRefined: (args) => refinedCalls.push(args),
+    classifierFn: async () => {
+      await llmPending
+      return { action: 'pushed', topic: ['新主题'], returnsToDepth: -1 }
+    },
+  })
+  assert(r.event === 'pushed', `async-pop event=${r.event}`)
+  // 拿到 v0 刚 push 进去的栈顶帧的引用
+  const newTopRef = state.focusStack[state.focusStack.length - 1]
+
+  // 现在手动把这帧从栈里弹出（模拟后续轮次 pop）
+  state.focusStack.length = 0
+
+  resolveLLM()
+  await new Promise(r => setTimeout(r, 10))
+
+  // 帧已不在栈里，refine 应该被丢弃
+  assert(refinedCalls.length === 0, 'async-pop: refine discarded when frame no longer in stack')
+  // 帧对象的 topic 应该没被改（虽然这点不严格 —— frameRef 仍在外面）
+  // 关键是：onClassifierRefined 不能被调（避免误触发 saveFocusStack）
+  void newTopRef
+}
+
 if (failed === 0) {
   console.log('\nAll focus-classifier sanity checks complete.')
 } else {

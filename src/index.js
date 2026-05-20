@@ -752,11 +752,32 @@ async function process(input, label, msg = null) {
     // 1b. Focus stack —— 动态上下文记忆池第 3b/3c 步：多帧栈 + 压缩回填
     // 在 runInjector 之后、buildContextBlock 之前更新，让 <focus> / <focus-history> 段拿到最新栈。
     try {
+      // Focus classifier 策略（Step 6a 重构）：
+      //   - 始终启用 LLM 仲裁（除非用户显式关掉 state.focusClassifierDisabled）
+      //   - fastUserPath: async 模式 —— v0 同步建帧零延迟，LLM 后台 patch refined topic
+      //   - 后台路径（TICK/background）: sync 模式 —— 不在乎多 800ms，让 LLM 在主上下文构建前就 refine
+      //   - LLM 失败/超时/解析失败：focus-classifier 内部打日志后回退 v0，绝不阻塞主流程
+      const classifierDisabled = state.focusClassifierDisabled === true
       const focusResult = await updateFocusFrame(state, input, {
         isTick,
         tickCounter: state.tickCounter || 0,
-        // fastUserPath 路径关掉 LLM 仲裁保延迟；栈结构仍走 v0 启发式
-        classifierEnabled: !fastUserPath,
+        classifierEnabled: !classifierDisabled,
+        classifierMode: fastUserPath ? 'async' : 'sync',
+        onClassifierRefined: () => {
+          // async 模式 LLM 回填 topic 后保存到 db，让下次启动恢复时也能拿到 refined topic
+          try {
+            saveFocusStack(state.focusStack || [])
+            emitEvent('focus_frame', {
+              focusStack: state.focusStack || [],
+              topFrame: state.focusStack && state.focusStack.length > 0
+                ? state.focusStack[state.focusStack.length - 1]
+                : null,
+              event: 'refined',
+            })
+          } catch (e) {
+            console.log('[focus] saveFocusStack after async refine failed:', e?.message || 'unknown')
+          }
+        },
         signal: controller.signal,
       })
       const topFrame = state.focusStack && state.focusStack.length > 0
