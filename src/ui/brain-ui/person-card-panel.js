@@ -8,7 +8,7 @@ export const createPersonCardPanel = () => `
     </div>
     <div class="pc-header">
       <div class="pc-head-copy">
-        <div class="pc-kicker">PERSON CARD</div>
+        <div class="pc-kicker">人物档案</div>
         <div class="pc-name" id="pc-name">人物卡片</div>
         <div class="pc-title" id="pc-title">等待选择人物</div>
       </div>
@@ -20,7 +20,7 @@ export const createPersonCardPanel = () => `
     </div>
     <div class="pc-tags" id="pc-tags"></div>
     <div class="pc-footer">
-      <span class="pc-source" id="pc-source">source: standby</span>
+      <span class="pc-source" id="pc-source">来源：待机</span>
       <span class="pc-updated" id="pc-updated">--</span>
     </div>
   </div>

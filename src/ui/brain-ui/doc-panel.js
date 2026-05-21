@@ -7,7 +7,7 @@ export const createDocPanel = () => `
       <span class="dp-icon" id="dp-icon">⚙️</span>
       <div class="dp-titles">
         <div class="dp-title" id="dp-title">配置说明</div>
-        <div class="dp-subtitle" id="dp-subtitle">Voice Configuration Guide</div>
+        <div class="dp-subtitle" id="dp-subtitle">语音配置指南</div>
       </div>
     </div>
     <div class="dp-header-right">

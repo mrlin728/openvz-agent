@@ -15,7 +15,7 @@ const PHYSICS_STORAGE_KEY = "jarvis-brain-ui-physics";
 const ACTIVATION_WARMUP_KEY = "bailongma_activation_warmup_until";
 const UI_ZOOM_STORAGE_KEY = "bailongma_ui_zoom_factor";
 const MAX_CHAT_HISTORY = 60;
-const DEFAULT_AGENT_NAME = "Longma";
+const DEFAULT_AGENT_NAME = "小白龙";
 const DEFAULT_UI_ZOOM = 1.1;
 const MIN_UI_ZOOM = 0.8;
 const MAX_UI_ZOOM = 1.8;
@@ -53,7 +53,7 @@ function updateLastJarvisMsg(...args) { return chat?.updateLastJarvisMsg(...args
 function isTyping() { return chat?.isTyping() || false; }
 
 function defaultInputPlaceholder() {
-  return `Message ${agentName}…`;
+  return `向 ${agentName} 发消息…`;
 }
 
 function clampZoomFactor(factor) {
@@ -916,7 +916,7 @@ async function loadMemories() {
     renderGraph(1.1);
   } catch (error) {
     console.warn("[graph] load failed:", error.message);
-    setConnectionState("Offline", false);
+    setConnectionState("未连接", false);
   }
 }
 
@@ -977,14 +977,14 @@ function formatMsgTime(stamp) {
 
 const L1 = new ThoughtStream("si-l1", "cool", {
   readCSSVar,
-  thinkingLabel: "Thinking…",
-  thinkingDoneLabel: "Done thinking",
+  thinkingLabel: "思考中…",
+  thinkingDoneLabel: "思考完成",
   toolDetailLength: 140,
 });
 const L2 = new ThoughtStream("si-l2", "warm", {
   readCSSVar,
-  thinkingLabel: "Thinking",
-  thinkingDoneLabel: "Done thinking",
+  thinkingLabel: "思考中",
+  thinkingDoneLabel: "思考完成",
   toolDetailLength: 220,
 });
 
@@ -1116,17 +1116,17 @@ function flashFocusCompressed() {
 }
 
 function connectSSE() {
-  setConnectionState("connecting", true);
+  setConnectionState("连接中", true);
   const es = new EventSource(`${API}/events`);
 
-  es.onopen = () => setConnectionState("connected", true);
+  es.onopen = () => setConnectionState("已连接", true);
 
   es.onmessage = event => {
     try { handle(JSON.parse(event.data)); } catch (_) {}
   };
 
   es.onerror = () => {
-    setConnectionState("reconnect", false);
+    setConnectionState("重连中", false);
     es.close();
     setTimeout(connectSSE, 3000);
   };
@@ -1194,23 +1194,23 @@ function handle({ type, data = {} }) {
       currentStream().startThinkingSession();
       const nextAttempt = Number(data.nextAttempt || 2);
       const delayText = formatRetryDelay(Number(data.delayMs || 0));
-      currentStream().setStatus("LLM busy, retry " + nextAttempt + " in " + delayText, "busy");
+      currentStream().setStatus("LLM 繁忙，第 " + nextAttempt + " 次重试将于 " + delayText + " 后开始", "busy");
       break;
     }
     case "message_requeued": {
       currentStream().startThinkingSession();
       const retryCount = Number(data.retryCount || 1);
-      currentStream().setStatus("LLM busy, queued retry " + retryCount + "/3", "busy");
+      currentStream().setStatus("LLM 繁忙，已入队重试 " + retryCount + "/3", "busy");
       break;
     }
     case "message_dropped":
       currentStream().startThinkingSession();
-      currentStream().setStatus("LLM busy, retry limit reached", "failed");
+      currentStream().setStatus("LLM 繁忙，重试次数已达上限", "failed");
       break;
     case "error":
       if (isBusyErrorMessage(data.error)) {
         currentStream().startThinkingSession();
-        currentStream().setStatus("LLM busy, please retry shortly", "busy");
+        currentStream().setStatus("LLM 繁忙，请稍后重试", "busy");
       }
       break;
     case "injector_result": {
@@ -1704,7 +1704,7 @@ function initTTSSettings() {
   if (testBtn) {
     testBtn.addEventListener("click", async () => {
       testBtn.disabled = true;
-      if (testStatus) testStatus.textContent = "Saving config…";
+      if (testStatus) testStatus.textContent = "保存配置中…";
       try {
         const preBody = { ttsProvider: providerSel.value };
         const currentVoice = voiceSel?.value?.trim();
@@ -1726,32 +1726,32 @@ function initTTSSettings() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(preBody),
         });
-        if (testStatus) testStatus.textContent = "Synthesizing…";
+        if (testStatus) testStatus.textContent = "合成中…";
         const ttsResp = await fetch(`${API}/tts/stream`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: "Hello, this is a voice synthesis test. Is the audio clear and natural?" }),
+          body: JSON.stringify({ text: "你好，这是一段语音合成测试，听起来清晰自然吗？" }),
         });
         if (!ttsResp.ok) {
-          let errMsg = `Synthesis failed (HTTP ${ttsResp.status})`;
+          let errMsg = `合成失败（HTTP ${ttsResp.status}）`;
           try { const j = await ttsResp.json(); errMsg = j.error || errMsg; } catch {}
           if (testStatus) testStatus.textContent = errMsg;
           return;
         }
         const ttsBlob = await ttsResp.blob();
         if (ttsBlob.size === 0) {
-          if (testStatus) testStatus.textContent = "Synthesis failed: API returned empty data. Check your key and account settings.";
+          if (testStatus) testStatus.textContent = "合成失败：接口返回空数据，请检查 API Key 和账户配置。";
           return;
         }
         const ttsUrl = URL.createObjectURL(ttsBlob);
         const ttsAudio = new Audio(ttsUrl);
         ttsAudio.onended = () => { URL.revokeObjectURL(ttsUrl); if (testStatus) testStatus.textContent = ""; };
-        ttsAudio.onerror = () => { URL.revokeObjectURL(ttsUrl); if (testStatus) testStatus.textContent = "Playback failed"; };
+        ttsAudio.onerror = () => { URL.revokeObjectURL(ttsUrl); if (testStatus) testStatus.textContent = "播放失败"; };
         await ttsAudio.play();
-        if (testStatus) testStatus.textContent = "Playing";
-        setTimeout(() => { if (testStatus && testStatus.textContent === "Playing") testStatus.textContent = ""; }, 8000);
+        if (testStatus) testStatus.textContent = "播放中";
+        setTimeout(() => { if (testStatus && testStatus.textContent === "播放中") testStatus.textContent = ""; }, 8000);
       } catch {
-        if (testStatus) testStatus.textContent = "Failed — check config and API key";
+        if (testStatus) testStatus.textContent = "失败 — 请检查配置和 API Key";
       } finally {
         testBtn.disabled = false;
       }
@@ -1796,6 +1796,7 @@ function initTTSSettings() {
       overlay.querySelector(`.settings-tab[data-tab="${tab}"]`)?.classList.add("active");
       if (tab === "social") loadSocialSettings();
       if (tab === "security") loadSecuritySettings();
+      if (tab === "web-search") loadWebSearchSettings();
       if (tab === "update") loadUpdateSettings();
     });
   });
@@ -1905,13 +1906,13 @@ function initTTSSettings() {
         if (!el) continue;
         const configuredCount = keys.filter(k => social[k]?.configured).length;
         if (configuredCount === keys.length) {
-          el.textContent = "● Configured";
+          el.textContent = "● 已配置";
           el.className = "settings-platform-status ok";
         } else if (configuredCount > 0) {
-          el.textContent = `● Partial (${configuredCount}/${keys.length})`;
+          el.textContent = `● 部分配置 (${configuredCount}/${keys.length})`;
           el.className = "settings-platform-status miss";
         } else {
-          el.textContent = "○ Not configured";
+          el.textContent = "○ 未配置";
           el.className = "settings-platform-status miss";
         }
       }
@@ -1922,6 +1923,69 @@ function initTTSSettings() {
   const execSandboxToggle = document.getElementById("security-exec-sandbox");
   const saveSecurityBtn   = document.getElementById("settings-save-security");
   const securityFeedback  = document.getElementById("settings-security-feedback");
+
+  async function loadWebSearchSettings() {
+    try {
+      const { webSearch } = await fetch(`${API}/settings/web-search`).then(r => r.json());
+      const urlEl = document.getElementById("websearch-searxng-url");
+      if (urlEl) urlEl.value = webSearch?.searxngUrl || "";
+      const setStatus = (id, configured, fromEnv, extra) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const truncated = extra && extra.length > 60 ? extra.slice(0, 60) + "…" : extra;
+        if (configured) {
+          el.textContent = `已配置${fromEnv ? "（环境变量）" : ""}${truncated ? ` · ${truncated}` : ""}`;
+          el.style.color = "var(--ok, #4caf50)";
+        } else {
+          el.textContent = "未配置（兜底链中跳过）";
+          el.style.color = "var(--ink2)";
+        }
+      };
+      setStatus("websearch-status-serper",  !!webSearch?.serperConfigured, !!webSearch?.serperFromEnv);
+      setStatus("websearch-status-jina",    !!webSearch?.jinaConfigured,   !!webSearch?.jinaFromEnv);
+      const searxngConfigured = !!webSearch?.searxngUrl || !!webSearch?.searxngFromEnv;
+      setStatus("websearch-status-searxng", searxngConfigured, !!webSearch?.searxngFromEnv, webSearch?.effectiveSearxngUrl || "");
+    } catch {}
+  }
+
+  const saveWebSearchBtn = document.getElementById("settings-save-web-search");
+  const webSearchFeedback = document.getElementById("settings-web-search-feedback");
+  if (saveWebSearchBtn) {
+    saveWebSearchBtn.addEventListener("click", async () => {
+      const updates = {};
+      const serperEl  = document.getElementById("websearch-serper-key");
+      const jinaEl    = document.getElementById("websearch-jina-key");
+      const searxngEl = document.getElementById("websearch-searxng-url");
+      const serperVal  = serperEl?.value?.trim();
+      const jinaVal    = jinaEl?.value?.trim();
+      const searxngVal = searxngEl?.value?.trim();
+      if (serperVal)  updates.serperKey  = serperVal;
+      if (jinaVal)    updates.jinaKey    = jinaVal;
+      // SearXNG URL：空字符串也要传，让用户能清掉
+      if (searxngEl)  updates.searxngUrl = searxngVal || "";
+      saveWebSearchBtn.disabled = true;
+      try {
+        const res = await fetch(`${API}/settings/web-search`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(updates),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showFeedback(webSearchFeedback, "已保存");
+          if (serperEl) serperEl.value = "";
+          if (jinaEl)   jinaEl.value = "";
+          loadWebSearchSettings();
+        } else {
+          showFeedback(webSearchFeedback, data.error || "保存失败", true);
+        }
+      } catch {
+        showFeedback(webSearchFeedback, "请求失败", true);
+      } finally {
+        saveWebSearchBtn.disabled = false;
+      }
+    });
+  }
 
   async function loadSecuritySettings() {
     try {
@@ -1953,12 +2017,12 @@ function initTTSSettings() {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(securityFeedback, "Saved — effective immediately");
+          showFeedback(securityFeedback, "已保存 — 立即生效");
         } else {
-          showFeedback(securityFeedback, data.error || "Save failed", true);
+          showFeedback(securityFeedback, data.error || "保存失败", true);
         }
       } catch {
-        showFeedback(securityFeedback, "Request failed", true);
+        showFeedback(securityFeedback, "请求失败", true);
       } finally {
         saveSecurityBtn.disabled = false;
       }
@@ -1981,17 +2045,17 @@ function initTTSSettings() {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(socialFeedback, "Saved");
+          showFeedback(socialFeedback, "已保存");
           Object.keys(SOCIAL_FIELD_MAP).forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = "";
           });
           loadSocialSettings();
         } else {
-          showFeedback(socialFeedback, data.error || "Save failed", true);
+          showFeedback(socialFeedback, data.error || "保存失败", true);
         }
       } catch {
-        showFeedback(socialFeedback, "Request failed", true);
+        showFeedback(socialFeedback, "请求失败", true);
       } finally {
         saveSocialBtn.disabled = false;
       }
@@ -2015,11 +2079,11 @@ function initTTSSettings() {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(tempFeedback, `Set to ${data.temperature.toFixed(2)}`);
+          showFeedback(tempFeedback, `已设为 ${data.temperature.toFixed(2)}`);
         } else {
-          showFeedback(tempFeedback, data.error || "Save failed", true);
+          showFeedback(tempFeedback, data.error || "保存失败", true);
         }
-      } catch { showFeedback(tempFeedback, "Request failed", true); }
+      } catch { showFeedback(tempFeedback, "请求失败", true); }
       finally { saveTempBtn.disabled = false; }
     });
   }
@@ -2104,16 +2168,16 @@ function initTTSSettings() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
-          if (!resp.ok) throw new Error("Save failed");
+          if (!resp.ok) throw new Error("保存失败");
           ["voice-aliyun-key","voice-tencent-sid","voice-tencent-skey","voice-xunfei-apikey"].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = "";
           });
-          showFeedback(voiceFeedback, "Saved");
-        } catch { showFeedback(voiceFeedback, "Save failed", true); }
+          showFeedback(voiceFeedback, "已保存");
+        } catch { showFeedback(voiceFeedback, "保存失败", true); }
         finally { saveVoiceBtn.disabled = false; }
       } else {
-        showFeedback(voiceFeedback, "Saved");
+        showFeedback(voiceFeedback, "已保存");
       }
     });
   }
@@ -2127,7 +2191,7 @@ function initTTSSettings() {
     memoryGraphToggle.addEventListener("change", () => {
       localStorage.setItem(MEMORY_GRAPH_STORAGE_KEY, String(memoryGraphToggle.checked));
       if (memoryGraphFeedback) {
-        memoryGraphFeedback.textContent = "Takes effect on next page reload";
+        memoryGraphFeedback.textContent = "下次刷新页面后生效";
         memoryGraphFeedback.className = "settings-feedback";
         setTimeout(() => { memoryGraphFeedback.textContent = ""; }, 3000);
       }
@@ -2146,6 +2210,7 @@ function initTTSSettings() {
         t.classList.toggle("active", t.dataset.tab === tab);
       });
       if (tab === "social") loadSocialSettings();
+      if (tab === "web-search") loadWebSearchSettings();
       if (tab === "update") loadUpdateSettings();
     }
   }
@@ -2186,7 +2251,7 @@ function initTTSSettings() {
       const baseURL = document.getElementById("settings-custom-baseurl")?.value?.trim();
       const model   = document.getElementById("settings-custom-model")?.value?.trim();
       if (!baseURL || !model) {
-        showFeedback(llmFeedback, "Please fill in Base URL and model name", true);
+        showFeedback(llmFeedback, "请填入 Base URL 和模型名称", true);
         saveLlmBtn.disabled = false;
         return;
       }
@@ -2198,13 +2263,13 @@ function initTTSSettings() {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(llmFeedback, `Connected: ${data.model}`);
+          showFeedback(llmFeedback, `已连接：${data.model}`);
           llmKeyInput.value = "";
           loadSettings();
         } else {
-          showFeedback(llmFeedback, data.error || "Connection failed", true);
+          showFeedback(llmFeedback, data.error || "连接失败", true);
         }
-      } catch { showFeedback(llmFeedback, "Request failed", true); }
+      } catch { showFeedback(llmFeedback, "请求失败", true); }
       finally { saveLlmBtn.disabled = false; }
       return;
     }
@@ -2221,19 +2286,19 @@ function initTTSSettings() {
       });
       const data = await res.json();
       if (data.ok) {
-        showFeedback(llmFeedback, "Saved");
+        showFeedback(llmFeedback, "已保存");
         llmKeyInput.value = "";
         loadSettings();
       } else {
-        showFeedback(llmFeedback, data.error || "Save failed", true);
+        showFeedback(llmFeedback, data.error || "保存失败", true);
       }
-    } catch { showFeedback(llmFeedback, "Request failed", true); }
+    } catch { showFeedback(llmFeedback, "请求失败", true); }
     finally { saveLlmBtn.disabled = false; }
   });
 
   saveMinimaxBtn?.addEventListener("click", async () => {
     const apiKey = minimaxKeyInput.value.trim();
-    if (!apiKey) { showFeedback(minimaxFeedback, "Key cannot be empty", true); return; }
+    if (!apiKey) { showFeedback(minimaxFeedback, "API Key 不能为空", true); return; }
     saveMinimaxBtn.disabled = true;
     try {
       const res = await fetch(`${API}/settings/minimax`, {
@@ -2243,13 +2308,13 @@ function initTTSSettings() {
       });
       const data = await res.json();
       if (data.ok) {
-        showFeedback(minimaxFeedback, "Saved");
+        showFeedback(minimaxFeedback, "已保存");
         minimaxKeyInput.value = "";
         loadSettings();
       } else {
-        showFeedback(minimaxFeedback, data.error || "Save failed", true);
+        showFeedback(minimaxFeedback, data.error || "保存失败", true);
       }
-    } catch { showFeedback(minimaxFeedback, "Request failed", true); }
+    } catch { showFeedback(minimaxFeedback, "请求失败", true); }
     finally { saveMinimaxBtn.disabled = false; }
   });
 
@@ -2278,21 +2343,21 @@ function initTTSSettings() {
       if (data.status === "connected") {
         stopClawbotPoll();
         if (clawbotQrArea) clawbotQrArea.style.display = "none";
-        setClawbotStatus("Connected", true);
-        if (clawbotFeedback) showFeedback(clawbotFeedback, "WeChat linked successfully!");
+        setClawbotStatus("已连接", true);
+        if (clawbotFeedback) showFeedback(clawbotFeedback, "微信绑定成功！");
         loadSocialSettings();
       } else if (data.status === "qr_ready" && data.qr_url) {
         if (clawbotQrImg) clawbotQrImg.src = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(data.qr_url)}`;
         if (clawbotQrArea) clawbotQrArea.style.display = "block";
-        if (clawbotQrHint) clawbotQrHint.textContent = "Waiting for scan…";
-        setClawbotStatus("Waiting for scan", false);
+        if (clawbotQrHint) clawbotQrHint.textContent = "等待扫码…";
+        setClawbotStatus("等待扫码", false);
       } else if (data.status === "qr_pending") {
-        if (clawbotQrHint) clawbotQrHint.textContent = "Generating QR code…";
+        if (clawbotQrHint) clawbotQrHint.textContent = "正在生成二维码…";
       } else if (data.status === "error") {
         stopClawbotPoll();
         if (clawbotQrArea) clawbotQrArea.style.display = "none";
-        setClawbotStatus("Connection failed", false);
-        if (clawbotFeedback) showFeedback(clawbotFeedback, data.error || "Connection failed", true);
+        setClawbotStatus("连接失败", false);
+        if (clawbotFeedback) showFeedback(clawbotFeedback, data.error || "连接失败", true);
       }
     } catch {}
   }
@@ -2303,7 +2368,7 @@ function initTTSSettings() {
 
   clawbotConnectBtn?.addEventListener("click", async () => {
     if (clawbotQrArea) clawbotQrArea.style.display = "none";
-    setClawbotStatus("Starting…", false);
+    setClawbotStatus("启动中…", false);
     stopClawbotPoll();
     try {
       await fetch(`${API}/settings/social`, {
@@ -2321,10 +2386,10 @@ function initTTSSettings() {
     if (clawbotQrArea) clawbotQrArea.style.display = "none";
     try {
       await fetch(`${API}/social/wechat-clawbot/logout`, { method: "POST" });
-      setClawbotStatus("Disconnected", false);
-      showFeedback(clawbotFeedback, "WeChat disconnected");
+      setClawbotStatus("已断开", false);
+      showFeedback(clawbotFeedback, "微信已断开");
     } catch {
-      showFeedback(clawbotFeedback, "Request failed", true);
+      showFeedback(clawbotFeedback, "请求失败", true);
     }
   });
 
@@ -2334,15 +2399,15 @@ function initTTSSettings() {
     if (d.status === "connected") {
       stopClawbotPoll();
       if (clawbotQrArea) clawbotQrArea.style.display = "none";
-      setClawbotStatus("Connected", true);
+      setClawbotStatus("已连接", true);
     } else if (d.status === "qr_ready") {
       if (!clawbotPollTimer) clawbotPollTimer = setInterval(pollClawbotQR, 2000);
       pollClawbotQR();
     } else if (d.status === "session_expired") {
       stopClawbotPoll();
-      setClawbotStatus("Session expired — please scan again", false);
+      setClawbotStatus("会话已过期 — 请重新扫码", false);
     } else if (d.status === "idle") {
-      setClawbotStatus("Not connected", false);
+      setClawbotStatus("未连接", false);
     }
   });
 
@@ -2548,6 +2613,9 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
   let videoKind   = "empty";
   let currentVideoSource = "";
   let currentVideoStart = null;
+  // wall-clock ms when current play started/resumed; used to estimate elapsed
+  // for cross-origin iframes (bilibili) where we can't read currentTime.
+  let playResumeAt = null;
 
   function normalizeUrl(url = "") {
     return String(url || "").trim();
@@ -2646,20 +2714,31 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
   function pauseCurrentVideo() {
     if (videoKind === "youtube") {
       postFrameCommand("pauseVideo");
+      playResumeAt = null;
     } else if (videoKind === "bilibili") {
+      // bilibili iframe 跨域读不到 currentTime，用 wall-clock 估算累计进度
+      if (playResumeAt) {
+        const elapsed = (Date.now() - playResumeAt) / 1000;
+        currentVideoStart = (Number(currentVideoStart) || 0) + elapsed;
+      }
+      playResumeAt = null;
       reloadFrameAutoplay(false);
     } else if (videoKind === "file") {
       try { videoFeed?.pause?.(); } catch {}
+      playResumeAt = null;
     }
   }
 
   function resumeCurrentVideo() {
     if (videoKind === "youtube") {
       postFrameCommand("playVideo");
+      playResumeAt = Date.now();
     } else if (videoKind === "bilibili") {
       reloadFrameAutoplay(true);
+      playResumeAt = Date.now();
     } else if (videoKind === "file") {
       videoFeed?.play?.().catch(() => {});
+      playResumeAt = Date.now();
     }
   }
 
@@ -2681,6 +2760,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
     videoKind = "empty";
     currentVideoSource = "";
     currentVideoStart = null;
+    playResumeAt = null;
   }
 
   function toggleVideoPanelVisibility() {
@@ -2741,7 +2821,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
   }
 
   async function showVideo({
-    url = "", title = "Video", autoplay = false,
+    url = "", title = "Video", autoplay = true,
     muted = false, volume = null, currentTime = null, camera = false,
   } = {}) {
     if (camera) { showCamera({ title, autoplay }); return; }
@@ -2760,6 +2840,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
       videoFrame.src = embedUrl;
       videoSurface?.classList.add("has-media");
       videoKind = embedUrl.includes("youtube.com") ? "youtube" : "bilibili";
+      if (autoplay) playResumeAt = Date.now();
 
       setBackdrop(videoKind, source);
       saveMediaHistory({
@@ -2787,7 +2868,10 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
       videoSurface?.classList.add("has-media");
       videoKind = "file";
       saveMediaHistory({ url: source, title, kind: "file" });
-      if (autoplay) videoFeed.play?.().catch(() => {});
+      if (autoplay) {
+        videoFeed.play?.().catch(() => {});
+        playResumeAt = Date.now();
+      }
     }
   }
 
@@ -2826,6 +2910,8 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
       currentVideoStart = t;
       if (videoFeed) videoFeed.currentTime = t;
       postFrameCommand("seekTo", [t, true]);
+      // seek 后重置 elapsed 基线，下次 pause 时累计才正确
+      if (playResumeAt) playResumeAt = Date.now();
     }
   }
 
@@ -2974,7 +3060,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
     musicAudio.src = localPathToUrl(track.src || "");
     musicAudio.volume = parseFloat(musicVolInput?.value ?? "0.8");
 
-    const title  = track.title  || "Unknown track";
+    const title  = track.title  || "未知曲目";
     const artist = track.artist || "";
     if (musicMetaTitle)  musicMetaTitle.textContent  = title;
     if (musicMetaArtist) musicMetaArtist.textContent = artist;

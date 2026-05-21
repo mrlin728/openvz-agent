@@ -83,21 +83,21 @@ class SecurityConfirmCard extends HTMLElement {
 
     const changeItems = [
       file_sandbox !== undefined
-        ? `File sandbox: <span class="${file_sandbox ? 'change-on' : 'change-off'}">${file_sandbox ? 'ON' : 'OFF'}</span>`
+        ? `文件沙箱：<span class="${file_sandbox ? 'change-on' : 'change-off'}">${file_sandbox ? '开启' : '关闭'}</span>`
         : null,
       exec_sandbox !== undefined
-        ? `Exec sandbox: <span class="${exec_sandbox ? 'change-on' : 'change-off'}">${exec_sandbox ? 'ON' : 'OFF'}</span>`
+        ? `执行沙箱：<span class="${exec_sandbox ? 'change-on' : 'change-off'}">${exec_sandbox ? '开启' : '关闭'}</span>`
         : null,
     ].filter(Boolean)
 
     this.shadowRoot.innerHTML = `
       <div class="card">
-        <div class="title">⚠ Security Settings Change Request</div>
+        <div class="title">⚠ 安全设置变更请求</div>
         ${reason ? `<div class="reason">${reason}</div>` : ''}
-        <div class="changes">${changeItems.join('<br>') || 'No changes'}</div>
+        <div class="changes">${changeItems.join('<br>') || '无变更'}</div>
         <div class="actions">
-          <button class="btn btn-confirm" id="btn-confirm">Confirm</button>
-          <button class="btn btn-cancel"  id="btn-cancel">Cancel</button>
+          <button class="btn btn-confirm" id="btn-confirm">确认</button>
+          <button class="btn btn-cancel"  id="btn-cancel">取消</button>
         </div>
       </div>`
 

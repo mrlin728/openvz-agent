@@ -6,13 +6,13 @@ import { spawn } from 'child_process'
 import { fileURLToPath } from 'url'
 import { WebSocketServer } from 'ws'
 import { pushMessage } from './queue.js'
-import { getDB, getConfig, insertUISignal, upsertMediaHistory, getMediaHistory, updateLastJarvisConversationContent } from './db.js'
-import { emitEvent, addSSEClient, removeSSEClient, addACUIClient, removeACUIClient, removeActiveUICard, emitUICommand, flushStickyEvents } from './events.js'
+import { getDB, getConfig, setConfig, insertUISignal, upsertMediaHistory, getMediaHistory, updateLastJarvisConversationContent } from './db.js'
+import { emitEvent, addSSEClient, removeSSEClient, addACUIClient, removeACUIClient, removeActiveUICard, emitUICommand, flushStickyEvents, setStickyEvent } from './events.js'
 import { getQuotaStatus } from './quota.js'
 import { isRunning, stopLoop, startLoop } from './control.js'
 import { buildHeartbeatSystemPromptPreview } from './system-prompt-preview.js'
 import { paths } from './paths.js'
-import { config, activate as activateLLM, getActivationStatus, switchModel, setTemperature, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS } from './config.js'
+import { config, activate as activateLLM, getActivationStatus, switchModel, setTemperature, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS, getWebSearchConfig, setWebSearchConfig } from './config.js'
 import { streamTTS, TTS_PROVIDERS, TTS_VOICES } from './voice/tts-providers.js'
 import { restartConnector } from './social/index.js'
 // manager.js (Whisper local server) removed
@@ -39,7 +39,7 @@ const ACTIVATION_PATH    = paths.activationHtml
 const BRAIN_UI_ASSET_ROOT = paths.brainUiAssetRoot
 const D3_VENDOR_PATH     = path.join(paths.resourcesDir, 'node_modules', 'd3', 'dist', 'd3.min.js')
 const SANDBOX_PATH       = paths.sandboxDir
-const DEFAULT_AGENT_NAME = 'Longma'
+const DEFAULT_AGENT_NAME = '小白龙'
 const DEFAULT_API_HOST = '127.0.0.1'
 
 // card.action signals that are lifecycle/system-internal — stored in DB for passive injector use only, not pushed to the agent queue
@@ -207,6 +207,13 @@ function stripAssistantHistoryLabels(content) {
 export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = null } = {}) {
   const onActivatedCallback = onActivated
   const host = getApiHost()
+
+  // 启动时把 DB 里的当前 agent_name 写进 sticky，
+  // 这样后续每个新连上的 SSE 客户端（含 brain-ui 首次加载）能立即拿到正确名字
+  try {
+    const storedName = (getConfig('agent_name') || '').trim()
+    if (storedName) setStickyEvent('agent_name_updated', { name: storedName })
+  } catch {}
   const server = http.createServer(async (req, res) => {
     const base = `http://localhost:${port}`
     const url = new URL(req.url, base)
@@ -612,14 +619,36 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       req.on('end', async () => {
         try {
           const body = Buffer.concat(chunks).toString('utf-8')
-          const { apiKey, model, provider, baseURL } = JSON.parse(body || '{}')
+          const { apiKey, model, provider, baseURL, agentName } = JSON.parse(body || '{}')
+
+          const trimmedName = String(agentName || '').trim()
+          if (trimmedName) {
+            if (trimmedName.length > 32) {
+              return jsonResponse(res, 400, { ok: false, error: 'AI 名字不能超过 32 个字符' })
+            }
+            if (!/^[一-龥A-Za-z0-9 _-]+$/.test(trimmedName)) {
+              return jsonResponse(res, 400, { ok: false, error: 'AI 名字只允许中文、英文字母、数字、空格、下划线、短横线' })
+            }
+          }
+
           const info = await activateLLM({ provider, apiKey, model, baseURL })
+
+          if (trimmedName) {
+            try {
+              setConfig('agent_name', trimmedName)
+              setStickyEvent('agent_name_updated', { name: trimmedName })
+              emitEvent('agent_name_updated', { name: trimmedName })
+            } catch (err) {
+              console.error('[API] save agent_name failed:', err)
+            }
+          }
+
           emitEvent('activated', info)
           // Notify index.js to start the main loop
           if (typeof onActivatedCallback === 'function') {
             try { onActivatedCallback() } catch (err) { console.error('[API] onActivated callback error:', err) }
           }
-          jsonResponse(res, 200, { ok: true, ...info })
+          jsonResponse(res, 200, { ok: true, ...info, agent_name: getAgentName() })
         } catch (err) {
           jsonResponse(res, 400, { ok: false, error: err.message })
         }
@@ -1013,6 +1042,28 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
           const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
           setTTSConfig(body)
           jsonResponse(res, 200, { ok: true, tts: getTTSConfig() })
+        } catch (err) {
+          jsonResponse(res, 400, { ok: false, error: err.message })
+        }
+      })
+      return
+    }
+
+    // GET /settings/web-search — read web search configuration (plaintext keys not returned)
+    if (req.method === 'GET' && url.pathname === '/settings/web-search') {
+      jsonResponse(res, 200, { ok: true, webSearch: getWebSearchConfig() })
+      return
+    }
+
+    // POST /settings/web-search — save web search configuration
+    if (req.method === 'POST' && url.pathname === '/settings/web-search') {
+      const chunks = []
+      req.on('data', chunk => chunks.push(chunk))
+      req.on('end', () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
+          setWebSearchConfig(body)
+          jsonResponse(res, 200, { ok: true, webSearch: getWebSearchConfig() })
         } catch (err) {
           jsonResponse(res, 400, { ok: false, error: err.message })
         }

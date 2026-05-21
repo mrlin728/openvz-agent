@@ -507,9 +507,13 @@ export class ThoughtStream {
       if (meaningful) return this.compactText(String(meaningful), 160);
       return ""; // 已知成功且无额外信息，不显示 detail
     }
-    // 非 JSON：直接显示截断后的文本
+    // 非 JSON：避免把 JSON 残片或类 JSON 文本糊到 UI 上，先识别再决定
     const trimmed = String(raw ?? "").trim();
     if (!trimmed) return "";
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      // 看起来是 JSON 但解析失败（多半是后端截断了）
+      return "结果过长未展开。";
+    }
     return this.compactText(trimmed.replace(/\s+/g, " "), this.toolDetailLength);
   }
 
@@ -528,8 +532,8 @@ export class ThoughtStream {
 
     if (name === "exec_command") {
       if (parsed) return this.formatExecCommandDetail(parsed);
-      const trimmed = String(result ?? "").trim();
-      return this.compactText(trimmed.replace(/\s+/g, " "), this.toolDetailLength);
+      // JSON 残缺时不展示原文，给个通用兜底
+      return "命令已执行（结果过长未展开）。";
     }
 
     if (name === "ui_show" || name === "ui_update" || name === "ui_hide" || name === "ui_patch" || name === "ui_register") {

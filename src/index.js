@@ -31,6 +31,7 @@ import { buildWeatherRuntimeContext, getWeatherCardProps } from './weather.js'
 import { buildDocRuntimeContext, buildDocPanelStateContext, detectDocTopic, setDocPanelState } from './docs.js'
 import { collectSystemInfo, getSystemInfoBlock, getBatteryBlock, getDesktopPath } from './system-info.js'
 import { collectDesktopInfo, getDesktopBlock } from './desktop-scanner.js'
+import { collectLocalResources } from './local-resources-scanner.js'
 import { collectGeoWeather, getGeoWeatherBlock } from './geo-weather.js'
 import { collectTrending, getTrendingBlock } from './trending.js'
 import { collectAgents, buildAgentContextBlock, buildDelegationAskDirections } from './agents/registry.js'
@@ -47,6 +48,11 @@ await collectSystemInfo()
 
 // Scan the user's desktop (shortcuts cached by mtime, regular files scanned every time)
 collectDesktopInfo(getDesktopPath())
+
+// Scan the user's local resources (ssh hosts, keys, known_hosts, git identity)
+// for the "Self-Sufficient Execution" prompt — so the agent already knows what
+// the user has before being asked "上服务器看看".
+collectLocalResources()
 
 // Collect geo-location + live weather (refresh on IP change or after 7 days; weather refreshed every time)
 const geoResult = await collectGeoWeather()
@@ -255,6 +261,40 @@ function buildStartupSelfCheckDirections(checkState) {
     `Result values: use ok, degraded, error, or skipped_* for each item. Continue to the next item even if one fails.`,
     `[FINAL TWO STEPS — REQUIRED]\n(a) Call ui_show to display SelfCheckCard with props: { results: [{name:"File read/write",status:"ok/error",...},{name:"Hotspot panel",...},{name:"Video mode",...}], overall:"ok/degraded/error" }. Infer overall from actual results: all ok → ok; any skipped → degraded; any error → error.\n(b) Call complete_startup_self_check with a summary (one sentence) and the results object.`,
   ].join('\n')
+}
+
+// 把工具结果压缩成"前端可安全 JSON.parse"的字符串。
+// 原本用 slice(0, 1000) 会从字符串中间切断 JSON，让 thought-stream 的人类化格式器拿不到结构，
+// 只能回退展示原始（残缺的）JSON 文本。
+function truncateToolResultForUI(parsed, raw) {
+  if (parsed && typeof parsed === 'object') {
+    const compact = compactToolPayload(parsed)
+    const out = JSON.stringify(compact)
+    if (out.length <= 4000) return out
+    return out.slice(0, 4000)
+  }
+  return String(raw ?? '').slice(0, 1000)
+}
+
+function compactToolPayload(payload) {
+  if (Array.isArray(payload)) {
+    return payload.slice(0, 10).map(compactToolPayload)
+  }
+  if (payload && typeof payload === 'object') {
+    const out = {}
+    for (const [k, v] of Object.entries(payload)) {
+      if (typeof v === 'string' && v.length > 600) {
+        const cut = v.slice(0, 600)
+        out[k] = `${cut}…（已截断，原 ${v.length} 字符）`
+      } else if (v && typeof v === 'object') {
+        out[k] = compactToolPayload(v)
+      } else {
+        out[k] = v
+      }
+    }
+    return out
+  }
+  return payload
 }
 
 function trimAssistantFluff(content) {
@@ -988,7 +1028,7 @@ async function process(input, label, msg = null) {
 
     // 2. Build system prompt (stable hard-floor) + context block (per-round dynamic)
     const persona = getConfig('persona') || ''
-    const agentName = getConfig('agent_name') || 'Longma'
+    const agentName = getConfig('agent_name') || '小白龙'
     const entities = getKnownEntities()
     const hasActiveTask = !!state.task
     const extraContextJoined = [presenceText, hotspotStateText, hotspotContextText, personCardStateText, personCardContextText, weatherContextText, docStateText, docContextText, prefetchText, extraContextText, injection.uiSignalSummary, formatActiveUICards(injection.activeUICards)].filter(Boolean).join('\n\n')
@@ -1099,13 +1139,17 @@ async function process(input, label, msg = null) {
       onToolCall: (name, args, result) => {
         const resultText = String(result)
         let ok = true
+        let parsed = null
         try {
-          const parsed = JSON.parse(resultText)
+          parsed = JSON.parse(resultText)
           if (parsed && parsed.ok === false) ok = false
         } catch {
           ok = !/^(错误|请求失败|执行失败|命令超时|命令执行失败|error|failed|execution failed|command timed out)/.test(resultText.trim())
         }
-        emitEvent('tool_call', { name, args, result: resultText.slice(0, 1000), ok })
+        // 截断策略：保证 JSON 仍可解析，否则前端格式化器会回退展示原始 JSON 文本。
+        // 优先压缩 stdout/stderr/content/snippet 等长字段，再整体 stringify，而非粗暴 slice。
+        const resultForEvent = truncateToolResultForUI(parsed, resultText)
+        emitEvent('tool_call', { name, args, result: resultForEvent, ok })
         toolCallLog.push({ name, args, result: resultText.slice(0, 500), ok })
         // 注：send_message 的 conversations 写入已由 executor.js 内统一处理（带 channel + external_party_id）
         // 这里仅处理语音输入的 TTS 自动回放
@@ -1158,7 +1202,12 @@ async function process(input, label, msg = null) {
 
   // User messages must not fail silently: if the model generated a response but forgot to call send_message,
   // the runtime delivers it as a fallback; TICK/proactive messages must still go through explicit tool calls.
-  if (msg && msg.fromId && !toolCallLog.some(t => t.name === 'send_message')) {
+  // 判断"是否漏了最终回复"必须看**最后一个**工具调用是不是 send_message，而不是"本轮是否出现过"。
+  // 否则 [send_message("好，我查一下"), web_fetch, read_file] 这种"前置旁白 + 真正干活"链条会绕过兜底，
+  // 模型在最后一步没补刀时直接静默退场——和 llm.js 内 sentMessage 同源的反模式，
+  // 参见 lessons-bailongma-silent-exit。
+  const lastToolCall = toolCallLog[toolCallLog.length - 1]
+  if (msg && msg.fromId && lastToolCall?.name !== 'send_message') {
     const fallbackContent = trimAssistantFluff(
       response
         .replace(/<think>[\s\S]*?<\/think>/gi, '')

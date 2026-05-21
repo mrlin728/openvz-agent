@@ -24,9 +24,9 @@ function inferOverall(results = []) {
 }
 
 const OVERALL_STYLE = {
-  ok:       { label: 'All systems ready',   color: '#4ade80', icon: '⚡' },
-  degraded: { label: 'Some capabilities limited', color: '#facc15', icon: '⚠' },
-  error:    { label: 'Issues detected',     color: '#f87171', icon: '✗' },
+  ok:       { label: '系统就绪',     color: '#4ade80', icon: '⚡' },
+  degraded: { label: '部分能力受限', color: '#facc15', icon: '⚠' },
+  error:    { label: '检测到问题',   color: '#f87171', icon: '✗' },
 }
 
 const CSS = `
@@ -162,7 +162,7 @@ class SelfCheckCard extends HTMLElement {
       this._remaining = Math.max(0, AUTO_DISMISS_MS - elapsed)
       const secEl = this.shadowRoot.querySelector('.countdown')
       const barEl = this.shadowRoot.querySelector('.bar')
-      if (secEl) secEl.textContent = `Closing in ${(this._remaining / 1000).toFixed(1)}s`
+      if (secEl) secEl.textContent = `${(this._remaining / 1000).toFixed(1)}s 后关闭`
       if (barEl) barEl.style.width = `${(this._remaining / AUTO_DISMISS_MS) * 100}%`
     }, 100)
     this._timer = setTimeout(() => this._dismiss(), AUTO_DISMISS_MS)
@@ -208,14 +208,14 @@ class SelfCheckCard extends HTMLElement {
       <div class="card">
         <div class="header">
           <span class="header-icon">${os.icon}</span>
-          <span class="header-text">Self-check complete</span>
-          <span class="header-sub">Startup check</span>
+          <span class="header-text">自检完成</span>
+          <span class="header-sub">启动检查</span>
         </div>
         <div class="results">${rowsHtml}</div>
         <div class="footer">
           <span class="overall-icon">${os.icon}</span>
           <span class="overall-label" style="color:${os.color}">${os.label}</span>
-          <span class="countdown">Closing in ${(AUTO_DISMISS_MS / 1000).toFixed(1)}s</span>
+          <span class="countdown">${(AUTO_DISMISS_MS / 1000).toFixed(1)}s 后关闭</span>
         </div>
         <div class="bar-wrap">
           <div class="bar" style="width:100%;background:${os.color};opacity:0.5"></div>

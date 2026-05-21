@@ -4,12 +4,12 @@ export const createHotspotPanel = () => `
   <!-- ── 顶部标题栏 ── -->
   <div class="hs-header">
     <div class="hs-brand">
-      <span class="hs-brand-name">GHTS v2.7.1</span>
+      <span class="hs-brand-name">热点追踪 v2.7.1</span>
       <span class="hs-brand-dot">●</span>
-      <span class="hs-brand-status">SYSTEM ONLINE</span>
+      <span class="hs-brand-status">系统在线</span>
     </div>
     <div class="hs-title-block">
-      <div class="hs-title-en">GLOBAL HOTSPOT TRACKING SYSTEM</div>
+      <div class="hs-title-en">实时舆情监测平台</div>
       <div class="hs-title-zh">全球热点事件追踪系统</div>
     </div>
     <div class="hs-header-right">
@@ -20,7 +20,7 @@ export const createHotspotPanel = () => `
       </div>
       <div class="hs-clock-block">
         <div class="hs-clock" id="hs-clock">19:26:17</div>
-        <div class="hs-live-dot">● LIVE</div>
+        <div class="hs-live-dot">● 实时</div>
       </div>
       <button class="hs-exit-btn" id="hs-exit-btn" type="button" title="关闭热点模式">×</button>
     </div>
@@ -101,7 +101,7 @@ export const createHotspotPanel = () => `
 
       <!-- 地球容器 -->
       <div class="hs-earth-container" id="hs-earth-container">
-        <div class="hs-earth-label">GLOBAL HEATMAP</div>
+        <div class="hs-earth-label">全球热力图</div>
         <canvas id="hs-earth-canvas"></canvas>
         <div class="hs-earth-hint">拖拽旋转 · 滚轮缩放</div>
       </div>
@@ -110,7 +110,7 @@ export const createHotspotPanel = () => `
       <div class="hs-center-aux">
 
         <div class="hs-aux-box">
-          <div class="hs-aux-title">区域关注度 <span class="hs-aux-sub">REGION RANKING</span></div>
+          <div class="hs-aux-title">区域关注度 <span class="hs-aux-sub">实时排名</span></div>
           <div class="hs-region-list" id="hs-region-list">
             <div class="hs-region-row"><span class="hs-region-name">亚太地区</span><div class="hs-bar-track"><div class="hs-bar-fill" style="width:78%"></div></div><span class="hs-region-pct">78%</span></div>
             <div class="hs-region-row"><span class="hs-region-name">北美地区</span><div class="hs-bar-track"><div class="hs-bar-fill" style="width:62%"></div></div><span class="hs-region-pct">62%</span></div>
@@ -122,7 +122,7 @@ export const createHotspotPanel = () => `
         </div>
 
         <div class="hs-aux-box">
-          <div class="hs-aux-title">情绪指数 <span class="hs-aux-sub">SENTIMENT INDEX</span></div>
+          <div class="hs-aux-title">情绪指数 <span class="hs-aux-sub">实时指标</span></div>
           <div class="hs-sentiment">
             <div class="hs-sentiment-ring">
               <svg viewBox="0 0 80 80" class="hs-ring-svg" aria-hidden="true">
@@ -180,7 +180,7 @@ export const createHotspotPanel = () => `
   <div class="hs-feed-bar">
     <div class="hs-feed-label">
       <span class="hs-feed-live-dot">●</span>
-      <span>LIVE</span>
+      <span>实时</span>
       <span class="hs-feed-subtitle">实时事件流</span>
       <span class="hs-feed-desc">24/7 全球热点持续追踪</span>
     </div>

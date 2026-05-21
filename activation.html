@@ -335,6 +335,12 @@
       支持自动检测 DeepSeek、MiniMax、OpenAI、通义千问、Moonshot、智谱等官方直连端点。
     </div>
 
+    <!-- AI 名字 -->
+    <div class="row">
+      <label for="agentName">给 AI 起个名字 <span style="color:#7a90a8;text-transform:none;letter-spacing:0;font-weight:400;">（可选，留空则用默认"小白龙"）</span></label>
+      <input id="agentName" type="text" autocomplete="off" spellcheck="false" maxlength="32" placeholder="例如：小白、贾维斯、Tony……" />
+    </div>
+
     <!-- LLM Key -->
     <div class="row">
       <label for="apiKey">LLM API Key</label>
@@ -463,8 +469,18 @@
     const ACTIVATION_WARMUP_MS = 2500
 
     const apiKeyInput = document.getElementById('apiKey')
+    const agentNameInput = document.getElementById('agentName')
     const btn = document.getElementById('activate')
     const statusEl = document.getElementById('status')
+
+    const AGENT_NAME_RE = /^[一-龥A-Za-z0-9 _-]+$/
+    function readAgentName() {
+      const v = agentNameInput.value.trim()
+      if (!v) return ''
+      if (v.length > 32) return { error: 'AI 名字不能超过 32 个字符' }
+      if (!AGENT_NAME_RE.test(v)) return { error: 'AI 名字只允许中文、英文字母、数字、空格、下划线、短横线' }
+      return v
+    }
 
     fetch('/activation-status')
       .then(r => r.json())
@@ -778,6 +794,14 @@
       const apiKey = apiKeyInput.value.trim()
       if (!apiKey) return
 
+      const agentNameResult = readAgentName()
+      if (agentNameResult && typeof agentNameResult === 'object' && agentNameResult.error) {
+        setStatus(agentNameResult.error, 'err')
+        agentNameInput.focus()
+        return
+      }
+      const agentName = agentNameResult || ''
+
       btn.disabled = true
       setStatus('正在自动识别 API Key 所属厂商...')
 
@@ -785,7 +809,7 @@
         const resp = await fetch('/activate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ apiKey, provider: 'auto' }),
+          body: JSON.stringify({ apiKey, provider: 'auto', agentName }),
         })
         const data = await resp.json().catch(() => ({}))
         if (!resp.ok || !data.ok) {
@@ -865,6 +889,14 @@
       const apiKey  = customApiKeyInput.value.trim() || 'none'
       if (!baseURL || !model) return
 
+      const agentNameResult = readAgentName()
+      if (agentNameResult && typeof agentNameResult === 'object' && agentNameResult.error) {
+        setCustomStatus(agentNameResult.error, 'err')
+        agentNameInput.focus()
+        return
+      }
+      const agentName = agentNameResult || ''
+
       customActivateBtn.disabled = true
       setCustomStatus('正在连接测试…')
 
@@ -872,7 +904,7 @@
         const resp = await fetch('/activate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ provider: 'custom', baseURL, model, apiKey }),
+          body: JSON.stringify({ provider: 'custom', baseURL, model, apiKey, agentName }),
         })
         const data = await resp.json().catch(() => ({}))
         if (!resp.ok || !data.ok) {

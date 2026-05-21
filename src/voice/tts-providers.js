@@ -13,7 +13,6 @@ export const TTS_PROVIDERS = [
 
 export const TTS_VOICES = {
   doubao: [
-    { id: 'zh_female_xiaoxiaohe_uranus_bigtts',      label: '小小何 2.0（女声，温柔）' },
     { id: 'zh_female_xiaohe_uranus_bigtts',          label: '小何 2.0（女声，通用）' },
     { id: 'zh_female_vv_uranus_bigtts',              label: 'Vivi 2.0（女声，通用/多语种）' },
     { id: 'zh_female_shuangkuaisisi_uranus_bigtts',  label: '爽快思思 2.0（女声，活泼）' },
@@ -22,8 +21,6 @@ export const TTS_VOICES = {
     { id: 'zh_male_m191_uranus_bigtts',              label: '云舟 2.0（男声，通用）' },
     { id: 'zh_male_taocheng_uranus_bigtts',          label: '小天 2.0（男声，通用）' },
     { id: 'zh_female_kefunvsheng_uranus_bigtts',     label: '暖阳女声 2.0（客服）' },
-    { id: 'en_female_dacey_uranus_bigtts',           label: 'Dacey（英语女声）' },
-    { id: 'en_male_tim_uranus_bigtts',               label: 'Tim（英语男声）' },
   ],
   minimax: [
     { id: 'male-qn-qingse',    label: '青涩男声' },

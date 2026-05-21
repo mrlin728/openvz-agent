@@ -638,7 +638,10 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           continue
         }
       }
-      if (mustReply && sawToolCall && !sentMessage && !allContent.trim() && !finalNudgeUsed) {
+      // 安全网：工具已结束、最近一次工具不是 send_message、且模型本轮也没继续动作。
+      // 不再用 !allContent.trim() 做守卫——跨轮累积的旁白会让这个守卫错误地静默 break，
+      // 真正可靠的信号是 sentMessage（line 691 在每个工具后维护）。
+      if (mustReply && sawToolCall && !sentMessage && !finalNudgeUsed) {
         messages.push({
           role: 'user',
           content: 'Tool results have returned, but you have not sent the user a final reply yet. Based on the available tool results, call send_message now to reply to the user. If information is insufficient, explain what was found, the failure source, and the limitations; do not end silently.',
@@ -768,10 +771,11 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       const resultSummary = toolResults.map(tr =>
         `[Tool result] ${tr.name}: ${tr.result.slice(0, 300)}`
       ).join('\n')
-      const hasSendMessage = toolResults.some(tr => tr.name === 'send_message')
+      // 同主路径：以 sentMessage（本轮最后一个动作是否是 send_message）为收尾依据，
+      // 而不是只看本轮有没有出现过 send_message。
       messages.push({
         role: 'user',
-        content: hasSendMessage
+        content: sentMessage
           ? `Tool execution results:\n${resultSummary}\n\nMessage sent. If you still need to send additional separate messages, call send_message again now. Otherwise end this round.`
           : toolLoopStopReason
             ? buildToolLoopStopNudge(toolLoopStopReason, lastToolResult)
@@ -798,18 +802,21 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           content: String(tr.result)
         })
       }
-      const hasSendMessage = toolResults.some(tr => tr.name === 'send_message')
+      // "send_message 是不是本轮最后一个动作"才是判断"能不能收尾"的正确信号。
+      // 旧逻辑只看 hasSendMessage（本轮任意位置出现过 send_message），
+      // 会让 [send_message("我查一下..."), exec_command, exec_command] 这种"先说一句再去查"的链条
+      // 在 exec_command 出结果后被错误地告知"可以结束了"，导致模型静默退场、用户拿不到最终答复。
       if (toolLoopStopReason) {
         messages.push({
           role: 'user',
           content: buildToolLoopStopNudge(toolLoopStopReason, lastToolResult),
         })
-      } else if (hasSendMessage) {
+      } else if (sentMessage) {
         messages.push({
           role: 'user',
           content: 'Message sent. If you still need to send additional separate messages to the user, call send_message again now. Otherwise end this round.',
         })
-      } else if (mustReply && !hasSendMessage) {
+      } else if (mustReply) {
         messages.push({
           role: 'user',
           content: 'Tool results have returned. Continue completing the user request based on the available results. If the information is sufficient, you must call send_message to send the final reply to the user. For files, directories, commands, or network requests, state only facts verified by tool results, such as ok/verified/path/bytes/exit_code/status. Do not claim completion of any action without tool evidence. If a tool failed or the data is insufficient, explain the limitation and next suggested step; do not end silently.',

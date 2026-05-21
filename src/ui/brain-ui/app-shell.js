@@ -4,7 +4,7 @@ import { createDocPanel } from './doc-panel.js';
 
 const createGraphStage = () => `
 <div class="grid-overlay"></div>
-<svg id="graph" aria-label="Longma memory graph"></svg>
+<svg id="graph" aria-label="Longma 记忆节点图"></svg>
 `;
 
 const createPrimaryPanel = () => `
@@ -12,7 +12,7 @@ const createPrimaryPanel = () => `
   <header class="panel-identity">
     <div class="brand-mark"></div>
     <div class="brand-copy">
-      <div class="eyebrow">Cognitive Surface</div>
+      <div class="eyebrow">认知界面</div>
       <div class="brand-title" id="agent-brand-name">Longma AI Agent</div>
     </div>
     <button class="voice-btn" id="voice-btn" title="麦克风 开/关" type="button">🎤</button>
@@ -26,7 +26,7 @@ const createPrimaryPanel = () => `
       <div class="stream-title-text">用户消息处理器</div>
       <!-- <div class="stream-subtitle">user message · react</div> -->
     </div>
-    <span class="pill" id="pill-l1">LIVE</span>
+    <span class="pill" id="pill-l1">实时</span>
   </div>
 
   ${createVoicePanel()}
@@ -42,7 +42,7 @@ const createPrimaryPanel = () => `
 
     <section class="physics-control" id="physics-control">
       <button class="physics-toggle" id="physics-toggle" type="button" aria-expanded="false">
-        <span class="physics-toggle-label">Graph Tuning</span>
+        <span class="physics-toggle-label">图谱调节</span>
         <span class="physics-toggle-icon">▾</span>
       </button>
       <div class="physics-panel" id="physics-panel">
@@ -157,6 +157,7 @@ const createSettingsModal = () => `
         <button class="settings-nav-item" data-tab="media" type="button">媒体能力</button>
         <button class="settings-nav-item" data-tab="social" type="button">社交媒体</button>
         <button class="settings-nav-item" data-tab="voice" type="button">语音识别</button>
+        <button class="settings-nav-item" data-tab="web-search" type="button">上网搜索</button>
         <button class="settings-nav-item" data-tab="security" type="button">安全沙箱</button>
         <button class="settings-nav-item" data-tab="update" type="button">更新</button>
       </nav>
@@ -490,6 +491,53 @@ const createSettingsModal = () => `
           </div>
         </div>
 
+        <!-- ── 上网搜索 tab ── -->
+        <div class="settings-tab" data-tab="web-search">
+          <div class="settings-section">
+            <div class="settings-section-label">搜索引擎</div>
+            <p class="settings-hint">Agent 调用 web_search 时会按 Serper → SearXNG → Bing → Jina → DuckDuckGo 顺序兜底。Bing 和 DuckDuckGo 不需要配置即可使用；如果你有 Serper / Jina 的 key，质量会显著提升。</p>
+
+            <div class="settings-row">
+              <label class="settings-label" for="websearch-serper-key">Serper API Key</label>
+              <input class="settings-input" type="password" id="websearch-serper-key" placeholder="留空则不修改">
+            </div>
+            <p class="settings-hint">在 <a href="https://serper.dev" target="_blank" style="color:var(--cool)">serper.dev</a> 注册后获取（每月 2500 次免费）。Google SERP JSON 接口，最稳定。</p>
+
+            <div class="settings-row">
+              <label class="settings-label" for="websearch-jina-key">Jina API Key</label>
+              <input class="settings-input" type="password" id="websearch-jina-key" placeholder="留空则不修改">
+            </div>
+            <p class="settings-hint">在 <a href="https://jina.ai" target="_blank" style="color:var(--cool)">jina.ai</a> 获取（有免费额度）。s.jina.ai 搜索接口，作为 Bing 失效时的额外兜底。</p>
+
+            <div class="settings-row">
+              <label class="settings-label" for="websearch-searxng-url">SearXNG URL</label>
+              <input class="settings-input" type="text" id="websearch-searxng-url" placeholder="https://your-searxng-instance.com">
+            </div>
+            <p class="settings-hint">选填。自托管 SearXNG 实例地址（去隐私的元搜索引擎）。要带 http:// 或 https://。</p>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-label">当前状态</div>
+            <div class="settings-config-row">
+              <span class="settings-config-type">Serper</span>
+              <span class="settings-config-info" id="websearch-status-serper">—</span>
+            </div>
+            <div class="settings-config-row">
+              <span class="settings-config-type">Jina</span>
+              <span class="settings-config-info" id="websearch-status-jina">—</span>
+            </div>
+            <div class="settings-config-row">
+              <span class="settings-config-type">SearXNG</span>
+              <span class="settings-config-info" id="websearch-status-searxng">—</span>
+            </div>
+          </div>
+
+          <div class="settings-section settings-section-action">
+            <button class="settings-save-btn" id="settings-save-web-search" type="button">保存</button>
+            <span class="settings-feedback" id="settings-web-search-feedback"></span>
+          </div>
+        </div>
+
         <!-- ── 安全沙箱 tab ── -->
         <div class="settings-tab" data-tab="security">
           <div class="settings-section">
@@ -586,14 +634,14 @@ const createVoicePanel = () => `
 const createVideoPanel = () => `
 <div class="video-panel" id="video-panel">
   <div class="media-stage-head">
-    <div class="media-stage-title" id="video-title">Video</div>
-    <button class="video-exit-btn" id="video-exit-btn" type="button" title="Exit video">x</button>
+    <div class="media-stage-title" id="video-title">视频</div>
+    <button class="video-exit-btn" id="video-exit-btn" type="button" title="关闭视频">x</button>
   </div>
   <div class="video-surface" id="video-surface">
     <div class="video-backdrop" id="video-backdrop"></div>
     <video id="video-feed" playsinline controls></video>
-    <iframe id="video-frame" title="Video player" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen hidden></iframe>
-    <div class="video-empty" id="video-empty">No video source</div>
+    <iframe id="video-frame" title="视频播放器" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen hidden></iframe>
+    <div class="video-empty" id="video-empty">无视频源</div>
   </div>
 </div>
 `;
@@ -601,7 +649,7 @@ const createVideoPanel = () => `
 const createMusicPanel = () => `
 <div class="music-panel" id="music-panel">
   <div class="media-stage-head">
-    <div class="media-stage-title" id="music-panel-title">Music</div>
+    <div class="media-stage-title" id="music-panel-title">音乐</div>
     <button class="music-exit-btn" id="music-exit-btn" type="button" title="退出音乐模式">×</button>
   </div>
   <div class="music-stage">
@@ -654,12 +702,12 @@ const createMusicPanel = () => `
 const createImagePanel = () => `
 <div class="image-panel" id="image-panel">
   <div class="media-stage-head">
-    <div class="media-stage-title" id="image-title">Image</div>
-    <button class="image-exit-btn" id="image-exit-btn" type="button" title="Close image">x</button>
+    <div class="media-stage-title" id="image-title">图片</div>
+    <button class="image-exit-btn" id="image-exit-btn" type="button" title="关闭图片">x</button>
   </div>
   <div class="image-surface" id="image-surface">
     <img id="image-display" alt="" />
-    <div class="image-empty" id="image-empty">No image source</div>
+    <div class="image-empty" id="image-empty">无图片源</div>
   </div>
 </div>
 `;

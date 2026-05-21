@@ -37,7 +37,7 @@ export function initChat({
     inputLocked = locked;
     msgInput.disabled = locked;
     sendBtn.disabled = locked;
-    msgInput.placeholder = locked ? (reason || "System is preparing…") : defaultInputPlaceholder();
+    msgInput.placeholder = locked ? (reason || "系统准备中…") : defaultInputPlaceholder();
   }
 
   function releaseWarmupLock() {
@@ -62,7 +62,7 @@ export function initChat({
     }
 
     const seconds = Math.max(1, Math.ceil(remaining / 1000));
-    setComposerLocked(true, `Just activated — preparing model… ~${seconds}s`);
+    setComposerLocked(true, `刚激活 — 模型预热中… ~${seconds}s`);
     if (warmupTimer) clearTimeout(warmupTimer);
     warmupTimer = setTimeout(releaseWarmupLock, remaining);
   }
@@ -247,7 +247,7 @@ export function initChat({
       }
     } catch (error) {
       console.warn("[send]", error.message);
-      addMsg("jarvis", "Failed to send message — please check that the local service is running.");
+      addMsg("jarvis", "发送失败 — 请检查本地服务是否运行。");
       openChat(true);
     }
   }

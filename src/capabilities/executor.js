@@ -6,7 +6,7 @@ import { spawn } from 'child_process'
 import { chromium } from 'playwright'
 import { nowTimestamp } from '../time.js'
 import { searchMemories, searchMemoriesByKeywords, insertMemory, upsertMemoryByMemId, memoryExistsByMemId, getMemoryByMemId, deleteMemoryByMemId, hideMemoryByMemId, normalizeConversationPartyId, createReminder, findMergeableOneOffReminder, appendReminderTask, listPendingReminders, getReminderById, cancelReminder, upsertPrefetchTask, removePrefetchTask, listPrefetchTasks, insertActionLog, insertConversation, upsertMusicTrack, getMusicTrack, searchMusicLibrary, listMusicLibrary, updateMusicLrc, deleteMusicTrack as dbDeleteMusicTrack, setConfig as dbSetConfig } from '../db.js'
-import { emitEvent, emitUICommand, emitACUIEvent, hasACUIClient, addActiveUICard, removeActiveUICard, getActiveUICards } from '../events.js'
+import { emitEvent, emitUICommand, emitACUIEvent, hasACUIClient, addActiveUICard, removeActiveUICard, getActiveUICards, setStickyEvent } from '../events.js'
 import { dispatchSocialMessage } from '../social/dispatch.js'
 import { callCapability, listCapabilities } from '../providers/registry.js'
 import { isDailyLimitReached } from '../quota.js'
@@ -23,10 +23,56 @@ import { TOOL_SCHEMAS } from './schemas.js'
 const bgProcesses = new Map()
 const BG_OUTPUT_MAX_LINES = 200
 
+const IS_WIN = process.platform === 'win32'
+
+/**
+ * 跨平台 spawn shell 命令，确保中文输出不乱码。
+ *
+ * Windows：用 powershell.exe，并在命令前注入 UTF-8 编码设置，
+ *          防止中文 Windows 默认 GBK 输出被 Node 按 UTF-8 解码成 �。
+ * 其他平台：原样用 shell:true（系统默认 /bin/sh，本来就是 UTF-8）。
+ *
+ * 调用方还应对返回的 child.stdout / child.stderr 调用 setEncoding('utf8')，
+ * 防止数据 chunk 切在多字节字符中间产生 U+FFFD 替换字符。
+ */
+function spawnShellCommand(command, opts = {}) {
+  if (IS_WIN) {
+    const wrapped = `[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; $OutputEncoding=[System.Text.Encoding]::UTF8; ${command}`
+    return spawn(wrapped, { ...opts, shell: 'powershell.exe' })
+  }
+  return spawn(command, { ...opts, shell: true })
+}
+
 // URL 访问缓存：url → { content, fetchedAt (ms timestamp) }
 // 避免同一 URL 在短时间内被反复请求（如天气每天只需查一次）
 const urlCache = new Map()
+
+// web_search 结果缓存：query::limit → { payload, fetchedAt }
+// Map 的插入顺序即 LRU 顺序；写入时若超量则淘汰最老一条
 const searchCache = new Map()
+const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000
+const SEARCH_CACHE_MAX = 200
+
+function searchCacheGet(key) {
+  const entry = searchCache.get(key)
+  if (!entry) return null
+  if (Date.now() - entry.fetchedAt >= SEARCH_CACHE_TTL_MS) {
+    searchCache.delete(key)
+    return null
+  }
+  searchCache.delete(key)
+  searchCache.set(key, entry)
+  return entry.payload
+}
+
+function searchCacheSet(key, payload) {
+  searchCache.set(key, { payload, fetchedAt: Date.now() })
+  while (searchCache.size > SEARCH_CACHE_MAX) {
+    const oldest = searchCache.keys().next().value
+    if (oldest === undefined) break
+    searchCache.delete(oldest)
+  }
+}
 
 const URL_TTL_MS = {
   default: 60 * 60 * 1000,       // 默认：1 小时
@@ -45,7 +91,7 @@ function getUrlTtl(url) {
   return URL_TTL_MS.default
 }
 
-import { config, getTTSCredentials, setSecurity } from '../config.js'
+import { config, getTTSCredentials, setSecurity, getWebSearchCredentials } from '../config.js'
 import { streamTTS } from '../voice/tts-providers.js'
 import { paths } from '../paths.js'
 import { PRIMARY_USER_ID, lookupReplyTarget, normalizeChannel, suggestProactiveChannel } from '../identity.js'
@@ -1030,12 +1076,13 @@ function trimCommandOutput(value = '', max = 6000) {
 }
 
 function execBackground(command, execCwd) {
-  const child = spawn(command, {
-    shell: process.platform === 'win32' ? 'powershell.exe' : true,
+  const child = spawnShellCommand(command, {
     cwd: execCwd,
     detached: false,
     stdio: ['ignore', 'pipe', 'pipe'],
   })
+  child.stdout?.setEncoding('utf8')
+  child.stderr?.setEncoding('utf8')
 
   const pid = child.pid
   if (!pid) {
@@ -1083,10 +1130,9 @@ function execBackground(command, execCwd) {
 function execForeground(command, timeoutMs, signal, execCwd, promoteToBackground = false) {
   return new Promise((resolve) => {
     throwIfAborted(signal)
-    const child = spawn(command, {
-      shell: process.platform === 'win32' ? 'powershell.exe' : true,
-      cwd: execCwd,
-    })
+    const child = spawnShellCommand(command, { cwd: execCwd })
+    child.stdout?.setEncoding('utf8')
+    child.stderr?.setEncoding('utf8')
 
     let stdout = ''
     let stderr = ''
@@ -1272,20 +1318,19 @@ const WEB_HEADERS = {
 }
 
 // 从 config.json 或 process.env 读取上网工具配置
+// 5 秒内复用结果，避免一次 web_search 在 5 引擎 fallback 时同步读盘 5 次
+let _webConfigCache = null
+let _webConfigFetchedAt = 0
+const WEB_CONFIG_TTL_MS = 5000
+
 function readWebConfig() {
-  try {
-    const raw = fs.readFileSync(paths.configFile, 'utf-8')
-    const parsed = JSON.parse(raw)
-    return {
-      serperKey: parsed.serper_api_key || process.env.SERPER_API_KEY || '',
-      searxngUrl: parsed.searxng_url || process.env.SEARXNG_URL || '',
-    }
-  } catch {
-    return {
-      serperKey: process.env.SERPER_API_KEY || '',
-      searxngUrl: process.env.SEARXNG_URL || '',
-    }
+  const now = Date.now()
+  if (_webConfigCache && now - _webConfigFetchedAt < WEB_CONFIG_TTL_MS) {
+    return _webConfigCache
   }
+  _webConfigCache = getWebSearchCredentials()
+  _webConfigFetchedAt = now
+  return _webConfigCache
 }
 
 // 单例浏览器：避免每次 browser_read 冷启动 Chromium（耗时 3~5 秒）
@@ -1313,7 +1358,7 @@ function invalidateSharedBrowser() {
 const BROWSER_VIEWPORT = { width: 1365, height: 900 }
 
 function webJson(payload) {
-  return JSON.stringify(payload, null, 2)
+  return JSON.stringify(payload)
 }
 
 function normalizeWebUrl(raw) {
@@ -1442,11 +1487,29 @@ function unwrapDuckDuckGoUrl(url) {
   return decoded
 }
 
+// Bing 搜索结果常用 bing.com/ck/a?...&u=a1<base64url> 中转链接；
+// 不解包的话下游 fetch_url 会拿到跳转壳页而不是真正的目标页
+function unwrapBingUrl(url) {
+  try {
+    if (!url || !/bing\.com\/ck\/a/i.test(url)) return url
+    const u = new URL(url)
+    const raw = u.searchParams.get('u')
+    if (!raw) return url
+    let encoded = raw.startsWith('a1') ? raw.slice(2) : raw
+    encoded = encoded.replace(/-/g, '+').replace(/_/g, '/')
+    while (encoded.length % 4) encoded += '='
+    const decoded = Buffer.from(encoded, 'base64').toString('utf-8')
+    return /^https?:\/\//i.test(decoded) ? decoded : url
+  } catch {
+    return url
+  }
+}
+
 function parseDuckDuckGoResults(html, limit) {
-  const results = []
+  const raw = []
   const resultRegex = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi
   let match
-  while ((match = resultRegex.exec(html)) !== null && results.length < limit) {
+  while ((match = resultRegex.exec(html)) !== null) {
     const url = unwrapDuckDuckGoUrl(match[1])
     const title = htmlToText(match[2])
     if (!url || !title) continue
@@ -1454,10 +1517,58 @@ function parseDuckDuckGoResults(html, limit) {
     const nextMatch = html.slice(nextStart).match(/<a[^>]+class="result__a"/i)
     const block = nextMatch ? html.slice(nextStart, nextStart + nextMatch.index) : html.slice(nextStart, nextStart + 2000)
     const snippetMatch = block.match(/class="result__snippet"[^>]*>([\s\S]*?)<\/a>|class="result__snippet"[^>]*>([\s\S]*?)<\/div>/i)
-    const snippet = htmlToText(snippetMatch?.[1] || snippetMatch?.[2] || '').slice(0, 300)
-    results.push({ title, url, snippet })
+    const snippet = htmlToText(snippetMatch?.[1] || snippetMatch?.[2] || '')
+    raw.push({ title, url, snippet })
   }
-  return results
+  return normalizeResults(raw, limit)
+}
+
+// 引擎返回约定：
+//   null                              → 未配置/跳过，不计入失败
+//   { ok: true, results, source }     → 成功
+//   { ok: false, reason }             → 已尝试但失败，reason 会聚合到最终错误
+//
+// reason 用简短可读字符串（"http 401"、"empty html"、"blocked or captcha"、"network: ..."），
+// 让"key 失效"和"被限速"在日志里能分清楚
+
+const SEARCH_TITLE_MAX = 200
+const SEARCH_SNIPPET_MAX = 300
+const SEARCH_LOG_QUERY_MAX = 100
+
+function hasCJK(s) {
+  return /[㐀-鿿豈-﫿]/.test(s)
+}
+
+function truncateForLog(s, max = SEARCH_LOG_QUERY_MAX) {
+  const str = String(s || '')
+  return str.length <= max ? str : `${str.slice(0, max)}…(${str.length})`
+}
+
+// 各引擎 raw 结果统一处理：截断超长字段、丢弃空 url/title、按 URL 去重（host+path，忽略 query/fragment）
+function normalizeResults(raw, limit) {
+  const out = []
+  const seen = new Set()
+  for (const r of raw) {
+    const url = String(r?.url || '').trim()
+    const title = String(r?.title || '').trim().slice(0, SEARCH_TITLE_MAX)
+    if (!url || !title) continue
+    let dedupKey
+    try {
+      const u = new URL(url)
+      dedupKey = `${u.host}${u.pathname.replace(/\/$/, '')}`
+    } catch {
+      dedupKey = url
+    }
+    if (seen.has(dedupKey)) continue
+    seen.add(dedupKey)
+    out.push({
+      title,
+      url,
+      snippet: String(r?.snippet || '').trim().slice(0, SEARCH_SNIPPET_MAX),
+    })
+    if (out.length >= limit) break
+  }
+  return out
 }
 
 // web_search 引擎1：Serper.dev（Google SERP JSON API，最稳定）
@@ -1473,23 +1584,28 @@ async function searchViaSerper(query, limit, signal) {
         'X-API-KEY': serperKey,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ q: query, num: limit, hl: 'zh-cn', gl: 'cn' }),
+      body: JSON.stringify({
+        q: query,
+        num: limit,
+        hl: hasCJK(query) ? 'zh-cn' : 'en',
+        gl: hasCJK(query) ? 'cn' : 'us',
+      }),
       signal: merged?.signal,
     })
     merged?.cleanup()
-    if (!res.ok) return null
+    if (!res.ok) {
+      const hint = res.status === 401 || res.status === 403 ? ' (check SERPER_API_KEY)' : ''
+      return { ok: false, reason: `http ${res.status}${hint}` }
+    }
     const data = await res.json()
-    const results = (data.organic || []).slice(0, limit).map(r => ({
-      title: String(r.title || ''),
-      url: String(r.link || ''),
-      snippet: String(r.snippet || ''),
-    }))
-    if (results.length === 0) return null
-    return { results, source: 'serper' }
+    const raw = (data.organic || []).map(r => ({ title: r.title, url: r.link, snippet: r.snippet }))
+    const results = normalizeResults(raw, limit)
+    if (results.length === 0) return { ok: false, reason: 'empty results' }
+    return { ok: true, results, source: 'serper' }
   } catch (err) {
     merged?.cleanup()
     if (err.name === 'AbortError') throw err
-    return null
+    return { ok: false, reason: `network: ${err.message || err}` }
   }
 }
 
@@ -1498,45 +1614,53 @@ async function searchViaSearXNG(query, limit, signal) {
   const { searxngUrl } = readWebConfig()
   if (!searxngUrl) return null
 
-  const base = searxngUrl.replace(/\/$/, '')
+  if (!/^https?:\/\//i.test(searxngUrl)) {
+    return { ok: false, reason: 'SEARXNG_URL must start with http:// or https://' }
+  }
+
+  const base = searxngUrl.replace(/\/$/, '').replace(/\/search$/i, '')
   const url = `${base}/search?q=${encodeURIComponent(query)}&format=json&pageno=1`
   const merged = createMergedAbortSignal(signal, 12000)
   try {
     const res = await fetch(url, { headers: { 'Accept': 'application/json' }, signal: merged?.signal })
     merged?.cleanup()
-    if (!res.ok) return null
+    if (!res.ok) return { ok: false, reason: `http ${res.status}` }
     const data = await res.json()
-    const results = (data.results || []).slice(0, limit).map(r => ({
-      title: String(r.title || ''),
-      url: String(r.url || ''),
-      snippet: String(r.content || ''),
-    }))
-    if (results.length === 0) return null
-    return { results, source: 'searxng' }
+    const raw = (data.results || []).map(r => ({ title: r.title, url: r.url, snippet: r.content }))
+    const results = normalizeResults(raw, limit)
+    if (results.length === 0) return { ok: false, reason: 'empty results' }
+    return { ok: true, results, source: 'searxng' }
   } catch (err) {
     merged?.cleanup()
     if (err.name === 'AbortError') throw err
-    return null
+    return { ok: false, reason: `network: ${err.message || err}` }
   }
 }
 
-// web_search 引擎3：Jina Search（s.jina.ai，免费无需 key，稳定）
+// web_search 引擎3：Jina Search（s.jina.ai；无 key 时也能试，但现在 Jina 新版 API 要 key）
 async function searchViaJina(query, limit, signal) {
+  const { jinaKey } = readWebConfig()
   const url = `https://s.jina.ai/${encodeURIComponent(query)}`
   const merged = createMergedAbortSignal(signal, 18000)
+  const headers = {
+    'Accept': 'text/plain',
+    'X-Respond-With': 'no-references',
+    'User-Agent': WEB_HEADERS['User-Agent'],
+  }
+  if (jinaKey) headers['Authorization'] = `Bearer ${jinaKey}`
   try {
-    const res = await fetch(url, {
-      headers: {
-        'Accept': 'text/plain',
-        'X-Respond-With': 'no-references',
-        'User-Agent': WEB_HEADERS['User-Agent'],
-      },
-      signal: merged?.signal,
-    })
+    const res = await fetch(url, { headers, signal: merged?.signal })
     merged?.cleanup()
-    if (!res.ok) return null
+    if (!res.ok) {
+      let hint = ''
+      if (res.status === 401 || res.status === 403) hint = jinaKey ? ' (check jina_api_key)' : ' (jina now requires api key, set it in 设置 → 上网)'
+      else if (res.status === 429) hint = ' (rate-limited)'
+      return { ok: false, reason: `http ${res.status}${hint}` }
+    }
     const text = (await res.text()).trim()
-    if (!text || text.length < 50) return null
+    if (!text) return { ok: false, reason: 'empty body' }
+    // 短到不可能是正常 SERP（Jina 限流时常返 200 + 几十字提示）
+    if (text.length < 50) return { ok: false, reason: `short body (${text.length} chars, likely rate-limited)` }
 
     // Jina Search 返回格式：
     // [1] 标题
@@ -1544,27 +1668,23 @@ async function searchViaJina(query, limit, signal) {
     // Description: 摘要...
     //
     // [2] ...
-    const results = []
+    const raw = []
     const blocks = text.split(/\n(?=\[\d+\])/)
     for (const block of blocks) {
-      if (results.length >= limit) break
       const titleMatch = block.match(/^\[\d+\]\s*(.+)/)
       const urlMatch = block.match(/^URL:\s*(\S+)/m)
       const descMatch = block.match(/^Description:\s*(.+)/m)
       if (titleMatch && urlMatch) {
-        results.push({
-          title: titleMatch[1].trim(),
-          url: urlMatch[1].trim(),
-          snippet: (descMatch?.[1] || '').trim().slice(0, 300),
-        })
+        raw.push({ title: titleMatch[1], url: urlMatch[1], snippet: descMatch?.[1] || '' })
       }
     }
-    if (results.length === 0) return null
-    return { results, source: 'jina_search' }
+    const results = normalizeResults(raw, limit)
+    if (results.length === 0) return { ok: false, reason: 'parsed 0 results (format may have changed)' }
+    return { ok: true, results, source: 'jina_search' }
   } catch (err) {
     merged?.cleanup()
     if (err.name === 'AbortError') throw err
-    return null
+    return { ok: false, reason: `network: ${err.message || err}` }
   }
 }
 
@@ -1578,28 +1698,40 @@ async function searchViaBing(query, limit, signal) {
       signal: merged?.signal,
     })
     merged?.cleanup()
-    if (!res.ok) return null
+    if (!res.ok) return { ok: false, reason: `http ${res.status}` }
     const html = await res.text()
-    const results = []
-    // 匹配 Bing 搜索结果：<h2><a href="...">标题</a></h2> + 摘要
-    const blockRe = /<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>([\s\S]*?)<\/li>/g
-    let m
-    while ((m = blockRe.exec(html)) !== null && results.length < limit) {
-      const block = m[1]
-      const hrefMatch = block.match(/<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([^<]+)<\/a>/)
-      const snippetMatch = block.match(/<p[^>]*>([\s\S]*?)<\/p>/)
-      if (!hrefMatch) continue
-      const url = hrefMatch[1]
-      const title = hrefMatch[2].replace(/<[^>]+>/g, '').trim()
-      const snippet = (snippetMatch?.[1] || '').replace(/<[^>]+>/g, '').trim().slice(0, 300)
-      if (title && url) results.push({ title, url, snippet })
+    // Bing 的 <li class="b_algo"> 不闭合 </li>，按下一个 b_algo 切块更稳
+    const parts = html.split(/<li class="b_algo"/i).slice(1)
+    const raw = []
+    for (const part of parts) {
+      // 标题在 <h2><a href="...">...内可能嵌 <strong>...</a></h2>
+      const headerMatch = part.match(/<h2[^>]*>\s*<a[^>]+href="(https?:\/\/[^"]+)"[^>]*>([\s\S]*?)<\/a>/i)
+      if (!headerMatch) continue
+      const url = unwrapBingUrl(headerMatch[1])
+      const title = htmlToText(headerMatch[2])
+      if (!title || !url) continue
+      // 摘要：优先 b_lineclamp* / b_caption 内的 <p>，兜底取第一个有内容的 <p>
+      const snippetMatch =
+        part.match(/<p[^>]*class="[^"]*b_lineclamp[^"]*"[^>]*>([\s\S]*?)<\/p>/i) ||
+        part.match(/class="[^"]*b_caption[^"]*"[^>]*>[\s\S]*?<p[^>]*>([\s\S]*?)<\/p>/i) ||
+        part.match(/<p[^>]*>([\s\S]{30,}?)<\/p>/i)
+      const snippet = snippetMatch ? htmlToText(snippetMatch[1]) : ''
+      raw.push({ title, url, snippet })
     }
-    if (results.length === 0) return null
-    return { results, source: 'bing' }
+    const results = normalizeResults(raw, limit)
+    if (results.length === 0) {
+      const blocked = /sorry|captcha|verify|访问被拒绝/i.test(html.slice(0, 4000))
+      let reason
+      if (blocked) reason = 'blocked or captcha'
+      else if (parts.length === 0) reason = 'no b_algo found (layout may have changed)'
+      else reason = `found ${parts.length} b_algo blocks but parsed 0 (h2>a structure may have changed)`
+      return { ok: false, reason }
+    }
+    return { ok: true, results, source: 'bing' }
   } catch (err) {
     merged?.cleanup()
     if (err.name === 'AbortError') throw err
-    return null
+    return { ok: false, reason: `network: ${err.message || err}` }
   }
 }
 
@@ -1610,17 +1742,17 @@ async function searchViaDDG(query, limit, signal) {
   try {
     const res = await fetch(searchUrl, { headers: WEB_HEADERS, signal: merged?.signal })
     merged?.cleanup()
-    if (!res.ok) return null
+    if (!res.ok) return { ok: false, reason: `http ${res.status}` }
     const html = await res.text()
-    // DDG 返回 403/CAPTCHA 页时 HTML 中不含 result__a，直接返回 null
-    if (!html.includes('result__a')) return null
+    // DDG 返回 403/CAPTCHA 页时 HTML 中不含 result__a
+    if (!html.includes('result__a')) return { ok: false, reason: 'blocked or captcha (no result__a)' }
     const results = parseDuckDuckGoResults(html, limit)
-    if (results.length === 0) return null
-    return { results, source: 'duckduckgo' }
+    if (results.length === 0) return { ok: false, reason: 'parsed 0 results' }
+    return { ok: true, results, source: 'duckduckgo' }
   } catch (err) {
     merged?.cleanup()
     if (err.name === 'AbortError') throw err
-    return null
+    return { ok: false, reason: `network: ${err.message || err}` }
   }
 }
 
@@ -1631,39 +1763,53 @@ async function execWebSearch(args, context = {}) {
   if (!query) return webJson({ ok: false, tool: 'web_search', error: 'missing query' })
 
   const cacheKey = `${query}::${limit}`
-  const cached = searchCache.get(cacheKey)
-  if (cached && Date.now() - cached.fetchedAt < 10 * 60 * 1000) {
-    return webJson({ ...cached.payload, cached: true })
-  }
+  const cached = searchCacheGet(cacheKey)
+  if (cached) return webJson({ ...cached, cached: true })
 
-  console.log(`[web_search] ${query}`)
+  console.log(`[web_search] ${truncateForLog(query)}`)
 
   // 依次尝试：Serper → SearXNG → Bing（国内可访问）→ Jina Search → DuckDuckGo（兜底）
-  const engines = [searchViaSerper, searchViaSearXNG, searchViaBing, searchViaJina, searchViaDDG]
-  let lastErr = null
-  for (const engine of engines) {
+  const engines = [
+    ['serper',   searchViaSerper],
+    ['searxng',  searchViaSearXNG],
+    ['bing',     searchViaBing],
+    ['jina',     searchViaJina],
+    ['ddg',      searchViaDDG],
+  ]
+  const failures = []
+  for (const [name, engine] of engines) {
     throwIfAborted(context.signal)
+    let result
     try {
-      const result = await engine(query, limit, context.signal)
-      if (result) {
-        const payload = {
-          ok: true, tool: 'web_search', query,
-          source: result.source,
-          results: result.results,
-          hint: 'Open 1-3 reliable result URLs with fetch_url, then answer the user.',
-        }
-        searchCache.set(cacheKey, { payload, fetchedAt: Date.now() })
-        return webJson(payload)
-      }
+      result = await engine(query, limit, context.signal)
     } catch (err) {
       if (err.name === 'AbortError') throw err
-      lastErr = err
+      failures.push({ engine: name, reason: `threw: ${err.message || err}` })
+      console.log(`[web_search] ${name} threw: ${err.message || err}`)
+      continue
     }
+    if (result == null) continue  // 未配置
+    if (result.ok) {
+      const payload = {
+        ok: true, tool: 'web_search', query,
+        source: result.source,
+        results: result.results,
+        hint: 'Open 1-3 reliable result URLs with fetch_url, then answer the user.',
+      }
+      searchCacheSet(cacheKey, payload)
+      return webJson(payload)
+    }
+    failures.push({ engine: name, reason: result.reason || 'unknown' })
+    console.log(`[web_search] ${name} failed: ${result.reason || 'unknown'}`)
   }
 
+  const summary = failures.length
+    ? failures.map(f => `${f.engine}: ${f.reason}`).join('; ')
+    : 'no engine configured'
   return webJson({
     ok: false, tool: 'web_search', query,
-    error: lastErr?.message || 'all search engines failed',
+    error: `all search engines failed (${summary})`,
+    failures,
     hint: 'All search engines failed. Try fetch_url with a known URL, or configure SERPER_API_KEY for reliable search.',
   })
 }
@@ -3024,6 +3170,7 @@ function execSetAgentName({ name }) {
     return toolJson({ ok: false, error: '名字只允许包含中文、英文字母、数字、空格、下划线、短横线' })
   }
   dbSetConfig('agent_name', trimmed)
+  setStickyEvent('agent_name_updated', { name: trimmed })
   emitEvent('agent_name_updated', { name: trimmed })
   return toolJson({ ok: true, name: trimmed, message: `好的，我以后就叫 ${trimmed} 了` })
 }

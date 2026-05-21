@@ -36,11 +36,15 @@ function safe(fn, fallback = null) {
 }
 
 /** 执行 shell 命令，失败返回 null，windowsHide 防止 Windows 弹出黑窗口 */
-function safeExec(cmd, timeoutMs = 8000) {
-  return safe(
-    () => execSync(cmd, { timeout: timeoutMs, encoding: 'utf8', windowsHide: true }).trim(),
-    null
-  )
+function safeExec(cmd, timeoutMs = 8000, label = '') {
+  try {
+    return execSync(cmd, { timeout: timeoutMs, encoding: 'utf8', windowsHide: true }).trim()
+  } catch (err) {
+    if (label) {
+      console.warn(`[system-info] ${label} exec failed:`, err.message || err)
+    }
+    return null
+  }
 }
 
 // ─── OS 版本 ───────────────────────────────────────────────────────────────────
@@ -102,8 +106,18 @@ function getWindowsShellPaths() {
     + `Music=[Environment]::GetFolderPath('MyMusic');`
     + `Videos=[Environment]::GetFolderPath('MyVideos')`
     + `}|ConvertTo-Json"`
-  const raw = safeExec(cmd)
-  return safe(() => JSON.parse(raw), {})
+  const raw = safeExec(cmd, 8000, 'shell-paths')
+  if (!raw) {
+    console.warn('[system-info] PowerShell shell paths query returned nothing, falling back to home-relative paths')
+    return {}
+  }
+  // 注意：JSON.parse(null) 不抛错而是返回 JS null，必须显式判 null 后再 fallback
+  const parsed = safe(() => JSON.parse(raw), null)
+  if (!parsed || typeof parsed !== 'object') {
+    console.warn('[system-info] PowerShell shell paths returned invalid JSON, falling back. raw:', raw?.slice(0, 200))
+    return {}
+  }
+  return parsed
 }
 
 /**
@@ -145,19 +159,17 @@ function getLinuxShellPaths() {
 }
 
 function getShellPaths() {
-  if (IS_WIN)   return getWindowsShellPaths()
-  if (IS_MAC)   return getMacShellPaths()
-  if (IS_LINUX) return getLinuxShellPaths()
-  // 其他平台：全部降级到 homedir 拼接
-  const home = os.homedir()
-  return {
-    Desktop:   path.join(home, 'Desktop'),
-    Documents: path.join(home, 'Documents'),
-    Downloads: path.join(home, 'Downloads'),
-    Pictures:  path.join(home, 'Pictures'),
-    Music:     path.join(home, 'Music'),
-    Videos:    path.join(home, 'Videos'),
+  let result
+  try {
+    if (IS_WIN)        result = getWindowsShellPaths()
+    else if (IS_MAC)   result = getMacShellPaths()
+    else if (IS_LINUX) result = getLinuxShellPaths()
+  } catch (err) {
+    console.warn('[system-info] getShellPaths threw:', err?.message || err)
   }
+  // 终极保险：无论子函数返回什么，这里都保证是合法对象
+  if (!result || typeof result !== 'object') result = {}
+  return result
 }
 
 // ─── 电量 ──────────────────────────────────────────────────────────────────────

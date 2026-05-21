@@ -104,7 +104,7 @@ function renderPersonCard(card = {}) {
   setText('pc-name', name);
   setText('pc-title', card.title || '人物卡片');
   setText('pc-summary', card.summary || '暂无简介。');
-  setText('pc-source', `source: ${card.source || 'person-card'}`);
+  setText('pc-source', `来源：${card.source || '人物卡片'}`);
   setText('pc-updated', formatUpdatedAt(card.updatedAt));
   scheduleHeroImageLookup(card);
 
