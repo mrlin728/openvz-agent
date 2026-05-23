@@ -1314,7 +1314,7 @@ function handle({ type, data = {} }) {
       break;
     case "startup_self_check_started":
       playJarvisStartupSound();
-      setTimeout(() => playTTSReply("System starting, running self-check"), 1500);
+      setTimeout(() => playTTSReply("系统启动中，正在运行自检"), 1500);
       break;
     default:
       break;
@@ -2118,7 +2118,12 @@ function initTTSSettings() {
   const VOICE_PROVIDER_KEY   = "bailongma-voice-provider";
 
   function applyVoiceProviderUI(provider) {
-    const panels = { aliyun: "voice-cred-aliyun", tencent: "voice-cred-tencent", xunfei: "voice-cred-xunfei" };
+    const panels = {
+      aliyun: "voice-cred-aliyun",
+      volcengine: "voice-cred-volcengine",
+      tencent: "voice-cred-tencent",
+      xunfei: "voice-cred-xunfei",
+    };
     for (const [key, id] of Object.entries(panels)) {
       const el = document.getElementById(id);
       if (el) el.style.display = key === provider ? "" : "none";
@@ -2182,6 +2187,14 @@ function initTTSSettings() {
       if (xunfeiAppid) body.xunfeiAppId = xunfeiAppid;
       const xunfeiApikey = document.getElementById("voice-xunfei-apikey")?.value?.trim();
       if (xunfeiApikey) body.xunfeiApiKey = xunfeiApikey;
+      const volcApiKey = document.getElementById("voice-volc-apikey")?.value?.trim();
+      if (volcApiKey) body.volcAsrApiKey = volcApiKey;
+      const volcResourceId = document.getElementById("voice-volc-resourceid")?.value?.trim();
+      if (volcResourceId) body.volcAsrResourceId = volcResourceId;
+      const volcAppKey = document.getElementById("voice-volc-appkey")?.value?.trim();
+      if (volcAppKey) body.volcAsrAppKey = volcAppKey;
+      const volcAccessKey = document.getElementById("voice-volc-accesskey")?.value?.trim();
+      if (volcAccessKey) body.volcAsrAccessKey = volcAccessKey;
 
       if (Object.keys(body).length > 0) {
         try {
@@ -2192,7 +2205,15 @@ function initTTSSettings() {
             body: JSON.stringify(body),
           });
           if (!resp.ok) throw new Error("保存失败");
-          ["voice-aliyun-key","voice-tencent-sid","voice-tencent-skey","voice-xunfei-apikey"].forEach(id => {
+          [
+            "voice-aliyun-key",
+            "voice-tencent-sid",
+            "voice-tencent-skey",
+            "voice-xunfei-apikey",
+            "voice-volc-apikey",
+            "voice-volc-appkey",
+            "voice-volc-accesskey",
+          ].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = "";
           });

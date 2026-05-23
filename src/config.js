@@ -628,7 +628,12 @@ export function setSocialConfig(updates) {
   writeStoredConfig({ ...existing, social: next })
 }
 
-const VOICE_CONFIG_KEYS = ['aliyunApiKey', 'tencentSecretId', 'tencentSecretKey', 'tencentAppId', 'xunfeiAppId', 'xunfeiApiKey', 'xunfeiApiSecret']
+const VOICE_CONFIG_KEYS = [
+  'aliyunApiKey',
+  'tencentSecretId', 'tencentSecretKey', 'tencentAppId',
+  'xunfeiAppId', 'xunfeiApiKey', 'xunfeiApiSecret',
+  'volcAsrApiKey', 'volcAsrAppKey', 'volcAsrAccessKey', 'volcAsrResourceId',
+]
 
 function isValidAliyunAsrKey(value) {
   return /^sk-[A-Za-z0-9_\-.]{20,}$/.test(String(value || '').trim())

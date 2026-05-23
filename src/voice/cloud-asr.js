@@ -1,12 +1,14 @@
 // 云端 ASR WebSocket 代理
 // 前端 → ws://127.0.0.1:3721/voice/cloud → 后端签名/鉴权 → 云端 ASR
 //
-// 支持三家服务商：
+// 支持云端服务商：
 //   aliyun  — 阿里云百炼 Paraformer（首选）
 //   tencent — 腾讯云 ASR
 //   xunfei  — 科大讯飞 RTASR
+//   volcengine — 火山引擎豆包大模型流式 ASR
 
 import crypto from 'crypto'
+import zlib from 'zlib'
 import { WebSocket } from 'ws'
 
 // ─── 阿里云 Paraformer ───
@@ -222,9 +224,186 @@ function createXunfeiSession(appId, apiKey, lang, onTranscript, onError, onClose
   }
 }
 
+// ─── 火山引擎豆包大模型流式 ASR ───
+// 协议：自定义二进制帧，首包 gzip JSON full request，后续 gzip PCM audio only request。
+const VOLC_BIGMODEL_ASR_URL = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'
+const VOLC_DEFAULT_RESOURCE_ID = 'volc.seedasr.sauc.duration'
+const VOLC_PROTOCOL_VERSION = 0x1
+const VOLC_HEADER_SIZE = 0x1
+const VOLC_SERIALIZATION_NONE = 0x0
+const VOLC_SERIALIZATION_JSON = 0x1
+const VOLC_COMPRESSION_GZIP = 0x1
+const VOLC_MESSAGE_FULL_CLIENT_REQUEST = 0x1
+const VOLC_MESSAGE_AUDIO_ONLY_REQUEST = 0x2
+const VOLC_MESSAGE_FULL_SERVER_RESPONSE = 0x9
+const VOLC_MESSAGE_ERROR = 0xf
+const VOLC_FLAG_NO_SEQUENCE = 0x0
+const VOLC_FLAG_LAST_NO_SEQUENCE = 0x2
+
+function makeVolcHeader(messageType, flags, serialization, compression) {
+  return Buffer.from([
+    (VOLC_PROTOCOL_VERSION << 4) | VOLC_HEADER_SIZE,
+    (messageType << 4) | flags,
+    (serialization << 4) | compression,
+    0x00,
+  ])
+}
+
+function makeVolcFrame(messageType, flags, serialization, payload) {
+  const body = zlib.gzipSync(payload && payload.length ? payload : Buffer.alloc(0))
+  const size = Buffer.alloc(4)
+  size.writeUInt32BE(body.length, 0)
+  return Buffer.concat([
+    makeVolcHeader(messageType, flags, serialization, VOLC_COMPRESSION_GZIP),
+    size,
+    body,
+  ])
+}
+
+function makeVolcFullClientRequest(lang) {
+  const langCode = lang === 'zh' ? 'zh-CN' : lang
+  const payload = Buffer.from(JSON.stringify({
+    user: { uid: 'bailongma' },
+    audio: {
+      format: 'pcm',
+      codec: 'raw',
+      rate: 16000,
+      bits: 16,
+      channel: 1,
+      language: langCode || 'zh-CN',
+    },
+    request: {
+      model_name: 'bigmodel',
+      enable_itn: true,
+      enable_punc: true,
+      enable_ddc: false,
+      result_type: 'full',
+      show_utterances: true,
+    },
+  }), 'utf-8')
+  return makeVolcFrame(
+    VOLC_MESSAGE_FULL_CLIENT_REQUEST,
+    VOLC_FLAG_NO_SEQUENCE,
+    VOLC_SERIALIZATION_JSON,
+    payload
+  )
+}
+
+function makeVolcAudioFrame(pcmBuffer, isLast = false) {
+  return makeVolcFrame(
+    VOLC_MESSAGE_AUDIO_ONLY_REQUEST,
+    isLast ? VOLC_FLAG_LAST_NO_SEQUENCE : VOLC_FLAG_NO_SEQUENCE,
+    VOLC_SERIALIZATION_NONE,
+    Buffer.from(pcmBuffer || Buffer.alloc(0))
+  )
+}
+
+function parseVolcResponse(data) {
+  const buf = Buffer.isBuffer(data) ? data : Buffer.from(data)
+  if (buf.length < 8) return null
+  const headerSize = (buf[0] & 0x0f) * 4
+  const messageType = (buf[1] >> 4) & 0x0f
+  const flags = buf[1] & 0x0f
+  const compression = buf[2] & 0x0f
+  let offset = headerSize
+
+  if (messageType === VOLC_MESSAGE_ERROR) {
+    if (buf.length < offset + 8) return { error: '火山 ASR 返回错误帧' }
+    const code = buf.readUInt32BE(offset); offset += 4
+    const size = buf.readUInt32BE(offset); offset += 4
+    const message = buf.slice(offset, offset + size).toString('utf-8')
+    return { error: `火山 ASR 错误 ${code}: ${message}` }
+  }
+
+  if (messageType !== VOLC_MESSAGE_FULL_SERVER_RESPONSE) return null
+  if (flags === 0x1 || flags === 0x3) offset += 4
+  if (buf.length < offset + 4) return null
+  const size = buf.readUInt32BE(offset); offset += 4
+  let payload = buf.slice(offset, offset + size)
+  if (compression === VOLC_COMPRESSION_GZIP && payload.length) {
+    payload = zlib.gunzipSync(payload)
+  }
+  const text = payload.toString('utf-8')
+  if (!text) return null
+  return { body: JSON.parse(text), isLast: flags === 0x3 }
+}
+
+function getVolcTextAndFinal(body, isLast) {
+  const results = Array.isArray(body?.result) ? body.result : (body?.result ? [body.result] : [])
+  if (results.length === 0) return { text: '', isFinal: !!isLast }
+  const utterances = results.flatMap(result => Array.isArray(result?.utterances) ? result.utterances : [])
+  const finalUtterances = utterances.filter(u => u?.definite && u?.text)
+  if (finalUtterances.length > 0) {
+    return { text: finalUtterances.map(u => u.text).join(''), isFinal: true }
+  }
+  return { text: results.map(result => result?.text || '').filter(Boolean).join(''), isFinal: !!isLast }
+}
+
+function createVolcengineSession(config, lang, onTranscript, onError, onClose) {
+  const requestId = crypto.randomUUID()
+  const headers = {
+    'X-Api-Resource-Id': config.volcAsrResourceId || VOLC_DEFAULT_RESOURCE_ID,
+    'X-Api-Request-Id': requestId,
+    'X-Api-Connect-Id': requestId,
+    'X-Api-Sequence': '-1',
+  }
+  if (config.volcAsrApiKey) {
+    headers['X-Api-Key'] = config.volcAsrApiKey
+  } else {
+    headers['X-Api-App-Key'] = config.volcAsrAppKey
+    headers['X-Api-Access-Key'] = config.volcAsrAccessKey
+  }
+
+  const ws = new WebSocket(VOLC_BIGMODEL_ASR_URL, { headers })
+  let ready = false
+  let closed = false
+  const pending = []
+
+  ws.on('open', () => {
+    try { ws.send(makeVolcFullClientRequest(lang)) } catch {}
+    ready = true
+    for (const buf of pending) {
+      try { ws.send(makeVolcAudioFrame(buf)) } catch {}
+    }
+    pending.length = 0
+  })
+
+  ws.on('message', (data) => {
+    try {
+      const parsed = parseVolcResponse(data)
+      if (!parsed) return
+      if (parsed.error) { onError(parsed.error); return }
+      const { text, isFinal } = getVolcTextAndFinal(parsed.body, parsed.isLast)
+      if (text) onTranscript(text, isFinal)
+    } catch (err) {
+      onError(`火山 ASR 响应解析失败: ${err.message}`)
+    }
+  })
+
+  ws.on('error', (err) => { pending.length = 0; onError(err.message) })
+  ws.on('close', () => { pending.length = 0; closed = true; onClose() })
+
+  return {
+    sendAudio(pcmBuffer) {
+      if (closed) return
+      if (!ready) {
+        if (pending.length < MAX_PENDING_CHUNKS) pending.push(Buffer.from(pcmBuffer))
+        return
+      }
+      if (ws.readyState === WebSocket.OPEN) ws.send(makeVolcAudioFrame(pcmBuffer))
+    },
+    flush() {
+      if (ws.readyState !== WebSocket.OPEN) return
+      ws.send(makeVolcAudioFrame(Buffer.alloc(0), true))
+    },
+    close() { try { closed = true; ws.close() } catch {} },
+  }
+}
+
 // ─── 工厂函数 ───
 // config: { provider, lang, aliyunApiKey?, tencentSecretId?, tencentSecretKey?,
-//           tencentAppId?, xunfeiAppId?, xunfeiApiKey? }
+//           tencentAppId?, xunfeiAppId?, xunfeiApiKey?,
+//           volcAsrApiKey?, volcAsrAppKey?, volcAsrAccessKey?, volcAsrResourceId? }
 export function createCloudASRSession(config, onTranscript, onError, onClose) {
   const { provider = 'aliyun', lang = 'zh' } = config
 
@@ -250,6 +429,14 @@ export function createCloudASRSession(config, onTranscript, onError, onClose) {
       onError('未配置讯飞 AppId/ApiKey'); return null
     }
     return createXunfeiSession(config.xunfeiAppId, config.xunfeiApiKey, lang, onTranscript, onError, onClose)
+  }
+
+  if (provider === 'volcengine') {
+    if (!config.volcAsrApiKey && (!config.volcAsrAppKey || !config.volcAsrAccessKey)) {
+      onError('未配置火山引擎 ASR API Key 或 AppKey/AccessKey')
+      return null
+    }
+    return createVolcengineSession(config, lang, onTranscript, onError, onClose)
   }
 
   onError(`未知云端 ASR 服务商: ${provider}`)

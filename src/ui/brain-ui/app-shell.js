@@ -348,6 +348,7 @@ const createSettingsModal = () => `
               <label class="settings-label" for="voice-provider-select">服务商</label>
               <select class="settings-select" id="voice-provider-select">
                 <option value="aliyun">阿里云百炼（推荐）</option>
+                <option value="volcengine">火山引擎豆包 ASR</option>
                 <option value="tencent">腾讯云 ASR</option>
                 <option value="xunfei">科大讯飞 RTASR</option>
               </select>
@@ -370,6 +371,24 @@ const createSettingsModal = () => `
               <div class="settings-row">
                 <label class="settings-label" for="voice-tencent-appid">AppId</label>
                 <input class="settings-input" type="text" id="voice-tencent-appid" placeholder="腾讯云 AppId">
+              </div>
+            </div>
+            <div id="voice-cred-volcengine" style="display:none;">
+              <div class="settings-row">
+                <label class="settings-label" for="voice-volc-apikey">API Key（新版）</label>
+                <input class="settings-input" type="password" id="voice-volc-apikey" placeholder="留空则不修改">
+              </div>
+              <div class="settings-row">
+                <label class="settings-label" for="voice-volc-resourceid">Resource ID</label>
+                <input class="settings-input" type="text" id="voice-volc-resourceid" placeholder="volc.seedasr.sauc.duration">
+              </div>
+              <div class="settings-row">
+                <label class="settings-label" for="voice-volc-appkey">App Key（旧版）</label>
+                <input class="settings-input" type="password" id="voice-volc-appkey" placeholder="旧版控制台可填">
+              </div>
+              <div class="settings-row">
+                <label class="settings-label" for="voice-volc-accesskey">Access Key（旧版）</label>
+                <input class="settings-input" type="password" id="voice-volc-accesskey" placeholder="旧版控制台可填">
               </div>
             </div>
             <div id="voice-cred-xunfei" style="display:none;">

@@ -209,12 +209,19 @@ export function toggleDocPanel(topicId = null) {
 
 const ASR_PROVIDER_DEFS = [
   { id: 'aliyun',  label: '阿里云百炼' },
+  { id: 'volcengine', label: '火山豆包' },
   { id: 'tencent', label: '腾讯云' },
   { id: 'xunfei',  label: '科大讯飞' },
 ]
 
 const ASR_FIELDS = {
   aliyun:  [{ key: 'aliyunApiKey',   label: 'API Key',   type: 'password', ph: 'sk-xxxxxxxx...' }],
+  volcengine: [
+    { key: 'volcAsrApiKey',     label: 'API Key（新版）',    type: 'password', ph: '' },
+    { key: 'volcAsrResourceId', label: 'Resource ID',       type: 'text',     ph: 'volc.seedasr.sauc.duration' },
+    { key: 'volcAsrAppKey',     label: 'App Key（旧版）',    type: 'password', ph: '' },
+    { key: 'volcAsrAccessKey',  label: 'Access Key（旧版）', type: 'password', ph: '' },
+  ],
   tencent: [
     { key: 'tencentSecretId',  label: 'SecretId',  type: 'password', ph: '' },
     { key: 'tencentSecretKey', label: 'SecretKey', type: 'password', ph: '' },
