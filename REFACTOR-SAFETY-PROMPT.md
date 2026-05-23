@@ -60,7 +60,7 @@
 ```text
 请在 BaiLongma 的 `refactor/module-split` 分支上执行一次小步安全重构。
 
-本次目标：[填写一个非常具体的目标，例如：从 `src/capabilities/executor.js` 抽出 reminders 工具域到 `src/capabilities/tools/reminders.js`]
+本次目标：[填写一个非常具体的目标，例如：从 `src/capabilities/executor.js` 抽出 media 工具域到 `src/capabilities/tools/media.js`]
 
 边界：
 - 只搬迁/整理该目标相关代码。
@@ -93,49 +93,60 @@
 - 已完成基础 helper 拆分：`tool-policy.js`、`tool-audit.js`、`tool-utils.js`、`abort-utils.js`、`sandbox.js`。
 - 已完成文件工具域拆分：`src/capabilities/tools/filesystem.js`。
 - 已完成 shell 工具域拆分：`src/capabilities/tools/shell.js`。
-- 已完成 web 工具域拆分：`src/capabilities/tools/web.js`，包含 `web_search`、`fetch_url`、`browser_read`、URL/search 缓存、web config 短缓存、文章落盘、搜索 provider/fallback、Playwright/Chromium 读取逻辑。
-- 已完成 memory 工具域拆分：`src/capabilities/tools/memory.js`，包含 `search_memory`、`upsert_memory`、`merge_memories`、`recall_memory`、`downgrade_memory`、`skip_consolidation`、`skip_recognition`、记忆参数 JSON 兼容解析、识别器/记忆写入辅助逻辑、`memory_consolidated` 事件和相关 `db.js` 记忆函数 import。
+- 已完成 web 工具域拆分：`src/capabilities/tools/web.js`。
+- 已完成 memory 工具域拆分：`src/capabilities/tools/memory.js`。
+- 已完成 reminders 工具域拆分：`src/capabilities/tools/reminders.js`，包含 `schedule_reminder` / `manage_reminder`、一次性提醒创建/合并/取消/查询、周期提醒时间解析与 `calculateNextDueAt`、提醒目标用户解析、`buildSystemMessage` helper、提醒相关事件和 `db.js` import。
 - `src/capabilities/executor.js` 仍保留对外入口 `executeTool`、`autoSpeakForVoiceReply`、`persistAppState`，并继续作为工具调度门面。
-- 版本已升到 `2.1.187`，安装包 `dist/Bailongma-Setup-2.1.187.exe` 已验证。
-- 最新推送 commit：`03ddaf8`，分支：`origin/refactor/module-split`。
-- 当前本地有未提交改动：memory 工具域拆分、版本号 `2.1.187`、文档更新；不要覆盖或回滚。
+- `executor.js` 继续 re-export `calculateNextDueAt`，保持 `src/index.js` 兼容。
+- 出站 `send_message` 已加入相邻重复短行去重，避免同一条回复里重复两遍相同内容。
+- 版本已升到 `2.1.189`，安装包 `dist/Bailongma-Setup-2.1.189.exe` 已验证。
+- 最新推送 commit：`c27072e`，分支：`origin/refactor/module-split`。
 
 已验证：
-- `git diff --check` 通过。
-- `node --check` 覆盖 `src` 下 119 个 JS/MJS，通过。
-- `npm run smoke:tools` 6/6 passed。
-- `npm run smoke:brain-ui` passed。
-- 本地 mock `executeTool('fetch_url', ...)` 调用通过。
-- Electron Node 路径下最小 memory 工具调用通过：`executeTool('search_memory', { keywords: '["BaiLongma"]' })` 和 `executeTool('skip_recognition', { reason: 'syntax check' })`。
+- `node --check src/capabilities/executor.js`
+- `node --check src/capabilities/tools/reminders.js`
+- `node --check src/index.js`
+- `npm run smoke:tools`：6/6 passed
+- `npm run smoke:brain-ui`：passed
+- reminders 真实对话链路：创建测试提醒成功，随后取消并清理，DB 状态正确。
+- 出站去重真实对话链路：要求回复两行相同 token，最终 conversations 只写入一行。
 - 标准 build 脚本成功，packaged/installed `better-sqlite3` 均为 Electron ABI 130。
-- 安装版 `/status` HTTP 200。
-- 安装版真实链路验证通过：`/message` + `/events`、`fetch_url`、`browser_read`、`web_search`、前台 shell、后台进程、list、kill、安全拦截均通过。
+- 安装版 `/status` HTTP 200，`/brain-ui` Playwright 打开并渲染正常。
 
 已知非回归：
-- 本地 Node CLI 下 `better-sqlite3` ABI 130/127 mismatch 是已知非回归，不要当成本次重构问题。
+- 本地 Node CLI 中 `better-sqlite3` ABI 130/127 mismatch 是已知非回归，可能导致 audit 持久化警告；不要当成本次重构问题。
+- `brain.html` / `dashboard.html` 404 是既有状态，因为项目根目录本来没有对应文件。
+- PowerShell 直接构造中文 JSON POST 可能乱码；使用 UTF-8 bytes 或 ASCII 可避免。
 
 本次任务：
-继续拆 `src/capabilities/executor.js`，优先把 reminders 工具域拆到 `src/capabilities/tools/reminders.js`。
+继续拆 `src/capabilities/executor.js`，优先把 media 工具域拆到 `src/capabilities/tools/media.js`。
 
 建议包含：
-- `schedule_reminder`
-- `manage_reminder`
-- 一次性提醒创建/取消/查询逻辑
-- 周期提醒时间解析与下一次触发时间计算
-- 提醒目标用户解析、`buildSystemMessage` 相关 helper
-- `reminder_created` 事件保持不变
-- 与 `db.js` 提醒函数相关的 import 移动
+- `speak`
+- `generate_lyrics`
+- `generate_music`
+- `generate_image`
+- `music`
+- TTS/歌词/音乐/图片文件落盘逻辑
+- 媒体库相关 `db.js` import：`upsertMusicTrack`、`getMusicTrack`、`searchMusicLibrary`、`listMusicLibrary`、`updateMusicLrc`、`deleteMusicTrack as dbDeleteMusicTrack`
+- 配额相关逻辑：`isDailyLimitReached`
+- TTS 相关 import：`getTTSCredentials`、`streamTTS`
+- 媒体相关事件保持不变，例如 `audio_created`、`tts_reply`、`lyrics_created`、`music_created`、`image_created`
 
 硬约束：
 - 只做结构拆分，不改行为。
 - 不改变工具名、参数、返回 JSON/text shape、错误文案、安全策略、事件名。
 - 保留 `executor.js` 对外入口兼容。
-- 不覆盖或回滚已有改动；开始前先运行 `git status --short --branch`。
+- 开始前先运行 `git status --short --branch`。
 - 如果遇到循环依赖或必须改变行为才能继续，停止并说明，不要硬拆。
 
 验证：
 - 先跑相关 `node --check`。
 - 必须跑 `npm run smoke:tools`。
-- 建议手动用 `executeTool('manage_reminder' ...)` 或等价路径做最小 reminders 工具调用验证，尽量使用不会污染真实提醒队列的只读/错误路径；如果必须写入，说明原因并清理或取消测试提醒。
+- 建议手动用 `executeTool` 做 media 工具最小验证，优先选择不会消耗真实配额或污染媒体库的错误/只读路径，例如：
+  - `executeTool('speak', {})` 期望返回缺少文本的原错误文案。
+  - `executeTool('music', { action: 'list', limit: 1 })` 或等价只读路径。
+  - `executeTool('generate_image', {})` 期望返回缺少 prompt 的原错误文案。
+- 如果必须写入文件或媒体库，说明原因并清理测试文件/记录。
 - 如果涉及打包/启动路径，再跑标准 build 并验证安装版 `/status`。
 ```

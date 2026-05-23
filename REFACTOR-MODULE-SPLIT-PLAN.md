@@ -1,14 +1,14 @@
 # BaiLongma 模块拆分重构计划
 
-目标：把超大文件拆成更细粒度、职责清晰、可测试、可继续扩展的功能模块，同时保持现有行为不变。
+目标：把超大文件拆成更细粒度、职责清晰、可测试、可持续扩展的功能模块，同时保持现有行为不变。
 
 当前分支：`refactor/module-split`
 
 ## 核心原则
 
-- 只做结构拆分，不改产品行为、工具协议、API JSON shape、数据库语义、UI 交互。
+- 只做结构拆分，不改变产品行为、工具协议、API JSON shape、数据库语义、UI 交互。
 - 每次只拆一个清晰边界，拆完立即运行匹配的 smoke/test。
-- 保留对外门面，避免打断现有 import。例如 `executor.js` 继续导出 `executeTool`、`autoSpeakForVoiceReply`、`persistAppState`。
+- 保留对外门面，避免打断现有 import。例如 `executor.js` 继续导出 `executeTool`、`autoSpeakForVoiceReply`、`persistAppState`，并 re-export 仍被外部使用的 helper。
 - 不做无关格式化、文档调整、业务逻辑调整或依赖升级。
 - 遇到必须改变行为才能继续的情况，停止并说明。
 
@@ -34,70 +34,76 @@
   - `src/capabilities/tools/memory.js`
   - 包含 `search_memory`、`upsert_memory`、`merge_memories`、`recall_memory`、`downgrade_memory`、`skip_consolidation`、`skip_recognition`
   - 已迁移记忆参数 JSON 兼容解析、识别器/记忆写入辅助逻辑、`memory_consolidated` 事件和相关 `db.js` 记忆函数 import
+- Reminders 工具域拆分：
+  - `src/capabilities/tools/reminders.js`
+  - 包含 `schedule_reminder` / `manage_reminder` 共用执行入口、一次性提醒创建/合并/取消/查询逻辑、周期提醒时间解析与下一次触发时间计算、提醒目标用户解析、`buildSystemMessage` helper、`reminder_created` / `reminder_merged` / `reminder_cancelled` 事件和相关 `db.js` import
+  - `executor.js` 继续 re-export `calculateNextDueAt`，保持 `src/index.js` 兼容
+- 出站回复体验小修：
+  - `send_message` 写库/广播前对相邻重复短行做去重，避免同一条消息里出现“已取消 #1。\n已取消 #1。”
 - `src/capabilities/executor.js` 继续保留工具调度门面和对外入口：
   - `executeTool`
   - `autoSpeakForVoiceReply`
   - `persistAppState`
-- 版本已升到 `2.1.187`
+- 当前版本：`2.1.189`
 - 已 build 并验证安装包：
-  - `dist/Bailongma-Setup-2.1.187.exe`
-- 已推送：
-  - commit `03ddaf8`
+  - `dist/Bailongma-Setup-2.1.189.exe`
+- 最新推送：
+  - commit `c27072e`
   - branch `origin/refactor/module-split`
-- 当前本地未提交改动：
-  - memory 工具域拆分
-  - 版本号 `2.1.187`
-  - 新安装包已生成并验证
 
 ## 已验证
 
 - `git diff --check`
-- `node --check` 覆盖 `src` 下 119 个 JS/MJS 文件
+- `node --check src/capabilities/executor.js`
+- `node --check src/capabilities/tools/reminders.js`
+- `node --check src/index.js`
 - `npm run smoke:tools`：6/6 passed
 - `npm run smoke:brain-ui`：passed
-- 本地 mock `executeTool('fetch_url', ...)` 调用通过
-- Electron Node 路径下最小 memory 工具调用通过：
-  - `executeTool('search_memory', { keywords: '["BaiLongma"]' })`
-  - `executeTool('skip_recognition', { reason: 'syntax check' })`
+- reminders 最小工具调用验证：
+  - `executeTool('manage_reminder', { action: 'noop' })`
+  - `executeTool('schedule_reminder', {})`
+  - 未创建真实提醒
+- 安装版真实对话链路验证：
+  - `/message` 创建测试提醒成功
+  - DB 中测试提醒状态从 `pending` 变为 `cancelled`
+  - 测试提醒已清理，无 pending 污染
+- 出站去重验证：
+  - 真实 `/message` 要求回复两行相同 token
+  - conversations 最终只写入一行
 - 标准 build 脚本成功，packaged/installed `better-sqlite3` 均为 Electron ABI 130
 - 安装版 `/status` HTTP 200
-- 安装版真实链路验证通过：
-  - `/message` + `/events` 真实对话链路正常
-  - `fetch_url` 工具审计 status `ok`
-  - `browser_read` 工具审计 status `ok`
-  - `web_search` 工具审计 status `ok`
-  - 前台 shell、后台进程、list、kill、安全拦截在上一轮已验证
+- 安装版 `/brain-ui` Playwright 打开成功，主 UI 渲染正常
 
 ## 已知非回归
 
-- 本地 Node CLI 下 `better-sqlite3` 可能因为 Electron ABI 130 与 Node ABI 127 不一致，导致涉及数据库写入的 Node CLI 脚本打印/失败；不要把这个当成本次重构回归。Electron 安装版已验证可启动并返回 `/status` 200。
-- 文档、终端或旧脚本里可能存在 Windows 控制台中文显示乱码；这不是本次模块拆分目标。
+- 本地 Node CLI 中 `better-sqlite3` 可能因为 Electron ABI 130 与 Node ABI 127 不一致，导致涉及数据库写入的 Node CLI 脚本打印 audit 持久化警告；不要把这个当成本次重构回归。Electron 安装版已验证可启动并返回 `/status` 200。
+- `brain.html` / `dashboard.html` 路由会 404，因为项目根目录本来没有对应文件；这不是本轮拆分导致的问题。
+- Windows PowerShell 直接构造中文 JSON POST 时可能出现编码乱码；使用 UTF-8 bytes 或 ASCII 可避免。这不是 reminders 拆分导致的问题。
 
 ## 剩余重构对象
 
 ### 1. `src/capabilities/executor.js`
 
-当前状态：已拆出基础 helper、文件工具域、shell 工具域、web 工具域、memory 工具域；`executor.js` 仍保留工具调度入口和大量其他工具实现。
+当前状态：已拆出基础 helper、文件工具域、shell 工具域、web 工具域、memory 工具域、reminders 工具域；`executor.js` 仍保留工具调度入口和大量其他工具实现。
 
 剩余建议拆分顺序：
 
-- `src/capabilities/tools/reminders.js`：`schedule_reminder`、`manage_reminder`、周期提醒时间解析、下一次触发时间计算。
-- `src/capabilities/tools/media.js`：`speak`、`generate_lyrics`、`generate_music`、`music`、`generate_image`。
-- `src/capabilities/tools/ui.js`：`ui_show`、`ui_update`、`ui_hide`、`ui_patch`、`manage_app`、`ui_register`、ACUI/组件草稿相关逻辑。
-- `src/capabilities/tools/system.js`：`set_tick_interval`、`set_task`、`complete_task`、`update_task_step`、`set_security`、`set_agent_name`、`set_location`、启动自检等。
-- `src/capabilities/tools/delegation.js`：Agent 委托相关工具。
-- 后续可考虑 `src/capabilities/tool-registry.js`，把工具名到 handler 的 switch/注册表进一步拆出。
+- `src/capabilities/tools/media.js`：`speak`、`generate_lyrics`、`generate_music`、`music`、`generate_image`
+- `src/capabilities/tools/ui.js`：`ui_show`、`ui_update`、`ui_hide`、`ui_patch`、`manage_app`、`ui_register`、ACUI/组件草稿相关逻辑
+- `src/capabilities/tools/system.js`：`set_tick_interval`、`set_task`、`complete_task`、`update_task_step`、`set_security`、`set_agent_name`、`set_location`、启动自检等
+- `src/capabilities/tools/delegation.js`：agent 委托相关工具
+- 后续可考虑 `src/capabilities/tool-registry.js`，把工具名到 handler 的 switch/注册表进一步拆出
 
-下一步建议：优先拆 `reminders.js`。它边界相对清晰，但与 `db.js`、时间解析、周期提醒、`reminder_created` 事件和目标用户解析强相关，必须保持文本/JSON 返回格式、错误文案、事件名和现有调度行为不变。
+下一步建议：优先拆 `media.js`。它体量较大但边界相对集中，涉及 TTS、歌词、音乐、图片、媒体库 DB 函数、配额、文件落盘和若干事件。必须保持工具名、参数、返回文本/JSON shape、错误文案、事件名和配额行为不变。
 
 ### 2. `src/api.js`
 
 建议拆分：
 
-- `src/api.js`：保留 server 创建、CORS、安全入口、WebSocket upgrade 分发。
-- `src/api/router.js`：轻量路由匹配和 handler 调用。
-- `src/api/http-utils.js`：`jsonResponse`、`readJsonBody`、`contentTypeFor`、静态文件响应。
-- `src/api/security.js`：loopback/LAN/token/origin 判断。
+- `src/api.js`：保留 server 创建、CORS、安全入口、WebSocket upgrade 分发
+- `src/api/router.js`：轻量路由匹配和 handler 调用
+- `src/api/http-utils.js`：`jsonResponse`、`readJsonBody`、`contentTypeFor`、静态文件响应
+- `src/api/security.js`：loopback/LAN/token/origin 判断
 - `src/api/routes/settings.js`
 - `src/api/routes/memory.js`
 - `src/api/routes/media.js`
@@ -169,10 +175,11 @@
 ## 验证要求
 
 - executor 工具域改动：至少跑 `node --check` 和 `npm run smoke:tools`。
-- web 工具域改动：额外做 `fetch_url`/`browser_read`/`web_search` 的最小工具链路验证，避免依赖不稳定外网作为唯一判断。
+- web 工具域改动：额外做 `fetch_url` / `browser_read` / `web_search` 的最小工具链路验证，避免依赖不稳定外网作为唯一判断。
+- media 工具域改动：至少跑相关 `node --check`、`npm run smoke:tools`；尽量做不会消耗真实配额或污染媒体库的错误/只读路径验证。如果必须写入，说明原因并清理测试文件/记录。
 - brain UI 改动：跑 `npm run smoke:brain-ui`。
 - 社交/微信/外部渠道改动：跑 `npm run smoke:social`，但注意本地 Node CLI ABI mismatch 的已知限制。
-- build/启动路径改动：跑标准 Bailongma build 脚本并验证安装版 `/status`。
+- build/启动路径改动：跑标准 BaiLongma build 脚本并验证安装版 `/status`。
 
 ## 暂不做
 
