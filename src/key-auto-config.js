@@ -25,6 +25,14 @@ function isValidAliyunAsrKey(key) {
   return /^sk-[A-Za-z0-9_\-.]{20,}$/.test(String(key || '').trim())
 }
 
+const LLM_KEY_HINT_RE = /deepseek|deep\s*seek|openai|open\s*ai|chatgpt|gpt|qwen|通义|千问|moonshot|kimi|智谱|zhipu|claude|gemini|minimax|mini\s*max/g
+
+function hasCloserLlmKeyHint(text, providerPos, keyPos) {
+  const segment = text.slice(providerPos, keyPos).toLowerCase()
+  LLM_KEY_HINT_RE.lastIndex = 0
+  return LLM_KEY_HINT_RE.test(segment)
+}
+
 // 所有服务商的检测规则（按出现在消息中的关键词位置匹配）
 const PROVIDER_RULES = [
   // TTS
@@ -89,11 +97,11 @@ const PROVIDER_RULES = [
   },
 ]
 
-// 从文本中识别所有 {provider, key} 对
-// 策略：找到每个服务商关键词的位置，取其后最近的候选 key
-function detectAllKeyInfos(currentText, contextText) {
-  const t = contextText.toLowerCase()
-  const allKeys = extractCandidateKeys(contextText)
+// 从当前消息中识别所有 {provider, key} 对。
+// 服务商关键词必须和 key 出现在同一条用户消息里，避免旧上下文把新的 LLM key 误归类为语音 key。
+export function detectAllKeyInfos(currentText) {
+  const t = currentText.toLowerCase()
+  const allKeys = extractCandidateKeys(currentText)
   if (allKeys.length === 0) return []
 
   const results = []
@@ -113,6 +121,7 @@ function detectAllKeyInfos(currentText, contextText) {
       .sort((a, b) => a.index - b.index)[0]
 
     if (!nearestKey) continue
+    if (rule.provider === 'aliyun' && hasCloserLlmKeyHint(t, rulePos, nearestKey.index)) continue
 
     const keyIdx = allKeys.indexOf(nearestKey)
     usedKeyIndices.add(keyIdx)
@@ -155,7 +164,7 @@ function detectAllKeyInfos(currentText, contextText) {
     }
   }
 
-  // 宽泛语音上下文（有"配置语音/tts/合成"但无具体服务商）
+  // 宽泛语音上下文（当前消息有"配置语音/tts/合成"但无具体服务商）
   if (results.length === 0 && /配置语音|语音配置|语音合成|设置语音|tts[\s_\-]?key|语音.*key|key.*语音/.test(t)) {
     const currentKeys = extractCandidateKeys(currentText)
     if (currentKeys.length === 0) return []
@@ -217,9 +226,8 @@ async function testTTSKey(provider, streamKeys) {
 //   { ok: true, results: [...] }  — 至少一个 key 配置成功，应静默处理（删消息、跳 LLM）
 //   { ok: false, error: '...' }   — 识别到 key 但全部验证失败，应让 LLM 告知用户
 //   null                           — 未识别到任何 key，正常流程
-export async function tryAutoConfigureKey(text, recentContext = '') {
-  const contextText = recentContext ? `${recentContext} ${text}` : text
-  const infos = detectAllKeyInfos(text, contextText)
+export async function tryAutoConfigureKey(text, _recentContext = '') {
+  const infos = detectAllKeyInfos(text)
   if (infos.length === 0) return null
 
   let anySuccess = false

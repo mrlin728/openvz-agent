@@ -634,6 +634,14 @@ function isValidAliyunAsrKey(value) {
   return /^sk-[A-Za-z0-9_\-.]{20,}$/.test(String(value || '').trim())
 }
 
+const CHAT_PROVIDERS_WITH_AMBIGUOUS_SK_KEYS = new Set([
+  DEEPSEEK_PROVIDER,
+  MINIMAX_PROVIDER,
+  OPENAI_PROVIDER,
+  MOONSHOT_PROVIDER,
+  ZHIPU_PROVIDER,
+])
+
 export function getVoiceConfig() {
   let stored = {}
   try { stored = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))?.voice || {} } catch {}
@@ -660,6 +668,16 @@ export function setVoiceConfig(updates) {
     const trimmed = String(val || '').trim()
     if (key === 'aliyunApiKey' && trimmed && !isValidAliyunAsrKey(trimmed)) {
       console.warn('[voice-config] Ignoring invalid Aliyun ASR key format; expected DashScope sk-* API key')
+      continue
+    }
+    if (
+      key === 'aliyunApiKey' &&
+      trimmed &&
+      existing.apiKey &&
+      trimmed === existing.apiKey &&
+      CHAT_PROVIDERS_WITH_AMBIGUOUS_SK_KEYS.has(existing.provider)
+    ) {
+      console.warn('[voice-config] Ignoring Aliyun ASR key because it matches the active chat provider API key')
       continue
     }
     if (trimmed) next[key] = trimmed

@@ -516,11 +516,8 @@
           { id: 'stt-xunfei-apisecret', label: 'ApiSecret', placeholder: '讯飞 ApiSecret', configKey: 'xunfeiApiSecret' },
         ]
       }
-      if (key.length >= 20) return {
-        id: 'aliyun', label: '阿里云百炼',
-        primaryField: 'aliyunApiKey',
-        extra: []
-      }
+      // DashScope/阿里云百炼 API Key 与很多 LLM key 都是 sk-*，无法仅凭格式可靠区分。
+      // 不做长度兜底，避免把 DeepSeek/OpenAI 等主模型 key 误保存到 voice.aliyunApiKey。
       return null
     }
 
