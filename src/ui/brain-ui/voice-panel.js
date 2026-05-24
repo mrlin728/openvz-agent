@@ -649,9 +649,17 @@ export function initVoicePanel({
     if (autoSendTimer) { clearTimeout(autoSendTimer); autoSendTimer = null; }
 
     if (suspendedByMedia) {
+      // Pressing Space is an explicit push-to-talk intent. Previous TTS/PTT
+      // cleanup can clear userWantedMic while the voice stack is still suspended.
+      const wasUserWantedMic = userWantedMic;
+      userWantedMic = true;
       // mic 硬件仍在，只是 ASR WS 被 TTS 暂停 → 重连即可，不算 PTT 开的 mic
-      pttStartedMic = false;
+      pttStartedMic = !wasUserWantedMic;
       await resumeVoiceInputFromMedia(false);
+      if (!micActive) {
+        pttStartedMic = true;
+        await toggleVoice();
+      }
       return;
     }
     if (micActive) {
