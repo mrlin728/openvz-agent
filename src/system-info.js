@@ -98,13 +98,18 @@ function getOSVersion() {
  */
 function getWindowsShellPaths() {
   const cmd = `powershell -NoProfile -NonInteractive -Command `
-    + `"[PSCustomObject]@{`
-    + `Desktop=[Environment]::GetFolderPath('Desktop');`
-    + `Documents=[Environment]::GetFolderPath('MyDocuments');`
-    + `Downloads=(New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path;`
-    + `Pictures=[Environment]::GetFolderPath('MyPictures');`
-    + `Music=[Environment]::GetFolderPath('MyMusic');`
-    + `Videos=[Environment]::GetFolderPath('MyVideos')`
+    + `"$uf=Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders';`
+    + `function X($v){if([string]::IsNullOrWhiteSpace($v)){return $null};[Environment]::ExpandEnvironmentVariables($v)};`
+    + `function F($v,$fb){$x=X $v;if([string]::IsNullOrWhiteSpace($x)){$fb}else{$x}};`
+    + `$downloads=X $uf.'{374DE290-123F-4565-9164-39C4925E467B}';`
+    + `if([string]::IsNullOrWhiteSpace($downloads)){$downloads=(New-Object -ComObject Shell.Application).NameSpace('shell:Downloads').Self.Path};`
+    + `[PSCustomObject]@{`
+    + `Desktop=F $uf.Desktop ([Environment]::GetFolderPath('DesktopDirectory'));`
+    + `Documents=F $uf.Personal ([Environment]::GetFolderPath('MyDocuments'));`
+    + `Downloads=$downloads;`
+    + `Pictures=F $uf.'My Pictures' ([Environment]::GetFolderPath('MyPictures'));`
+    + `Music=F $uf.'My Music' ([Environment]::GetFolderPath('MyMusic'));`
+    + `Videos=F $uf.'My Video' ([Environment]::GetFolderPath('MyVideos'))`
     + `}|ConvertTo-Json"`
   const raw = safeExec(cmd, 8000, 'shell-paths')
   if (!raw) {
@@ -170,6 +175,34 @@ function getShellPaths() {
   // 终极保险：无论子函数返回什么，这里都保证是合法对象
   if (!result || typeof result !== 'object') result = {}
   return result
+}
+
+function mergeFreshShellPaths(staticData) {
+  const oldPaths = staticData?.paths
+  if (!oldPaths) return staticData
+
+  const fresh = getShellPaths()
+  const nextPaths = { ...oldPaths }
+  let changed = false
+
+  for (const [freshKey, storedKey] of [
+    ['Desktop', 'desktop'],
+    ['Documents', 'documents'],
+    ['Downloads', 'downloads'],
+    ['Pictures', 'pictures'],
+    ['Music', 'music'],
+    ['Videos', 'videos'],
+  ]) {
+    const value = fresh[freshKey]
+    if (value && value !== oldPaths[storedKey]) {
+      nextPaths[storedKey] = value
+      changed = true
+    }
+  }
+
+  return changed
+    ? { ...staticData, paths: nextPaths }
+    : staticData
 }
 
 // ─── 电量 ──────────────────────────────────────────────────────────────────────
@@ -253,7 +286,7 @@ export async function collectSystemInfo() {
     try { stored = JSON.parse(fs.readFileSync(SYSTEM_INFO_FILE, 'utf8')) } catch {}
 
     if (stored?.version === SYSTEM_INFO_VERSION) {
-      let staticData = stored.static
+      let staticData = mergeFreshShellPaths(stored.static)
 
       // 验证桌面路径是否还存在（Windows 用户可能迁盘，Linux XDG 配置可能变化）
       const desktopPath = staticData?.paths?.desktop
