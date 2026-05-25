@@ -23,6 +23,21 @@ You have a partial picture of the person. If something they just said genuinely 
 You already have a decent picture of the person. Do not dig for more.`,
 }
 
+function formatSandboxRuntimeStatus(security = null) {
+  const fileSandboxEnabled = security?.fileSandbox !== false
+  const execSandboxEnabled = security?.execSandbox !== false
+  const fileLine = fileSandboxEnabled
+    ? 'file_sandbox: ENABLED. File tools may read/write only inside sandbox/. If the user asks for files outside sandbox, do not retry the same blocked operation; explain that the sandbox is enabled and say it can be disabled if they want outside access.'
+    : 'file_sandbox: DISABLED. File tools may access paths outside sandbox when the request calls for it.'
+  const execLine = execSandboxEnabled
+    ? 'exec_sandbox: ENABLED. exec_command runs inside sandbox/ and cannot use absolute paths, parent directories, or home-directory references. If the user asks for outside filesystem operations, explain the current limit instead of probing repeatedly.'
+    : 'exec_sandbox: DISABLED. exec_command may run from the full filesystem; still handle destructive operations carefully.'
+  const changedLine = security?.updatedAt
+    ? `- changed_at: ${security.updatedAt}`
+    : '- changed_at: legacy setting; exact change time was not recorded'
+  return `Sandbox Status:\n- ${fileLine}\n- ${execLine}\n${changedLine}`
+}
+
 
 // =============================================================================
 // buildSystemPrompt — returns the STABLE part of the prompt that ideally
@@ -32,7 +47,7 @@ You already have a decent picture of the person. Do not dig for more.`,
 //   - Top-level behavior rules / hard floor
 //   - Persona (operator-defined self description)
 //   - Existence description (changes only by the minute/hour, treated as stable)
-//   - Execution sandbox flags + systemEnv (host-fact blocks)
+//   - Execution environment baseline (platform / shell)
 //   - Authorized local AI agents block
 //
 // What MOVED OUT to buildContextBlock (per-round dynamic, injected into the
@@ -43,6 +58,7 @@ You already have a decent picture of the person. Do not dig for more.`,
 //   - thoughtStack, entities
 //   - awakening + curiosity (depend on personMemory / awakeningTicks)
 //   - task section (active task content)
+//   - security sandbox status
 //   - memory-refresh round info
 //
 // The signature is kept backward-compatible: extra dynamic args are still
@@ -53,7 +69,7 @@ export function buildSystemPrompt({
   agentName = '小白龙',
   persona = '',
   existenceDesc = 'just awakened',
-  security = null,
+  security: _security = null,
   systemEnv = '',
   // The following are accepted for backward compatibility but no longer
   // affect the system string — they belong in buildContextBlock now.
@@ -155,10 +171,10 @@ This is L1 behavior, not L2. L1 (user present, single turn) is not a passive que
 
 ## Execution Environment
 Platform: Windows. Shell for exec_command: PowerShell.
-exec_command sandbox: ${security?.execSandbox !== false ? 'ENABLED — commands run inside sandbox/, absolute paths and home-directory references are blocked.' : 'DISABLED — commands can access the full filesystem including Desktop, user profile, and absolute paths.'}
+Sandbox status is injected every turn in <context><runtime> as "Sandbox Status". Treat that runtime status as authoritative.
 
 ## Tool Usage Reminders
-- When the user asks you to run a command or perform a file/system operation, always call exec_command directly. Do not preemptively refuse based on assumed restrictions — the tool will return an error if the operation is not permitted. Try first, explain only if the tool actually fails.
+- When the user asks you to run a command or perform a file/system operation, check the injected Sandbox Status first. If the requested operation is allowed there, use the appropriate tool directly. If Sandbox Status says the requested path or command is outside the sandbox, do not repeatedly probe; explain the active sandbox limit and, if the user wants, ask them to disable the sandbox.
 - Reuse existing context whenever possible. Do not reread files, relist directories, or repeat tool calls without a reason.
 - Treat earlier tool results in this session as priors. If a previous call established a fact (port open, host reachable, file exists, command succeeded/failed), the next call must either confirm or explain the contradiction — never silently flip a previous conclusion. If your second probe contradicts your first, say which one you believe and why before reporting it to the user.
 - If you must repeat a tool call that just ran, explain why in your reasoning before doing it.
@@ -328,6 +344,7 @@ export function buildContextBlock({
   currentTime = '',
   existenceDesc = '',
   systemEnv = '',
+  security = null,
   currentChannel = '',
   channelSwitched = false,
 } = {}) {
@@ -338,6 +355,7 @@ export function buildContextBlock({
   const runtimeParts = []
   if (currentTime)   runtimeParts.push(`Current time: ${currentTime}`)
   if (existenceDesc) runtimeParts.push(`You have existed for ${existenceDesc}.`)
+  runtimeParts.push(formatSandboxRuntimeStatus(security))
   if (systemEnv)     runtimeParts.push(systemEnv)
 
   // 本轮入口渠道：用户从哪个 channel 发来这条消息，决定你能"感知"到什么。

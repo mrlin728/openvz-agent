@@ -2,6 +2,7 @@ import { buildSystemPrompt, buildContextBlock, combinePromptForPreview } from '.
 import { runInjector, formatMemoriesForPrompt, formatTaskKnowledge, formatTemporalRecall } from './memory/injector.js'
 import { runRuntimeInjector } from './context/runtime-injector.js'
 import { getConfig, getKnownEntities, getOrInitBirthTime } from './db.js'
+import { getSecurity } from './config.js'
 import { formatTick, describeExistence } from './time.js'
 
 function cloneStateSnapshot(stateSnapshot = {}) {
@@ -59,6 +60,7 @@ export async function buildHeartbeatSystemPromptPreview({
     extraContext: runtimeInjection.contextText,
     // Runtime info 也注入预览，让 UI 看到完整 context
     existenceDesc: describeExistence(birthTime),
+    security: getSecurity(),
   })
 
   // For the preview UI (systemPrompt.html), surface a combined view so the

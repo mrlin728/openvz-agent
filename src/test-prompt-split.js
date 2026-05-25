@@ -74,6 +74,7 @@ const ctx1 = buildContextBlock({
   entities: [{ id: 'ID:000001', label: 'Yuanda' }],
   thoughtStack: [{ concept: 'mem-pool', line: 'first sketch' }],
   awakeningTicks: 2,
+  security: { fileSandbox: true, execSandbox: true, updatedAt: '2026-05-25T22:30:00+08:00' },
 })
 assert(ctx1.startsWith('<context>'), 'context wrapped: opens with <context>')
 assert(ctx1.endsWith('</context>'), 'context wrapped: closes with </context>')
@@ -89,6 +90,18 @@ assert(ctx1.includes('<known-others>'), 'context has known-others tag')
 assert(ctx1.includes('<thought-stack>'), 'context has thought-stack tag')
 assert(ctx1.includes('<awakening ticks_remaining="2">'), 'context has awakening tag with ticks attr')
 assert(ctx1.includes('<directions>'), 'context has directions tag')
+assert(ctx1.includes('Sandbox Status:'), 'context includes sandbox runtime status')
+assert(ctx1.includes('file_sandbox: ENABLED'), 'context advertises enabled file sandbox')
+assert(ctx1.includes('exec_sandbox: ENABLED'), 'context advertises enabled exec sandbox')
+assert(ctx1.includes('changed_at: 2026-05-25T22:30:00+08:00'), 'context includes sandbox change timestamp')
+
+const ctxSandboxOff = buildContextBlock({
+  security: { fileSandbox: false, execSandbox: false },
+})
+assert(ctxSandboxOff.includes('file_sandbox: DISABLED'), 'context advertises disabled file sandbox')
+assert(ctxSandboxOff.includes('exec_sandbox: DISABLED'), 'context advertises disabled exec sandbox')
+assert(ctxSandboxOff.includes('changed_at: legacy setting; exact change time was not recorded'), 'context marks legacy sandbox change timestamp')
+assert(!sys1.includes('Sandbox Status:'), 'system does NOT contain dynamic sandbox status')
 
 // 3) Empty / minimal context block — always at least the task-active tag
 const justNothing = buildContextBlock({ hasActiveTask: false })

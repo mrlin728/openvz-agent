@@ -331,18 +331,21 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     }
 
     // GET /conversations?limit=60 — chat history (ascending by time, most recent last)
-    // Admin/debug endpoint: returns FULL history including focus_absorbed rows.
+    // Internal SYSTEM/APP_SIGNAL rows are hidden by default so UI-only signals
+    // do not render as chat bubbles. Use includeSystemSignals=true for debugging.
     // The absorbed flag (dynamic memory pool 3.5) only filters main-line injection
     // in injector.js; here the operator needs to see everything for debugging.
     if (req.method === 'GET' && url.pathname === '/conversations') {
       const db = getDB()
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '60'), 500)
+      const includeSystemSignals = url.searchParams.get('includeSystemSignals') === 'true'
       const rows = db.prepare(`
         SELECT id, role, from_id, to_id, content, timestamp, channel, external_party_id, focus_absorbed
         FROM conversations
+        WHERE (? OR NOT (from_id = 'SYSTEM' AND channel = 'APP_SIGNAL'))
         ORDER BY id DESC
         LIMIT ?
-      `).all(limit)
+      `).all(includeSystemSignals ? 1 : 0, limit)
       jsonResponse(res, 200, rows.reverse().map(row => (
         row.role === 'jarvis'
           ? { ...row, content: stripAssistantHistoryLabels(row.content) }
@@ -1346,16 +1349,21 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
               const updates = {}
               if (payload.file_sandbox !== undefined) updates.fileSandbox = String(payload.file_sandbox) === 'true'
               if (payload.exec_sandbox !== undefined) updates.execSandbox = String(payload.exec_sandbox) === 'true'
-              if (Object.keys(updates).length > 0) setSecurity(updates)
+              const result = Object.keys(updates).length > 0 ? setSecurity(updates) : getSecurity()
               emitUICommand({ op: 'unmount', id: appId })
               removeActiveUICard(appId)
               const desc = Object.entries(updates).map(([k, v]) => `${k}=${v}`).join(', ')
-              pushMessage('SYSTEM', `[security settings updated] User confirmed changes: ${desc}`, 'APP_SIGNAL')
+              pushMessage(
+                'SYSTEM',
+                `[security settings updated] User confirmed changes: ${desc}. changed_at=${result.updatedAt || 'not recorded'}\n(Internal context refresh only. Do NOT call send_message.)`,
+                'APP_SIGNAL',
+                { queue: 'background', persist: false, silent: true },
+              )
             } else if (action === 'cancel_security_change') {
               // User cancelled — close the card, do not apply changes
               emitUICommand({ op: 'unmount', id: appId })
               removeActiveUICard(appId)
-              pushMessage('SYSTEM', '[security settings change] User cancelled — settings unchanged', 'APP_SIGNAL')
+              pushMessage('SYSTEM', '[security settings change] User cancelled — settings unchanged\n(Internal context refresh only. Do NOT call send_message.)', 'APP_SIGNAL', { queue: 'background', persist: false, silent: true })
             } else if (action.startsWith('app:') || SILENT_CARD_ACTIONS.has(action)) {
               // app: prefix = system-internal signal; SILENT_CARD_ACTIONS = lifecycle signals.
               // Both are already written to DB by insertUISignal; injector picks them up passively on the next tick.

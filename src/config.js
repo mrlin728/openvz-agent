@@ -1,5 +1,6 @@
 import fs from 'fs'
 import { paths } from './paths.js'
+import { nowTimestamp } from './time.js'
 
 export const DEEPSEEK_PROVIDER = 'deepseek'
 export const MINIMAX_PROVIDER = 'minimax'
@@ -322,6 +323,7 @@ export const config = {
     fileSandbox: true,
     execSandbox: true,
     blockedTools: [],
+    updatedAt: null,
   },
 }
 
@@ -335,6 +337,7 @@ if (stored) {
     if (typeof stored.security.fileSandbox === 'boolean') config.security.fileSandbox = stored.security.fileSandbox
     if (typeof stored.security.execSandbox === 'boolean') config.security.execSandbox = stored.security.execSandbox
     if (Array.isArray(stored.security.blockedTools)) config.security.blockedTools = stored.security.blockedTools
+    if (typeof stored.security.updatedAt === 'string') config.security.updatedAt = stored.security.updatedAt
   }
 } else if (shouldAllowEnvFallback()) {
   const fromEnv = loadFromEnv()
@@ -530,15 +533,21 @@ export function getSecurity() {
     fileSandbox: config.security.fileSandbox,
     execSandbox: config.security.execSandbox,
     blockedTools: [...config.security.blockedTools],
+    updatedAt: config.security.updatedAt || null,
   }
 }
 
 export function setSecurity(updates) {
+  const before = getSecurity()
   if (typeof updates.fileSandbox === 'boolean') config.security.fileSandbox = updates.fileSandbox
   if (typeof updates.execSandbox === 'boolean') config.security.execSandbox = updates.execSandbox
   if (Array.isArray(updates.blockedTools)) {
     config.security.blockedTools = updates.blockedTools.filter(t => typeof t === 'string')
   }
+  const changed = before.fileSandbox !== config.security.fileSandbox
+    || before.execSandbox !== config.security.execSandbox
+    || JSON.stringify(before.blockedTools) !== JSON.stringify(config.security.blockedTools)
+  if (changed) config.security.updatedAt = nowTimestamp()
   try {
     const existing = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))
     writeStoredConfig({ ...existing, security: { ...config.security } })

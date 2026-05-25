@@ -593,6 +593,13 @@ function buildToolContextForProcess(msg, injection) {
   }
 }
 
+function resolveTurnTools(injectedTools = [], { silentSignal = false } = {}) {
+  if (silentSignal) return []
+  const tools = Array.isArray(injectedTools) ? injectedTools.filter(Boolean) : []
+  if (!tools.includes('send_message')) tools.unshift('send_message')
+  return tools
+}
+
 function formatConversationMessage(row, currentMsg = null, prevChannel = '') {
   if (row.role === 'jarvis') {
     // Jarvis 出站的渠道也标出来，让模型能"看到"自己上次回到了哪里
@@ -895,6 +902,7 @@ function buildSystemEnv(msg) {
 async function runTurn(input, label, msg = null) {
   const sessionRef = newSessionRef()
   const isTick = !msg
+  const silentSignal = msg?.silent === true
   if (isTick) state.tickCounter += 1
   const priority = getProcessPriority(msg)
   const fastUserPath = isFastUserMessage(msg)
@@ -903,13 +911,13 @@ async function runTurn(input, label, msg = null) {
   let toolCallLog = []
   let terminalEmitted = false
   const finishTurn = (content = '') => {
-    if (isTick || terminalEmitted) return
+    if (isTick || silentSignal || terminalEmitted) return
     terminalEmitted = true
     emitEvent('response', { sessionRef, label, content })
   }
 
   console.log(`\n── ${label} ──`)
-  emitEvent(isTick ? 'tick' : 'message_received', { label, input: input.slice(0, 300) })
+  if (!silentSignal) emitEvent(isTick ? 'tick' : 'message_received', { label, input: input.slice(0, 300) })
 
   // User messages are written to conversations at the pushMessage stage (recorded on arrival) — do not write them again here.
   try {
@@ -1154,7 +1162,6 @@ async function runTurn(input, label, msg = null) {
     const systemPrompt = buildSystemPrompt({
       agentName,
       persona,
-      security: getSecurity(),
     })
 
     const baseContextArgs = {
@@ -1175,6 +1182,7 @@ async function runTurn(input, label, msg = null) {
       currentTime: nowTimestamp(),
       existenceDesc: describeExistence(birthTime),
       systemEnv: buildSystemEnv(msg),
+      security: getSecurity(),
       currentChannel: msg ? normalizeChannel(msg.channel || '') : '',
       channelSwitched: detectChannelSwitch(msg, injection.conversationWindow || []),
       focusTickCounter: state.tickCounter || 0,
@@ -1246,12 +1254,12 @@ async function runTurn(input, label, msg = null) {
       systemPrompt,
       message: input,
       messages: llmMessages,
-      tools: injection.tools || ['send_message'],
+      tools: resolveTurnTools(injection.tools, { silentSignal }),
       maxTokens: undefined,
       temperature: config.temperature,
       signal: controller.signal,
       toolContext,
-      mustReply: !!msg?.fromId,
+      mustReply: !!msg?.fromId && !silentSignal,
       onToolCall: (name, args, result) => {
         const resultText = String(result)
         let ok = true
