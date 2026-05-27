@@ -115,6 +115,20 @@ function initSchema() {
   try { db.exec(`ALTER TABLE conversations ADD COLUMN focus_absorbed INTEGER NOT NULL DEFAULT 0`) } catch {}
   try { db.exec(`CREATE INDEX IF NOT EXISTS idx_conv_focus_absorbed ON conversations(focus_absorbed)`) } catch {}
 
+  // 迁移：P0-1 给每条对话打上"当时的焦点话题"标签。
+  //   conversationWindow 注入 LLM 时，每条 user/jarvis 消息的 marker 里带上这个 topic，
+  //   让模型在做代词消解时能看到话题边界（"那个/这个/现在"才不会跨段乱钩）。
+  //   写入时机：insertConversation 自动读 db 内部 currentFocusTopic 变量；
+  //   index.js 在 updateFocusFrame 之后 setCurrentFocusTopic(栈顶 topic)，
+  //   并对本轮触发判定的 user 消息做一次 UPDATE 回填（push 时 focus 尚未算）。
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN focus_topic TEXT DEFAULT ''`) } catch {}
+
+  // 迁移：P0-2 标记 agent 自己留下的"未答悬念"（follow-up question）。
+  //   open_question=1 表示这条 jarvis 消息末尾留了一个非澄清型问号悬念。
+  //   conversationWindow 渲染时：若该悬念在 N 轮内未被用户接茬 / 话题已切换，
+  //   marker 末尾追加 "[expired follow-up — ignore]"，避免模糊代词被钩到这里。
+  try { db.exec(`ALTER TABLE conversations ADD COLUMN open_question INTEGER NOT NULL DEFAULT 0`) } catch {}
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS memories (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1217,15 +1231,61 @@ export function getImpressiveBySource(entityId, limit = 5) {
 
 // ── 对话记录 ──
 
+// P0-1：进程内当前焦点话题。index.js 在 updateFocusFrame 之后 set 一次；
+// insertConversation 写库时自动读这个变量，给本轮所有新写入的对话打 focus_topic。
+// 不写文件、不持久化——焦点栈本身已经持久化在 focus_stack 表，这里只是个写入时的"印章"。
+let currentFocusTopic = ''
+export function setCurrentFocusTopic(topic) {
+  if (Array.isArray(topic)) {
+    currentFocusTopic = topic.slice(0, 3).join(',')
+  } else {
+    currentFocusTopic = String(topic || '').slice(0, 60)
+  }
+}
+export function getCurrentFocusTopic() { return currentFocusTopic }
+
 // 写入一条对话记录
-export function insertConversation({ role, from_id, to_id = null, content, timestamp, channel = '', external_party_id = '' }) {
+// focus_topic / open_question 优先取调用方显式传入；未传时 focus_topic 读 currentFocusTopic。
+export function insertConversation({
+  role, from_id, to_id = null, content, timestamp,
+  channel = '', external_party_id = '',
+  focus_topic = null, open_question = 0,
+}) {
   const db = getDB()
   const fromId = normalizeConversationPartyId(from_id)
   const toId = normalizeConversationPartyId(to_id)
-  db.prepare(`
-    INSERT INTO conversations (role, from_id, to_id, content, timestamp, channel, external_party_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(role, fromId, toId, content, timestamp, channel || '', external_party_id || '')
+  const topic = focus_topic == null ? currentFocusTopic : String(focus_topic || '')
+  const info = db.prepare(`
+    INSERT INTO conversations (role, from_id, to_id, content, timestamp, channel, external_party_id, focus_topic, open_question)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(role, fromId, toId, content, timestamp, channel || '', external_party_id || '', topic, open_question ? 1 : 0)
+  return Number(info.lastInsertRowid) || 0
+}
+
+// P0-1：给本轮触发判定的 user 消息回填 focus_topic
+//   pushMessage 时焦点栈还没算（要等收到消息才更新），用户消息写库时 focus_topic = ''。
+//   index.js 在 updateFocusFrame 之后调用本函数，用 (from_id, timestamp) 定位该行回填。
+//   注意：不加 focus_topic 必须为空的 WHERE 约束——只通过 from_id+timestamp 精确定位单行；
+//   即使外部预填了别的值，本轮焦点判断的结果才是权威的。
+export function updateUserMessageFocusTopic(fromId, timestamp, topic) {
+  if (!fromId || !timestamp) return 0
+  const db = getDB()
+  const normalizedId = normalizeConversationPartyId(fromId)
+  const t = Array.isArray(topic) ? topic.slice(0, 3).join(',') : String(topic || '')
+  const info = db.prepare(`
+    UPDATE conversations SET focus_topic = ?
+    WHERE role = 'user' AND from_id = ? AND timestamp = ?
+  `).run(t, normalizedId, timestamp)
+  return info.changes || 0
+}
+
+// P0-2：把某条 jarvis 消息标记为留了未答悬念（open_question=1）
+//   executor.js send_message 写完库立刻拿回 row id，按需 mark。
+export function markConversationOpenQuestion(id, isOpen = true) {
+  if (!id) return 0
+  const db = getDB()
+  const info = db.prepare(`UPDATE conversations SET open_question = ? WHERE id = ?`).run(isOpen ? 1 : 0, id)
+  return info.changes || 0
 }
 
 // 将最近一条 jarvis 消息内容裁剪为已说出的部分（TTS 被打断时调用）

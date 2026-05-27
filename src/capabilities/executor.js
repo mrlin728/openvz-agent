@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import { nowTimestamp } from '../time.js'
-import { normalizeConversationPartyId, upsertPrefetchTask, removePrefetchTask, listPrefetchTasks, insertConversation, setConfig as dbSetConfig } from '../db.js'
+import { normalizeConversationPartyId, upsertPrefetchTask, removePrefetchTask, listPrefetchTasks, insertConversation, setConfig as dbSetConfig, markConversationOpenQuestion } from '../db.js'
 import { emitEvent, emitUICommand, hasACUIClient, addActiveUICard, setStickyEvent } from '../events.js'
 import { dispatchSocialMessage } from '../social/dispatch.js'
 import { setCustomInterval as setTickerInterval, getStatus as getTickerStatus } from '../ticker.js'
@@ -28,6 +28,26 @@ export { persistAppState } from './tools/ui.js'
 
 import { config, setSecurity } from '../config.js'
 import { lookupReplyTarget, normalizeChannel, suggestProactiveChannel } from '../identity.js'
+
+// P0-2：识别 send_message 末尾是否留了"非澄清型 follow-up question"。
+//   触发条件：
+//     - 结尾包含问号（? / ？）
+//     - 问号所在句子里有"要 / 想 / 需要 / 是否 / 要不要 / 需不需要 / 帮 / 给 / 行不行"
+//       或英文 "should/want/need/shall/would you like/do you want"
+//   澄清型（"在哪个城市？"/"几点？"）也会被命中——可接受，因为标记本身不影响
+//   当前轮输出，只在后续轮该悬念过期时降权，避免代词被钩偏。
+const FOLLOWUP_VERB_RE = /(要不要|需不需要|要么|要|想|需要|是否|帮我?|给我?|行不行|可以吗|好吗|可否|能否)/
+const FOLLOWUP_EN_RE = /\b(should|want|need|shall|would you like|do you want|may i|can i)\b/i
+export function detectOpenFollowupQuestion(text = '') {
+  const s = String(text || '').trim()
+  if (!s) return false
+  // 必须有问号
+  if (!/[?？]\s*$/.test(s) && !/[?？]\s*[")'』」】）)]?\s*$/.test(s)) return false
+  // 取末尾问号所在的句子片段
+  const segs = s.split(/[。!！\n]+/).filter(Boolean)
+  const lastSeg = segs[segs.length - 1] || s
+  return FOLLOWUP_VERB_RE.test(lastSeg) || FOLLOWUP_EN_RE.test(lastSeg)
+}
 
 // 工具执行器：根据工具名和参数执行对应操作，返回结果字符串
 async function executeToolUnchecked(name, args, context = {}) {
@@ -276,7 +296,12 @@ async function execSendMessage({ target_id, content, channel = 'AUTO' }, context
 
   // 顺序：先写数据库（source of truth），再广播 SSE，最后外部投递。
   // 外部投递失败时仍保留对话记录，下次 LLM 仍能看到自己发过这句话；前端也已经显示。
-  insertConversation({
+  // P0-2：检测末尾是否留了"非澄清型 follow-up question"——这是后续轮次代词被钩偏的源头。
+  //   保守判定：以问号收尾（? / ？）且至少含一个动词+助词组合（要 / 需 / 想 / 帮 / 给 / 是否）
+  //   或英文 should/want/need/shall。澄清型疑问（"在哪个城市？"/"几点？"）也会被命中——
+  //   接受这点：标 open_question 不阻止模型输出，只在后续轮过期时降权，不伤当前回合。
+  const isOpenFollowup = detectOpenFollowupQuestion(cleanedContent)
+  const insertedId = insertConversation({
     role: 'jarvis',
     from_id: 'jarvis',
     to_id: resolvedId,
@@ -284,7 +309,12 @@ async function execSendMessage({ target_id, content, channel = 'AUTO' }, context
     timestamp,
     channel: channelLabel,
     external_party_id: delivery.externalTargetId || '',
+    open_question: isOpenFollowup ? 1 : 0,
   })
+  if (isOpenFollowup && insertedId) {
+    // 写入时 open_question 已设；此处保留兜底（万一上面 column 没生效）
+    try { markConversationOpenQuestion(insertedId, true) } catch {}
+  }
 
   emitEvent('message', {
     from: 'consciousness',

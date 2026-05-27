@@ -8,8 +8,8 @@ import { compressPoppedFrame } from './memory/focus-compress.js'
 import { runMemoryRefreshLoop } from './memory/refresh-loop.js'
 import { startConsolidationLoop } from './memory/consolidation-loop.js'
 import { runRuntimeInjector } from './context/runtime-injector.js'
-import { getDB, getConfig, setConfig, getKnownEntities, getOrInitBirthTime, insertConversation, insertMemory, getRecentConversationPartners, getDueReminders, markReminderFired, advanceReminderDueAt, getNextPendingReminder, getMemoryCount, getRecentConversationTimeline, loadFocusStack, saveFocusStack } from './db.js'
-import { calculateNextDueAt, autoSpeakForVoiceReply } from './capabilities/executor.js'
+import { getDB, getConfig, setConfig, getKnownEntities, getOrInitBirthTime, insertConversation, insertMemory, getRecentConversationPartners, getDueReminders, markReminderFired, advanceReminderDueAt, getNextPendingReminder, getMemoryCount, getRecentConversationTimeline, loadFocusStack, saveFocusStack, setCurrentFocusTopic, updateUserMessageFocusTopic, insertActionLog } from './db.js'
+import { calculateNextDueAt, autoSpeakForVoiceReply, detectOpenFollowupQuestion } from './capabilities/executor.js'
 import { popMessage, hasMessages, hasUserMessages, getQueueSnapshot, setInterruptCallback, requeueMessage, pushMessage } from './queue.js'
 import { startTUI } from './tui.js'
 import { startAPI } from './api.js'
@@ -292,6 +292,10 @@ function buildStartupSelfCheckDirections(checkState) {
 
 // Fallback 投递：当模型未按协议调 send_message 时由主循环代为投递。
 // 用 msg 自带的 externalPartyId + channel 路由（用户从哪儿发，就回到哪儿），并写入 conversations 表。
+//
+// 同步写一条 action_logs（tool='send_message', source='fallback'），保证 jarvis 在
+// action_log 里能完整看到自己的所有真实输出——self-snapshot 的身份锚才有据可依，
+// 不会把 fallback 投递误判成"幽灵回复（看似是你说过但 action_log 没记录）"。
 function deliverFallbackReply(msg, content, timestamp) {
   const channel = msg.channel || ''
   const externalPartyId = msg.externalPartyId || ''
@@ -314,7 +318,27 @@ function deliverFallbackReply(msg, content, timestamp) {
     timestamp,
     channel,
     external_party_id: externalPartyId,
+    // P0-2：fallback 投递的 reply 同样检测末尾是否是 follow-up 悬念
+    open_question: detectOpenFollowupQuestion(content) ? 1 : 0,
   })
+  // 同步登记 action_log，让 self-snapshot 能用 action_log 作为身份锚的真值源。
+  // tool 仍为 send_message，但 source 标 'fallback' 以便区分主动调用与协议兜底。
+  try {
+    insertActionLog({
+      timestamp,
+      tool: 'send_message',
+      summary: `send_message -> ${msg.fromId} (fallback)`,
+      detail: String(content).slice(0, 280),
+      status: 'ok',
+      risk: 'medium',
+      args: { target_id: msg.fromId, content, channel },
+      resultPreview: `消息已发送至 ${msg.fromId}${channel ? `（${channel}）` : ''} [fallback]`,
+      durationMs: 0,
+      source: 'fallback',
+    })
+  } catch (e) {
+    console.warn('[fallback] insertActionLog failed:', e?.message || e)
+  }
 }
 
 function formatQuickWeatherReply(cardProps) {
@@ -341,6 +365,12 @@ async function tryHandleDirectWeatherTurn(input, msg, { finishTurn } = {}) {
 
   const reply = formatQuickWeatherReply(cardProps)
   if (!reply) return false
+
+  // P0-1：天气快速路径绕开了 updateFocusFrame，需要手动给本轮 user 消息和
+  //   即将写入的 jarvis 回复打上"天气"焦点标签；否则 conversationWindow 里
+  //   这两行 focus_topic 永远是空，破坏话题边界标注。
+  setCurrentFocusTopic('天气')
+  try { updateUserMessageFocusTopic(msg.fromId, msg.timestamp, '天气') } catch {}
 
   const timestamp = nowTimestamp()
   if (isVoiceChannel(msg.channel)) autoSpeakForVoiceReply(reply)
@@ -391,6 +421,8 @@ function buildToolContextForProcess(msg, injection) {
     currentChannel: msg?.channel || null,
     currentExternalPartyId: msg?.externalPartyId || null,
     currentUserMessage: msg?.content || null,
+    // 自我感知信号：传给工具执行层（如 upsert_memory 守门），让"镜像污染"在写入长期记忆前就被拦截
+    selfPerception: injection.selfPerception || null,
 
     onSetTask: (description, steps) => {
       state.task = description
@@ -726,6 +758,16 @@ async function runTurn(input, label, msg = null) {
         event: focusResult?.event || 'noop',
       })
 
+      // P0-1：把"当前焦点 topic"广播给 db.js，之后本轮所有 insertConversation
+      // 自动带上该 topic。同时回填本轮触发判定的 user 消息（pushMessage 时焦点还没算）。
+      const topTopicStr = topFrame && Array.isArray(topFrame.topic)
+        ? topFrame.topic.slice(0, 3).join(',')
+        : ''
+      setCurrentFocusTopic(topTopicStr)
+      if (!isTick && msg?.fromId && msg?.timestamp && topTopicStr) {
+        try { updateUserMessageFocusTopic(msg.fromId, msg.timestamp, topTopicStr) } catch {}
+      }
+
       // 5c 步：持久化焦点栈到 db。noop 路径不写库（DELETE+INSERT 0 行也是无意义 IO）。
       // 任何 push/pop/touch/refresh 都视为栈状态变化，写一次。better-sqlite3 同步，
       // 写入 ~ ms 级；失败 saveFocusStack 内部 console.warn 后吞掉。
@@ -887,9 +929,12 @@ async function runTurn(input, label, msg = null) {
 
     // system 只留稳定硬底线（agent_name / persona）—— 让 DeepSeek prefix cache
     // 真正命中。currentTime / existenceDesc / systemEnv / security 改走 <runtime> 段（每轮变化）。
+    // P1：把当前 user 消息正文传给 buildSystemPrompt，让 agent registry 块按需注入
+    //   （只在用户明确提到 Claude Code/Codex/Hermes 等外部 agent 时才出现）。
     const systemPrompt = buildSystemPrompt({
       agentName,
       persona,
+      userMessage: msg?.content || input || '',
     })
 
     const baseContextArgs = {
@@ -914,8 +959,19 @@ async function runTurn(input, label, msg = null) {
       currentChannel: msg ? normalizeChannel(msg.channel || '') : '',
       channelSwitched: detectChannelSwitch(msg, injection.conversationWindow || []),
       focusTickCounter: state.tickCounter || 0,
+      selfPerception: injection.selfPerception || null,
+      selfSnapshot: injection.selfSnapshot || null,
     }
     let contextBlock = buildContextBlock(baseContextArgs)
+
+    // P0-1：把本轮焦点 topic 字符串传给 buildLLMMessages，用于：
+    //   - conversationWindow 每条消息 marker 上的 topic 标签
+    //   - 当前 user 消息 marker 上的 "topic switch" 提示
+    //   - 过期未答悬念的判断（话题切走时直接标 [expired]）
+    const currentTopicStr = (state.focusStack && state.focusStack.length > 0
+      && Array.isArray(state.focusStack[state.focusStack.length - 1].topic))
+      ? state.focusStack[state.focusStack.length - 1].topic.slice(0, 3).join(',')
+      : ''
 
     const buildMessagesWithContext = (ctxBlock) => buildLLMMessages({
       systemPrompt,
@@ -928,6 +984,7 @@ async function runTurn(input, label, msg = null) {
       lastToolResult: injection.lastToolResult || null,
       taskSteps: state.taskSteps,
       batteryBlock: getBatteryBlock(),
+      currentTopic: currentTopicStr,
     })
 
     let llmMessages = buildMessagesWithContext(contextBlock)

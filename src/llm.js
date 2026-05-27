@@ -589,6 +589,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   let sentMessage = false
   let finalNudgeUsed = false
   let missingToolNudgeUsed = false
+  let plainTextReplyNudgeUsed = false
   let fakeToolNudgeUsed = false
   let emptyReplyNudgeUsed = false
   let falseMemoryNudgeUsed = false
@@ -650,6 +651,25 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           content: buildMissingToolNudge(message),
         })
         missingToolNudgeUsed = true
+        continue
+      }
+      // 用户消息回复但只产出了 plain text，完全没调任何工具（包括 send_message）。
+      //
+      // 与 finalNudge 的区别：finalNudge 处理"调过工具但最后没补 send_message"（sawToolCall=true），
+      // 本 nudge 处理"完全不经过工具就直接输出 text content 当作回复"（sawToolCall=false）。
+      //
+      // 不修复也能跑（主循环的 deliverFallbackReply 会把 content 投递出去），但 LLM 会逐渐
+      // 失去"回复 = 调 send_message 工具"的反射，越来越依赖 fallback。这条 nudge 引导它回到
+      // 正确的工具范式，同时保留 fallback 作最后一道兜底。
+      if (mustReply && !sawToolCall && !sentMessage && allContent.trim() && !plainTextReplyNudgeUsed) {
+        const draft = allContent.trim()
+        if (content) messages.push({ role: 'assistant', content })
+        allContent = ''
+        messages.push({
+          role: 'user',
+          content: `You produced reply text but did NOT call the send_message tool. Plain assistant text in this runtime is only debug exhaust — it does not reach the user through the normal channel. To actually deliver the reply you must wrap it in a send_message tool call.\n\nYour draft was:\n"""\n${draft.slice(0, 1000)}\n"""\n\nCall send_message now with target_id = the user who sent the previous message and content = the same text (or a tightened version). Do not write more prose this turn — only invoke the tool.`,
+        })
+        plainTextReplyNudgeUsed = true
         continue
       }
       // 检测伪工具调用：模型在文字里描述了调用但没有真正发起 function-call

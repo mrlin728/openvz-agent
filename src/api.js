@@ -340,7 +340,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       const limit = Math.min(parseInt(url.searchParams.get('limit') || '60'), 500)
       const includeSystemSignals = url.searchParams.get('includeSystemSignals') === 'true'
       const rows = db.prepare(`
-        SELECT id, role, from_id, to_id, content, timestamp, channel, external_party_id, focus_absorbed
+        SELECT id, role, from_id, to_id, content, timestamp, channel, external_party_id, focus_absorbed, focus_topic, open_question
         FROM conversations
         WHERE (? OR NOT (from_id = 'SYSTEM' AND channel = 'APP_SIGNAL'))
         ORDER BY id DESC

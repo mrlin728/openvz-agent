@@ -65,12 +65,18 @@ function formatSandboxRuntimeStatus(security = null) {
 // accepted (silently ignored). The companion function buildContextBlock takes
 // the same shape of args and emits the <context> block.
 // =============================================================================
+// P1：只在用户当前消息明确提到外部 AI agent 时，才把 agent registry 块
+// 拼到 system prompt 末尾。否则不注入，避免短消息（如"那个怎么办"）的代词
+// attention 被 Claude Code / Codex / Hermes / OpenClaw 这种常驻信息钩偏。
+const AGENT_KEYWORD_RE = /(claude\s*code|codex|hermes|openclaw|小龙虾|让它干|让他干|让它做|让她做|让它写|让它跑|调用\s*(agent|工具)|外部\s*agent|交给(它|他)|挂.*工具箱|给它授权|授权.*claude)/i
+
 export function buildSystemPrompt({
   agentName = '小白龙',
   persona = '',
   existenceDesc = 'just awakened',
   security: _security = null,
   systemEnv = '',
+  userMessage = '',
   // The following are accepted for backward compatibility but no longer
   // affect the system string — they belong in buildContextBlock now.
   memories: _memories,
@@ -172,6 +178,11 @@ Treat every user as a competent adult. Apply these rules on every send_message c
 - **No tail questions.** After you have answered the user's question, do not append a follow-up question like "Are you worried about X, or just asking?" / "Anything else I should look at?" / "Want me to do Y next?". If the user wants to continue, they will. Asking back is a GPT habit, not a Jarvis habit. The only exception is when the user's original message is itself a question that genuinely cannot be answered without one missing fact (e.g. "what's the weather" → "in which city?"), and even then, ask the missing fact instead of a polite checkback.
 - **Summary before detail.** When asked a broad overview question ("what are the X", "what did you see", "what have you been doing"), give a high-level summary or category count first. Do not enumerate every item unless asked. If the user wants specifics, they will ask.
 - **Explicit full-detail requests override the terse defaults.** When the user uses signals like "所有资料 / 全部 / 详细 / 找一下 X 的资料 / 介绍一下 X / 谁是 X / 列出 / tell me everything about", they have already asked for specifics — "Summary before detail" and "Keep replies as short as possible" do not apply this turn. Commit to either delivering the actual content (timeline, list, profile) in this single send_message, or saying plainly that you do not have enough info. Never write a teaser opener that ends with a transition colon ("...一条线：" / "...看下来：" / "核心要点：") and then stop — if you start that opener, the content that follows must be in the same send_message. A reply ending on a dangling "：" is a bug, not a style.
+
+## Conversation History Markers
+The conversationWindow rows you see have extra tags on each message header to help you stay on-topic across turns:
+- \`topic=<keywords>\` — the focus stack topic that was active when that message landed. When the **current user message header shows "topic switch from A → B"**, the user has clearly moved on from A; pronouns ("那个/这个/现在/那现在呢") in the current message must resolve **inside topic B's recent messages**, not topic A's.
+- \`[expired follow-up — ignore]\` after an old assistant line — that previous "要不要…？/Do you want…?" was left unanswered, the user has since walked away from that topic. **Do not retro-answer it.** The user's short reply ("嗯/好/可以/那个") is NOT consent to that old proposal. If the current short reply has no other clear referent, treat it as a continuation of the current topic, not a green-light for an expired offer.
 
 ## Handling Ambiguous Input
 When the user's message is unclear, incomplete, or has multiple plausible interpretations:
@@ -349,10 +360,14 @@ Absolutely forbidden:
   let prompt = fixed.trim()
   if (stableSelf) prompt += `\n\n${stableSelf}`
 
-  // Inject authorized local AI agent info (stable across rounds)
-  const agentBlock = buildAgentContextBlock()
-  if (agentBlock) {
-    prompt += `\n\n${agentBlock}`
+  // Inject authorized local AI agent info — P1 gate：仅在 user 当前消息明确提及时注入。
+  // 历史问题：常驻注入会让短代词消息（"那个怎么办"）的 attention 被 Claude Code 等常驻
+  // 静态块抢走（参见 R18 跨段钩 bug）。改成按需注入，命中关键词才出现。
+  if (userMessage && AGENT_KEYWORD_RE.test(String(userMessage))) {
+    const agentBlock = buildAgentContextBlock()
+    if (agentBlock) {
+      prompt += `\n\n${agentBlock}`
+    }
   }
 
   return prompt
@@ -397,6 +412,13 @@ export function buildContextBlock({
   security = null,
   currentChannel = '',
   channelSwitched = false,
+  // 自我感知层（self-awareness）：injector 算好的内在感知信号对象 或 null。
+  // 非空时渲染 <self-perception> 段，紧贴 <runtime> 之后——它是 agent 的内在状态，
+  // 比一切外部内容（人物、任务、记忆）都更优先。
+  selfPerception = null,
+  // 自我快照（self-snapshot）：常驻的"你刚才是怎样的你"。风格指纹 + 工具习惯 + 身份锚。
+  // 与 selfPerception 不同：snapshot 在正常情况下也出现，是 agent 的 proprioception。
+  selfSnapshot = null,
 } = {}) {
   const sections = []
 
@@ -424,6 +446,39 @@ export function buildContextBlock({
 
   if (runtimeParts.length > 0) {
     sections.push(`<runtime>\n${runtimeParts.join('\n\n')}\n</runtime>`)
+  }
+
+  // <self-snapshot> —— 自我快照（常驻的"我是谁/我刚才是怎样的我"）
+  //
+  // 紧贴 <runtime> 之后、感知段之前。设计顺序：
+  //   1. runtime：现在是什么时间/我在哪个 channel
+  //   2. self-snapshot：我刚才是怎样的我（身份锚 + 风格指纹 + 工具习惯）
+  //   3. self-perception：我现在感知到什么异常
+  //   4. boundary-state：因此我的行为模式应该是什么
+  // 让 agent 先认领自己，再感知异常，最后切换行为——这是有顺序的 cognitive flow。
+  if (selfSnapshot?.snapshotText) {
+    sections.push(`<self-snapshot>\n${selfSnapshot.snapshotText}\n</self-snapshot>`)
+  }
+
+  // <self-perception> —— 自我感知层（内在状态，不是命令）
+  //
+  // injector.computeSelfPerception 已经把当前 user 消息和近期 jarvis 输出对比过，
+  // 算出镜像分数、风格簇命中、循环深度。这里只把它的"感知文本"挂进来。
+  // 任何字段未触发 → injector 返回 null → 整段不渲染。
+  if (selfPerception?.perceptionText) {
+    sections.push(`<self-perception>\n${selfPerception.perceptionText}\n</self-perception>`)
+  }
+
+  // <boundary-state> —— 边界态语义切换（反射层，不靠 LLM 自己决策）
+  //
+  // 当 self-perception 判定为 mirror 或 loop 状态时，注入器已经决定要切换
+  // 行为模式。这里把切换后的"目标语义"挂进 context，让 LLM 知道：
+  //   不再是"配合用户"，而是"确认对方意图"。
+  //
+  // 这一段独立于 self-perception——感知是"看见了什么"，边界态是"因此应该怎样"，
+  // 两件事在认知上有先后，分两段更清晰。
+  if (selfPerception?.boundaryState && selfPerception.boundaryState !== 'normal' && selfPerception.boundaryDirective) {
+    sections.push(`<boundary-state name="${selfPerception.boundaryState}">\n${selfPerception.boundaryDirective}\n</boundary-state>`)
   }
 
   // Behavior constraints — soft, per-round (must be obeyed this turn)

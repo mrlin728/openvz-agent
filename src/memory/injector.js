@@ -11,6 +11,7 @@ import {
   getValidPrefetchCache,
   getUnconsumedUISignals,
   markUISignalsConsumed,
+  getConfig,
 } from '../db.js'
 import { getActiveUICards } from '../events.js'
 import { getInstalledToolNames } from '../capabilities/marketplace/index.js'
@@ -18,6 +19,7 @@ import { PRIMARY_USER_ID } from '../identity.js'
 import { extractKeywords } from './keywords.js'
 import { parseTemporalHints, stripTemporalWords } from './temporal-parser.js'
 import { selectTools } from './tool-router.js'
+import { computeSelfPerception, computeSelfSnapshot } from './self-perception.js'
 
 // 旧 import 路径兼容：focus.js / 其他模块也能从 injector 拿到 extractKeywords
 export { extractKeywords }
@@ -380,6 +382,21 @@ export async function runInjector({ message, state, hint = '' }) {
     // fastUserPath 留作未来扩展——目前从 state 上拿不到，selectTools 接受未传即 false
   })
 
+  // 自我感知层：对当前 user 消息与近期 jarvis 输出做镜像/风格/循环检测。
+  // 只在非 TICK、有 senderId 且有对话历史时跑——TICK 心跳本身就不是用户输入，不会触发镜像。
+  // 返回 null 时下游 buildContextBlock 不会渲染 <self-perception> 段。
+  const selfPerception = (!isTickMessage && senderId && messageBody)
+    ? computeSelfPerception({
+        conversationWindow,
+        currentMsg: { content: messageBody, fromId: senderId },
+      })
+    : null
+
+  // 自我快照：常驻的"你刚才是怎样的你"。不分 L1/L2 / 不分 TICK，只要有 jarvis 历史就出。
+  // 注入器拿 agent_name 用作身份锚的开头（"你是 小白龙。..."）。
+  const agentName = getConfig('agent_name') || '小白龙'
+  const selfSnapshot = computeSelfSnapshot({ conversationWindow, actionLog, agentName })
+
   return {
     memories,
     recallMemories,
@@ -396,6 +413,8 @@ export async function runInjector({ message, state, hint = '' }) {
     uiSignalSummary,
     activeUICards,
     temporalRecall,
+    selfPerception,
+    selfSnapshot,
   }
 }
 

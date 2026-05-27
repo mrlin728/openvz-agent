@@ -66,6 +66,36 @@ export async function execUpsertMemory(args = {}, context = {}) {
     })
   }
 
+  // 守门：自我感知层判定当前 user 输入是"镜像/风格融合"时，阻止把它学成 fact。
+  // 这是反射弧，不靠 LLM 自觉。镜像污染最常见的入口就是 fact 类型被错误学习成"用户偏好"。
+  // person / knowledge / object 仍允许写入（它们各有主体，污染风险低）。
+  const perception = context.selfPerception
+  const mirrorActive = perception && (
+    perception.mirror?.exact
+    || (perception.mirror?.score ?? 0) >= 0.6
+    || perception.style?.hit
+    || (perception.loop ?? 0) >= 2
+  )
+  if (mirrorActive) {
+    const blocked = list.filter(m => {
+      const t = m?.type || (typeof m?.mem_id === 'string' && m.mem_id.startsWith('fact_') ? 'fact' : null)
+      return t === 'fact'
+    })
+    if (blocked.length > 0) {
+      const reasonParts = []
+      if (perception.mirror?.exact || (perception.mirror?.score ?? 0) >= 0.6) reasonParts.push('对方在复述你的话')
+      if (perception.style?.hit) reasonParts.push('对方使用 agent 内独白语气')
+      if ((perception.loop ?? 0) >= 2) reasonParts.push(`对话已陷入 ${perception.loop} 轮逐字回环`)
+      return JSON.stringify({
+        ok: false,
+        blocked: true,
+        reason: `本轮处于自我边界异常状态（${reasonParts.join('；')}）。fact 类记忆代表"用户的稳定偏好"，而当前 user 消息很可能来自模仿/复述，不应被当作偏好写入长期记忆。`,
+        blocked_mem_ids: blocked.map(m => m.mem_id).filter(Boolean),
+        hint: '若你确实想保留这次现象本身，请改用 type=knowledge（关于这次交互的观察）而不是 type=fact。',
+      })
+    }
+  }
+
   const sourceRef = context.sessionRef || context.source_ref || null
   // 同批次：无 parent 的先写，有 parent 的后写，保证父节点 mem_id 已就绪
   const roots = list.filter(m => !m.parent_mem_id)
