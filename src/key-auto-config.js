@@ -25,7 +25,7 @@ function isValidAliyunAsrKey(key) {
   return /^sk-[A-Za-z0-9_\-.]{20,}$/.test(String(key || '').trim())
 }
 
-const LLM_KEY_HINT_RE = /deepseek|deep\s*seek|openai|open\s*ai|chatgpt|gpt|qwen|通义|千问|moonshot|kimi|智谱|zhipu|claude|gemini|minimax|mini\s*max/g
+const LLM_KEY_HINT_RE = /deepseek|deep\s*seek|openai|open\s*ai|chatgpt|gpt|qwen|通义|千问|moonshot|kimi|智谱|zhipu|claude|gemini|minimax|mini\s*max|mimo|小米|xiaomi/g
 
 function hasCloserLlmKeyHint(text, providerPos, keyPos) {
   const segment = text.slice(providerPos, keyPos).toLowerCase()

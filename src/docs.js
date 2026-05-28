@@ -37,7 +37,7 @@ function detectDocTopic(text) {
   const t = text.toLowerCase()
 
   // 模型 / LLM 配置
-  if (/(模型|model|llm|provider|api.?key|密钥|激活|切换模型|配置.*(deepseek|minimax|qwen|openai|moonshot|zhipu|claude|gemini)|deepseek|minimax.*配置|qwen.*配置|自定义.*端点|base.?url)/.test(t)) {
+  if (/(模型|model|llm|provider|api.?key|密钥|激活|切换模型|配置.*(deepseek|minimax|qwen|openai|moonshot|zhipu|claude|gemini|mimo|小米)|deepseek|minimax.*配置|qwen.*配置|mimo.*配置|小米.*配置|自定义.*端点|base.?url)/.test(t)) {
     return 'model_config'
   }
 

@@ -8,6 +8,7 @@ export const OPENAI_PROVIDER = 'openai'
 export const QWEN_PROVIDER = 'qwen'
 export const MOONSHOT_PROVIDER = 'moonshot'
 export const ZHIPU_PROVIDER = 'zhipu'
+export const MIMO_PROVIDER = 'mimo'
 
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-pro'
 export const DEFAULT_MINIMAX_MODEL = 'MiniMax-M2.7'
@@ -15,6 +16,7 @@ export const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini'
 export const DEFAULT_QWEN_MODEL = 'qwen-turbo'
 export const DEFAULT_MOONSHOT_MODEL = 'moonshot-v1-8k'
 export const DEFAULT_ZHIPU_MODEL = 'glm-4-flash'
+export const DEFAULT_MIMO_MODEL = 'mimo-v2.5'
 
 export const DEEPSEEK_MODELS = [
   {
@@ -104,6 +106,29 @@ export const ZHIPU_MODELS = [
   },
 ]
 
+export const MIMO_MODELS = [
+  {
+    id: 'mimo-v2.5',
+    label: 'MiMo-V2.5',
+    deprecated: false,
+  },
+  {
+    id: 'mimo-v2.5-pro',
+    label: 'MiMo-V2.5-Pro',
+    deprecated: false,
+  },
+  {
+    id: 'mimo-v2-pro',
+    label: 'MiMo-V2-Pro',
+    deprecated: false,
+  },
+  {
+    id: 'mimo-v2-flash',
+    label: 'MiMo-V2-Flash',
+    deprecated: false,
+  },
+]
+
 const PROVIDER_CONFIG = {
   [DEEPSEEK_PROVIDER]: {
     label: 'DeepSeek',
@@ -146,6 +171,13 @@ const PROVIDER_CONFIG = {
     envVar: 'ZHIPU_API_KEY',
     models: ZHIPU_MODELS,
     defaultModel: DEFAULT_ZHIPU_MODEL,
+  },
+  [MIMO_PROVIDER]: {
+    label: '小米 MiMo',
+    baseURL: 'https://api.xiaomimimo.com/v1',
+    envVar: 'MIMO_API_KEY',
+    models: MIMO_MODELS,
+    defaultModel: DEFAULT_MIMO_MODEL,
   },
 }
 
@@ -655,6 +687,7 @@ const CHAT_PROVIDERS_WITH_AMBIGUOUS_SK_KEYS = new Set([
   OPENAI_PROVIDER,
   MOONSHOT_PROVIDER,
   ZHIPU_PROVIDER,
+  MIMO_PROVIDER,
 ])
 
 export function getVoiceConfig() {
@@ -942,6 +975,7 @@ export const __internals = {
   QWEN_MODELS,
   MOONSHOT_MODELS,
   ZHIPU_MODELS,
+  MIMO_MODELS,
   normalizeModel,
   isThinkingEnabledForModel,
   buildPingParams,

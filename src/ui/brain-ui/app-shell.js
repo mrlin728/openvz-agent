@@ -200,6 +200,7 @@ const createSettingsModal = () => `
                 <option value="auto">自动识别</option>
                 <option value="deepseek">DeepSeek</option>
                 <option value="minimax">MiniMax</option>
+                <option value="mimo">小米 MiMo</option>
                 <option value="custom">自定义端点（本地/其他）</option>
               </select>
             </div>
