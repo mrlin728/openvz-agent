@@ -911,12 +911,67 @@ body {
 }
 
 #input-row {
+  position: relative;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   gap: 14px;
   padding: 14px 18px;
   border-top: 1px solid var(--line);
+}
+
+/* ── 斜杠命令菜单 ───────────────────────────────────────── */
+.slash-menu {
+  position: absolute;
+  left: 18px;
+  right: 18px;
+  bottom: calc(100% - 1px);
+  margin-bottom: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 6px;
+  background: var(--bg1);
+  border: 1px solid var(--line-strong);
+  border-radius: 12px;
+  backdrop-filter: blur(24px);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.34);
+  z-index: 80;
+}
+.slash-menu[hidden] { display: none; }
+
+.slash-item {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+.slash-item.active,
+.slash-item:hover { background: var(--line); }
+
+.slash-cmd {
+  flex: 0 0 auto;
+  min-width: 62px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  color: var(--cool);
+}
+.slash-text { min-width: 0; }
+.slash-label { font-size: 13px; color: var(--ink); }
+.slash-desc {
+  font-size: 11px;
+  color: var(--dim);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.slash-empty {
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--dim);
 }
 
 .prompt-mark {
@@ -1616,6 +1671,96 @@ body.image-mode .image-panel {
   border-color: var(--line-strong);
 }
 
+
+/* ═══════════════ AI 视频生成面板（Seedance · 生成工作台）═══════════════ */
+.aivideo-panel{
+  position:fixed; right:16px; top:16px; bottom:16px; width:0; overflow:hidden;
+  z-index:5; border-radius:16px; background:color-mix(in srgb,var(--bg-deep) 92%,black);
+  border:1px solid transparent; opacity:0; pointer-events:none;
+  display:flex; flex-direction:column;
+  transition:width .45s cubic-bezier(.4,0,.2,1), opacity .35s ease, border-color .35s ease;
+}
+body.aivideo-mode .aivideo-panel{ width:calc(66vw - 32px); opacity:1; pointer-events:auto; border-color:var(--line-strong); }
+.aivideo-head-spacer{ flex:1 }
+.aivideo-new-btn{ font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; letter-spacing:.06em;
+  color:var(--ink2); background:none; border:1px solid var(--line-strong); border-radius:7px; padding:5px 10px; cursor:pointer; }
+.aivideo-new-btn:hover{ color:var(--ink); border-color:var(--ink2); }
+.aivideo-exit-btn{ background:none; border:0; color:var(--ink2); font-size:17px; line-height:1; padding:3px 8px; cursor:pointer; border-radius:6px; }
+.aivideo-exit-btn:hover{ color:var(--ink); background:color-mix(in srgb,var(--line-strong) 40%,transparent); }
+
+/* 区1 生成栏 */
+.aivideo-queue-wrap{ flex:0 0 auto; border-bottom:1px solid var(--line); background:color-mix(in srgb,var(--bg-deep) 80%,black); }
+.aivideo-queue-cap{ font-family:"JetBrains Mono",ui-monospace,monospace; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--ink2); opacity:.7; padding:9px 16px 2px; }
+.aivideo-queue{ display:flex; gap:10px; overflow-x:auto; padding:6px 16px 14px; scrollbar-width:thin; min-height:64px; }
+.aivideo-queue::-webkit-scrollbar{ height:6px } .aivideo-queue::-webkit-scrollbar-thumb{ background:var(--line-strong); border-radius:6px }
+.aivideo-queue-empty{ font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; color:var(--ink2); opacity:.5; padding:14px 4px; }
+.av-tile{ flex:0 0 auto; width:148px; cursor:pointer; position:relative; }
+.av-tile .frame{ width:148px; height:84px; border-radius:9px; overflow:hidden; position:relative; border:1px solid var(--line-strong); background:#0a0f16; display:flex; align-items:center; justify-content:center; }
+.av-tile.sel .frame{ border-color:#4dd0e1; box-shadow:0 0 0 1px #4dd0e1,0 0 18px -4px #4dd0e1; }
+.av-tile video.thumb, .av-tile .poster{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.av-tile .dur{ position:absolute; right:5px; bottom:5px; font-family:"JetBrains Mono",monospace; font-size:9.5px; padding:1px 5px; border-radius:5px; background:rgba(0,0,0,.6); color:var(--ink); }
+.av-tile .play{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:#fff; opacity:0; transition:.18s; font-size:20px; text-shadow:0 1px 6px rgba(0,0,0,.6); }
+.av-tile:hover .play{ opacity:.95 }
+.av-tile .rm{ position:absolute; top:4px; right:4px; z-index:3; width:18px; height:18px; border-radius:50%; border:0; background:rgba(0,0,0,.6); color:#fff; font-size:12px; line-height:1; cursor:pointer; opacity:0; transition:.15s; display:flex; align-items:center; justify-content:center; }
+.av-tile:hover .rm{ opacity:1 }
+.av-tile .label{ margin-top:6px; font-size:11px; color:var(--ink2); line-height:1.35; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+.av-tile.gen .frame{ background:linear-gradient(120deg,#0a121a,#0d1722); }
+.av-orb{ width:30px; height:30px; position:relative }
+.av-orb i{ position:absolute; inset:0; border-radius:50%; border:2px solid transparent; border-top-color:#4dd0e1; border-right-color:#4dd0e1; animation:av-spin 1.3s linear infinite; }
+.av-orb i:nth-child(2){ inset:6px; border-top-color:#7c9bff; border-right-color:#7c9bff; animation-duration:1.9s; animation-direction:reverse; }
+@keyframes av-spin{ to{ transform:rotate(360deg) } }
+.av-tile .genbadge{ position:absolute; left:6px; top:6px; font-family:"JetBrains Mono",monospace; font-size:9px; letter-spacing:.08em; color:#4dd0e1; background:rgba(8,16,22,.7); padding:2px 6px; border-radius:5px; }
+.av-tile .gentime{ position:absolute; right:6px; bottom:6px; font-family:"JetBrains Mono",monospace; font-size:10px; color:var(--ink2); }
+.av-tile.gen .frame::after{ content:""; position:absolute; left:-40%; top:0; height:100%; width:40%; background:linear-gradient(90deg,transparent,rgba(77,208,225,.18),transparent); animation:av-sweep 1.6s ease-in-out infinite; }
+@keyframes av-sweep{ 0%{left:-40%}100%{left:100%} }
+.av-tile.fail .frame{ background:repeating-linear-gradient(45deg,#160f12,#160f12 8px,#1b1216 8px,#1b1216 16px); border-color:color-mix(in srgb,#ff8a80 40%,transparent); }
+.av-tile.fail .frame .x{ color:#ff8a80; font-size:20px } .av-tile.fail .label{ color:#ff8a80 }
+
+/* 区2 播放区 */
+.aivideo-player{ flex:1 1 auto; min-height:0; display:flex; flex-direction:column; padding:16px 18px; align-items:center; justify-content:center; gap:12px; }
+.aivideo-stage{ position:relative; width:min(100%,860px); aspect-ratio:16/9; border-radius:14px; overflow:hidden; border:1px solid var(--line-strong); background:#000; display:flex; align-items:center; justify-content:center; }
+.aivideo-feed{ position:relative; z-index:1; width:100%; height:100%; display:block; border:0; object-fit:contain; background:#000; }
+.aivideo-feed[hidden]{ display:none !important; }
+.aivideo-dl{ position:absolute; top:12px; right:12px; z-index:3; font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.05em; color:var(--ink); background:rgba(8,14,20,.7); border:1px solid var(--line-strong); border-radius:8px; padding:6px 12px; cursor:pointer; transition:.15s; }
+.aivideo-dl:hover{ border-color:#4dd0e1; color:#4dd0e1 }
+/* 空态：不显示「播放器」黑框，改为干净的占位 */
+.aivideo-stage.is-empty{ background:transparent; border:1px dashed var(--line); }
+.aivideo-stage-empty{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:11px; padding:0 24px; text-align:center; }
+.aivideo-stage-empty[hidden]{ display:none !important; }
+.aivideo-empty-icon{ width:52px; height:52px; color:var(--ink2); opacity:.38; }
+.aivideo-empty-text{ color:var(--ink2); opacity:.72; font-family:"JetBrains Mono",monospace; font-size:13px; letter-spacing:.14em; }
+.aivideo-empty-sub{ color:var(--ink2); opacity:.42; font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.06em; }
+.aivideo-player-meta{ font-family:"JetBrains Mono",monospace; font-size:11px; letter-spacing:.08em; color:var(--ink2); min-height:14px; }
+.aivideo-player-meta b{ color:#4dd0e1; font-weight:600 }
+
+/* 区3 输入区 */
+.aivideo-composer{ flex:0 0 auto; border-top:1px solid var(--line); padding:14px 16px 16px; background:color-mix(in srgb,var(--bg-deep) 80%,black); }
+.aivideo-dropzone{ display:flex; gap:9px; align-items:stretch; margin-bottom:10px; }
+.av-imgcell{ position:relative; width:66px; height:66px; border-radius:10px; overflow:hidden; flex:0 0 auto; border:1px solid var(--line-strong); }
+.av-imgcell img{ position:absolute; inset:0; width:100%; height:100%; object-fit:cover; }
+.av-imgcell .role{ position:absolute; left:0; right:0; bottom:0; font-family:"JetBrains Mono",monospace; font-size:9px; letter-spacing:.04em; text-align:center; color:#06121a; background:linear-gradient(90deg,#4dd0e1,#7c9bff); padding:2px 0; }
+.av-imgcell .rm{ position:absolute; top:2px; right:2px; width:17px; height:17px; border-radius:50%; border:0; background:rgba(0,0,0,.65); color:#fff; font-size:12px; line-height:1; cursor:pointer; display:flex; align-items:center; justify-content:center; }
+.av-addcell{ width:66px; height:66px; border-radius:10px; flex:0 0 auto; cursor:pointer; border:1px dashed var(--line-strong); color:var(--ink2); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px; font-size:11px; text-align:center; transition:.15s; background:transparent; }
+.av-addcell:hover, .aivideo-dropzone.dragover .av-addcell{ border-color:#4dd0e1; color:#4dd0e1; background:color-mix(in srgb,#4dd0e1 8%,transparent); }
+.av-addcell .plus{ font-size:18px; line-height:1 } .av-addcell small{ font-size:8.5px; color:var(--ink2); opacity:.6; }
+.aivideo-modebar{ display:flex; align-items:center; gap:10px; margin-bottom:9px; min-height:18px; }
+.aivideo-modetag{ font-family:"JetBrains Mono",monospace; font-size:10.5px; letter-spacing:.08em; text-transform:uppercase; color:#4dd0e1; border:1px solid color-mix(in srgb,#4dd0e1 40%,transparent); padding:2px 8px; border-radius:6px; }
+.aivideo-modetag.flf{ color:#7c9bff; border-color:color-mix(in srgb,#7c9bff 45%,transparent); }
+.aivideo-modehint{ font-size:11px; color:var(--ink2); opacity:.7; }
+.aivideo-prompt-input{ width:100%; height:46px; min-height:46px; max-height:160px; box-sizing:border-box; resize:none; overflow-y:auto; display:block; border:1px solid var(--line-strong); border-radius:12px; background:color-mix(in srgb,var(--bg-deep) 70%,black); color:var(--ink); padding:11px 13px; font-size:13px; line-height:1.6; font-family:inherit; outline:none; transition:border-color .15s; }
+.aivideo-prompt-input:focus{ border-color:#4dd0e1 } .aivideo-prompt-input::placeholder{ color:var(--ink2); opacity:.55; }
+.aivideo-controls{ display:flex; align-items:center; gap:8px; margin-top:10px; }
+.aivideo-controls select{ background:color-mix(in srgb,var(--bg-deep) 70%,black); color:var(--ink2); border:1px solid var(--line-strong); border-radius:8px; padding:7px 9px; font-size:12px; font-family:"JetBrains Mono",monospace; outline:none; cursor:pointer; }
+.aivideo-controls select:focus{ border-color:#4dd0e1 }
+.aivideo-submit{ margin-left:auto; flex:0 0 auto; border:0; border-radius:9px; padding:9px 26px; cursor:pointer; font-size:13px; font-weight:600; letter-spacing:.12em; color:#06121a; background:linear-gradient(90deg,#4dd0e1,#7c9bff); transition:.15s; }
+.aivideo-submit:hover{ filter:brightness(1.06) } .aivideo-submit:active{ transform:translateY(1px) } .aivideo-submit:disabled{ opacity:.55; cursor:default; }
+.aivideo-compose-err{ margin-top:9px; color:#ffb4a8; font-size:11.5px; line-height:1.6; padding:9px 11px; border:1px solid color-mix(in srgb,#ff8a80 45%,transparent); border-left-width:3px; border-radius:8px; background:color-mix(in srgb,#ff8a80 10%,transparent); }
+
+/* toast */
+.aivideo-toast{ position:fixed; left:50%; bottom:26px; transform:translate(-50%,16px); opacity:0; pointer-events:none; background:#0c1620; border:1px solid var(--line-strong); border-left:3px solid #4dd0e1; color:var(--ink); font-size:12.5px; padding:11px 16px; border-radius:10px; max-width:560px; transition:.28s; z-index:50; box-shadow:0 16px 40px rgba(0,0,0,.5); }
+.aivideo-toast.show{ opacity:1; transform:translate(-50%,0) }
+.aivideo-toast .mono{ font-family:"JetBrains Mono",monospace; color:#4dd0e1; font-size:11.5px; }
+
 .media-stage-head {
   flex: 0 0 auto;
   min-width: 260px;
@@ -1769,6 +1914,12 @@ body.video-mode .console {
 body.video-mode #graph {
   transform: translateX(-26vw);
 }
+/* AI 视频生成模式：与 video-mode 同布局——两侧面板滑出、聊天区让到左半、图谱左移 */
+body.aivideo-mode #panel-l1 { transform: translateX(calc(-100% - 20px)); }
+body.aivideo-mode #panel-l2 { transform: translateX(calc(100% + 20px)); }
+body.aivideo-mode .console  { left: 16px; right: calc(66vw + 8px); }
+body.aivideo-mode #graph    { transform: translateX(-26vw); }
+body.aivideo-mode .panel-tab { opacity: 0; pointer-events: none; transition: opacity 0.3s ease; }
 body.image-mode #panel-l1 {
   transform: translateX(calc(-100% - 20px));
 }
@@ -2437,7 +2588,8 @@ body.doc-panel-mode .panel-tab { opacity: 0; pointer-events: none; transition: o
 /* ── 语音球悬浮：在热点/视频模式下移到对应聊天区顶部 ── */
 /* #voice-panel 被 JS 移到 body 根下，用 fixed 定位，不再受 panel transform 影响 */
 body.hotspot-mode > #voice-panel,
-body.video-mode   > #voice-panel {
+body.video-mode   > #voice-panel,
+body.aivideo-mode > #voice-panel {
   position: fixed;
   z-index: 300;
   width: auto;
@@ -2460,13 +2612,15 @@ body.hotspot-mode > #voice-panel {
   right: 20px;
 }
 
-body.video-mode > #voice-panel {
+body.video-mode > #voice-panel,
+body.aivideo-mode > #voice-panel {
   left: 20px;
   right: calc(66vw + 12px);
 }
 
 body.hotspot-mode > #voice-panel #voice-canvas,
-body.video-mode   > #voice-panel #voice-canvas {
+body.video-mode   > #voice-panel #voice-canvas,
+body.aivideo-mode > #voice-panel #voice-canvas {
   width: 56px !important;
   flex-shrink: 0;
 }

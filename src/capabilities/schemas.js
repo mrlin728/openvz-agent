@@ -90,7 +90,7 @@ export const TOOL_SCHEMAS = {
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read the contents of a file at the specified path. Use start_line/end_line/max_lines when the user asks for a limited range such as "first 120 lines"; do not read the whole file when a range is enough.',
+      description: 'Read the contents of a file. This is the correct way to read a file — do NOT shell out through exec_command (Get-Content / cat / type), which risks encoding garble. Accepts a relative path (inside the sandbox) or an absolute path such as D:\\notes\\a.txt when the file sandbox is disabled. Use start_line/end_line/max_lines when the user asks for a limited range such as "first 120 lines"; do not read the whole file when a range is enough.',
       parameters: {
         type: 'object',
         properties: {
@@ -120,7 +120,7 @@ export const TOOL_SCHEMAS = {
     type: 'function',
     function: {
       name: 'list_dir',
-      description: 'List files and folders under the specified directory.',
+      description: 'List files and folders under a directory. Prefer this over shelling out through exec_command (Get-ChildItem / ls / dir). Accepts a relative path (inside the sandbox) or an absolute path such as D:\\projects when the file sandbox is disabled.',
       parameters: {
         type: 'object',
         properties: {
@@ -228,11 +228,11 @@ export const TOOL_SCHEMAS = {
     type: 'function',
     function: {
       name: 'delete_file',
-      description: 'Delete a file or directory inside the sandbox. Directories are removed recursively. System files such as readme.txt and world.txt cannot be deleted.',
+      description: 'Delete a file or directory. This is the correct way to delete — do NOT shell out through exec_command (Remove-Item / rm / del), which skips the read-back confirmation and the protection on system files. Directories are removed recursively. System files such as readme.txt and world.txt cannot be deleted. Accepts a relative path (inside the sandbox) or an absolute path when the file sandbox is disabled.',
       parameters: {
         type: 'object',
         properties: {
-          path: { type: 'string', description: 'File or directory path to delete, relative to the sandbox.' }
+          path: { type: 'string', description: 'File or directory path to delete. Relative paths resolve inside the sandbox; an absolute path is allowed when the file sandbox is disabled.' }
         },
         required: ['path']
       }
@@ -243,7 +243,7 @@ export const TOOL_SCHEMAS = {
     type: 'function',
     function: {
       name: 'make_dir',
-      description: 'Create a directory inside the sandbox. Nested paths such as projects/myapp/src are supported.',
+      description: 'Create a directory. Prefer this over shelling out through exec_command (New-Item / mkdir). Nested paths such as projects/myapp/src are created in one call. Accepts a relative path (inside the sandbox) or an absolute path when the file sandbox is disabled. (write_file already creates parent directories on its own, so you rarely need this just to prepare a file path.)',
       parameters: {
         type: 'object',
         properties: {
@@ -258,7 +258,7 @@ export const TOOL_SCHEMAS = {
     type: 'function',
     function: {
       name: 'exec_command',
-      description: 'Run a shell command. Returns structured JSON with ok, mode, exit_code, stdout, stderr, timed_out, pid. On Windows runs in PowerShell — use PowerShell syntax (e.g. Get-ChildItem, $env:USERPROFILE, Write-Output). Use background=true for long-running servers. Use cwd to run in a sandbox subdirectory instead of cd-chaining. Use promote_to_background=true so a foreground timeout converts the process to background instead of killing it. Do NOT use this tool to write file content (no [System.IO.File]::WriteAllText, Out-File, Set-Content, echo >, or python -c with embedded text): the quoting/escaping of multi-line content breaks repeatedly — use the write_file tool instead, which takes the raw content directly. exec_command is for running programs (node, npm, python script.py, git, opening files), not for authoring them.',
+      description: 'Run a shell command. Returns structured JSON with ok, mode, exit_code, stdout, stderr, timed_out, pid. On Windows runs in PowerShell — use PowerShell syntax (e.g. Get-ChildItem, $env:USERPROFILE, Write-Output). Use background=true for long-running servers. Use cwd to run in a sandbox subdirectory instead of cd-chaining. Use promote_to_background=true so a foreground timeout converts the process to background instead of killing it. Do NOT use this tool for operations that have a dedicated tool — those are more reliable and handle encoding/sandbox/verification for you: write a file → write_file (never WriteAllText/Out-File/Set-Content/echo >/python -c with embedded text; the quoting of multi-line content breaks repeatedly); read a file → read_file; list a directory → list_dir; delete a file/dir → delete_file (never Remove-Item/rm); create a directory → make_dir; fetch a web page → fetch_url or browser_read (never curl/Invoke-WebRequest). exec_command is for running programs (node, npm, python script.py, git, opening apps) and for file operations that have no dedicated tool (move/copy/rename, search file contents with findstr/Select-String).',
       parameters: {
         type: 'object',
         properties: {
@@ -391,6 +391,39 @@ Music mode rules:
           camera: { type: 'boolean', description: 'Explicitly open camera when mode=video; default false.' },
         },
         required: ['mode']
+      }
+    }
+  },
+
+  generate_video: {
+    type: 'function',
+    function: {
+      name: 'generate_video',
+      description: `Generate an AI video with Seedance (Volcengine Ark), or just open the dedicated right-side "AI 视频生成" panel for the user to fill in.
+action:
+  - "open": just open the panel in an empty input state so the USER can type a prompt and/or drop a reference image in the panel itself, then click 生成. Use this when the user says things like "打开AI视频生成模式/面板" without giving any content. Do NOT invent a prompt and generate on their behalf.
+  - "generate" (default): submit a generation now. Requires prompt.
+Two generation modes (action=generate):
+  - Text-to-video: pass prompt only.
+  - Image+text-to-video: pass prompt AND image_url (a publicly reachable http(s) image URL, or a data: base64 URL). The image is used as the first frame / reference.
+Behavior:
+  - This is async. The tool submits the task, opens the panel in a "generating" state, polls in the background (usually 1-5 minutes), then auto-plays the finished video. You do NOT need to poll or call it again.
+  - On success reply to the user with only a short confirmation (e.g. "在生成了"). Do not narrate the process or repeat the prompt.
+  - If the tool returns error="not_configured", relay the included guide: ask the user to send their Volcengine Ark API key so it can be auto-configured (e.g. "火山视频 <APIKEY>"), optionally with the model id / endpoint (ep-xxxx). Do not pretend to generate before it is configured.
+  - If creating the task fails because the model id is wrong, relay the hint asking the user to provide the correct Seedance model id / inference endpoint.
+Write a vivid, concrete prompt: subject, action, camera movement, lighting, style. Keep duration short (5s default) unless the user asks for longer.`,
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['open', 'generate', 'set_prompt'], description: 'open = just open the empty input panel for the user to fill in. generate (default) = submit a generation now (needs prompt). set_prompt = write a prompt into the panel\'s input box (overwrites the current draft). ONLY use set_prompt AFTER the user explicitly agrees to apply your optimized prompt — when they first ask to "优化/改写提示词" you must NOT call set_prompt; instead reply with the improved prompt in chat and let them confirm (or copy it themselves). The panel\'s current open/closed state and the user\'s live prompt draft are injected into your context under <aivideo-panel>, so you can read what they typed without asking.' },
+          prompt: { type: 'string', description: 'Video description / instruction. Required for text-to-video; also recommended for image-to-video to describe the desired motion. Not needed when action="open".' },
+          image_url: { type: 'string', description: 'Optional. A publicly reachable http(s) image URL (or data: base64 URL) used as the reference / first frame. Providing this switches to image+text-to-video.' },
+          images: { type: 'array', items: { type: 'string' }, description: 'Optional. Up to 2 image URLs (http(s) or data: base64). 1 image = image-to-video; 2 images = first-and-last-frame mode (first image = first frame, second = last frame). Takes precedence over image_url.' },
+          ratio: { type: 'string', enum: ['adaptive', '16:9', '9:16', '4:3', '3:4', '1:1', '21:9'], description: 'Aspect ratio. Default 16:9 for text-to-video. When an image is provided, prefer "adaptive" so the output keeps the input image aspect ratio.' },
+          resolution: { type: 'string', enum: ['480p', '720p', '1080p'], description: 'Output resolution, default 720p.' },
+          duration: { type: 'number', description: 'Video length in seconds, 1-15, default 5.' },
+        },
+        required: []
       }
     }
   },

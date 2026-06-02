@@ -539,6 +539,24 @@ export function formatActiveUICards(cards = []) {
   return `[Active UI cards on screen]\n${lines.join('\n')}\nUse ui_hide with the id to close a card; use ui_update to update its content.`
 }
 
+// AI 视频生成面板「感知」：把面板开关状态 + 用户正在编辑的提示词草稿贴进上下文。
+// state 来自 media.js 的 getAIVideoPanelState()。面板关闭且无草稿时不渲染（零噪声）。
+export function formatAIVideoPanel(state) {
+  if (!state || (!state.open && !state.prompt)) return ''
+  const lines = ['<aivideo-panel>']
+  lines.push(state.open ? 'AI 视频生成面板：当前已打开。' : 'AI 视频生成面板：当前已关闭。')
+  const draft = String(state.prompt || '').trim()
+  if (draft) {
+    lines.push(`用户在提示词输入框里的当前草稿："${draft}"`)
+    lines.push('如果用户让你"优化/改写提示词"，直接基于上面这段草稿改——你已经看得到它，不要再追问用户写了什么。')
+    lines.push('默认只在对话里给出改写后的版本让用户过目；不要自动覆盖输入框。只有用户明确表示"采用/就用这个"之后，才调用 generate_video(action="set_prompt", prompt="…") 把它写回输入框。用户也可以自己从你的回复里复制粘贴。')
+  } else if (state.open) {
+    lines.push('提示词输入框当前为空。')
+  }
+  lines.push('</aivideo-panel>')
+  return lines.join('\n')
+}
+
 // 任务知识库：显示完整 content + detail
 export function formatTaskKnowledge(taskKnowledge = []) {
   if (!taskKnowledge?.length) return ''

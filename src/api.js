@@ -17,6 +17,7 @@ import { restartConnector } from './social/index.js'
 // manager.js (Whisper local server) removed
 import { replaceProvider } from './providers/registry.js'
 import { persistAppState } from './capabilities/executor.js'
+import { execGenerateVideo, saveGeneratedVideo, setAIVideoPanelState } from './capabilities/tools/media.js'
 import { MinimaxProvider } from './providers/minimax.js'
 import { handleSocialWebhook, isSocialWebhookPath } from './social/webhooks.js'
 import { getClawbotQR, logoutClawbot } from './social/wechat-clawbot.js'
@@ -555,6 +556,85 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
+    // POST /aivideo/generate — 面板内“生成”按钮直连后端，绕开 LLM。
+    // body: { prompt, images?[url1,url2](data:base64/http；1 张=图生、2 张=首尾帧), image_url?(单图兼容), ratio?, resolution?, duration? }
+    // execGenerateVideo 会 emit aivideo_mode 事件并后台轮询，面板自行更新。
+    if (req.method === 'POST' && url.pathname === '/aivideo/generate') {
+      const chunks = []
+      let size = 0
+      let responded = false
+      const respond = (code, payload) => { if (responded) return; responded = true; jsonResponse(res, code, payload) }
+      req.on('data', c => {
+        size += c.length
+        if (size > 30 * 1024 * 1024) {  // 30MB 上限（含 base64 图片）
+          respond(413, { ok: false, error: '请求体过大（图片请控制在约 18MB 以内）' })
+          req.destroy()
+          return
+        }
+        chunks.push(c)
+      })
+      req.on('end', async () => {
+        if (responded) return
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'))
+          const result = await execGenerateVideo({
+            action: 'generate',
+            prompt: body.prompt,
+            images: Array.isArray(body.images) ? body.images : undefined,
+            image_url: body.image_url || body.image,
+            ratio: body.ratio,
+            resolution: body.resolution,
+            duration: body.duration,
+          })
+          const parsed = typeof result === 'string' ? JSON.parse(result) : result
+          respond(parsed.ok ? 200 : 400, parsed)
+        } catch (e) {
+          respond(400, { ok: false, error: e.message })
+        }
+      })
+      req.on('error', () => respond(400, { ok: false, error: 'request error' }))
+      return
+    }
+
+    // POST /aivideo/draft — 面板把当前「开关状态 + 提示词草稿」实时同步给后端（感知通道）。
+    // 后端只存内存状态，供注入器每轮贴进 agent 上下文。极轻量、不落库。
+    if (req.method === 'POST' && url.pathname === '/aivideo/draft') {
+      const chunks = []
+      let size = 0
+      req.on('data', c => {
+        size += c.length
+        if (size > 256 * 1024) { req.destroy(); return }  // 草稿是纯文本，256KB 足够
+        chunks.push(c)
+      })
+      req.on('end', () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'))
+          setAIVideoPanelState({ open: body.open, prompt: body.prompt })
+          jsonResponse(res, 200, { ok: true })
+        } catch (e) {
+          jsonResponse(res, 400, { ok: false, error: e.message })
+        }
+      })
+      req.on('error', () => { try { jsonResponse(res, 400, { ok: false, error: 'request error' }) } catch {} })
+      return
+    }
+
+    // POST /aivideo/save — 把生成的视频复制到「下载\AI视频生成保存的视频\日期\」
+    if (req.method === 'POST' && url.pathname === '/aivideo/save') {
+      const chunks = []
+      req.on('data', c => chunks.push(c))
+      req.on('end', () => {
+        try {
+          const body = JSON.parse(Buffer.concat(chunks).toString('utf-8'))
+          const result = saveGeneratedVideo(body.jobId)
+          jsonResponse(res, result.ok ? 200 : 400, result)
+        } catch (e) {
+          jsonResponse(res, 400, { ok: false, error: e.message })
+        }
+      })
+      return
+    }
+
     // GET /favicon.ico ? silence the browser's automatic favicon request
     if (req.method === 'GET' && url.pathname === '/favicon.ico') {
       res.writeHead(204)
@@ -635,6 +715,50 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         }
       } catch {
         res.writeHead(404); res.end('music file not found')
+      }
+      return
+    }
+
+    // GET /media/video/:filename — serve AI-generated video files from sandbox/videos (range-enabled)
+    if (req.method === 'GET' && url.pathname.startsWith('/media/video/')) {
+      const raw = url.pathname.slice('/media/video/'.length)
+      const filename = path.basename(decodeURIComponent(raw))
+      const videoDir = path.join(SANDBOX_PATH, 'videos')
+      const filePath = path.join(videoDir, filename)
+      const resolvedFile = path.resolve(filePath)
+      const resolvedDir  = path.resolve(videoDir)
+      if (!resolvedFile.startsWith(resolvedDir + path.sep) && resolvedFile !== resolvedDir) {
+        res.writeHead(403); res.end('forbidden'); return
+      }
+      const mimeMap = { '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime' }
+      const contentType = mimeMap[path.extname(filename).toLowerCase()] || 'video/mp4'
+      try {
+        const stat = fs.statSync(filePath)
+        const total = stat.size
+        const rangeHeader = req.headers.range
+        if (rangeHeader) {
+          const m = rangeHeader.match(/bytes=(\d*)-(\d*)/)
+          const start = m[1] ? parseInt(m[1]) : 0
+          const end   = m[2] ? parseInt(m[2]) : total - 1
+          res.writeHead(206, {
+            'Content-Type': contentType,
+            'Content-Range': `bytes ${start}-${end}/${total}`,
+            'Accept-Ranges': 'bytes',
+            'Content-Length': end - start + 1,
+            'Cache-Control': 'no-cache',
+          })
+          fs.createReadStream(filePath, { start, end }).pipe(res)
+        } else {
+          res.writeHead(200, {
+            'Content-Type': contentType,
+            'Content-Length': total,
+            'Accept-Ranges': 'bytes',
+            'Cache-Control': 'no-cache',
+          })
+          fs.createReadStream(filePath).pipe(res)
+        }
+      } catch {
+        res.writeHead(404); res.end('video file not found')
       }
       return
     }

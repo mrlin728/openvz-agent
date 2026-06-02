@@ -108,6 +108,16 @@ const VIDEO_MODE_BLOCK = `## Video Mode: Reply Brevity
 - If the user clearly already knows what they asked for (e.g. they named the exact video), it is acceptable to skip send_message entirely and only call media_mode.
 - Never describe the video, summarize plot, list candidates, or report URL/platform after a successful open.`
 
+// 2b) AI Video Generation —— Seedance 文生/图生视频
+const AI_VIDEO_GEN_KEYWORD_RE = /生成.{0,4}视频|做.{0,3}视频|文生视频|图生视频|ai\s*视频|视频生成|把图.{0,4}视频|图片?动起来|照片动起来|seedance|即梦|火山视频|generate.{0,6}video|text to video|image to video|make.{0,6}video/i
+const AI_VIDEO_GEN_BLOCK = `## AI Video Generation (Seedance)
+- Use the generate_video tool to create an AI video. Two modes: text-to-video (prompt only), and image+text-to-video (prompt + image_url). If the user supplied or referenced an image, pass it as image_url.
+- "打开/进入 AI 视频生成模式/面板" with NO content given → call generate_video(action="open"). That opens an empty input panel where the user types the prompt and optionally drops an image themselves, then clicks 生成. Do NOT invent a prompt and start generating for them; just confirm the panel is open in one short line.
+- It runs asynchronously: the tool opens the right-side "AI 视频生成" panel, generates in the background (~1-5 min), and auto-plays when ready. Do NOT call generate_video again to "check"; do not poll.
+- Reply brevity: after submitting, send at most a short line like "在生成了"、"好，稍等一会儿". Do not narrate steps or repeat the prompt back.
+- Not configured: if generate_video returns error="not_configured", tell the user (plainly) that AI video generation needs a Volcengine Ark (火山方舟) Seedance API key, and that they can just send it to you to auto-configure, e.g. "火山视频 <你的APIKey>"（如有特定模型ID/推理接入点 ep-xxxx 一并发来）. Do not claim a video is being generated until it is actually configured.
+- Wrong model id: if task creation fails with a model/permission error, relay that the model id is likely wrong and ask the user to resend the correct Seedance model id or inference endpoint.`
+
 // 3) WeatherCard Rules —— wttr.in 取数 + ui_show 字段映射
 const WEATHER_KEYWORD_RE = /天气|温度|气温|下雨|降雨|下雪|台风|雾霾|阴天|晴天|多云|wttr|weather/i
 const WEATHER_CARD_RULES_BLOCK = `### WeatherCard Rules
@@ -167,6 +177,9 @@ function shouldInjectMusic(userMessage) {
 }
 function shouldInjectVideo(userMessage) {
   return !!(userMessage && VIDEO_KEYWORD_RE.test(String(userMessage)))
+}
+function shouldInjectAIVideoGen(userMessage) {
+  return !!(userMessage && AI_VIDEO_GEN_KEYWORD_RE.test(String(userMessage)))
 }
 function shouldInjectWeatherCard(userMessage) {
   return !!(userMessage && WEATHER_KEYWORD_RE.test(String(userMessage)))
@@ -474,6 +487,11 @@ Always use registered components — inline-template and inline-script are not s
   // Video Mode
   if (shouldInjectVideo(userMessage)) {
     prompt += `\n\n${VIDEO_MODE_BLOCK}`
+  }
+
+  // AI Video Generation (Seedance)
+  if (shouldInjectAIVideoGen(userMessage)) {
+    prompt += `\n\n${AI_VIDEO_GEN_BLOCK}`
   }
 
   // Music Mode

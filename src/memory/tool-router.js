@@ -169,6 +169,15 @@ const IMAGE_GEN_TRIGGERS = [
   // 注：曾包含 '画图'，但常被"没说画图"等反语命中——改用更强限定的词组
   'draw', 'paint', 'generate image', 'image of', 'picture of',
 ]
+// AI 视频生成（Seedance）专用触发。不按 mmCaps gate：即使未配置 key 也暴露工具，
+// 让模型能在"未配置"时拿到 generate_video 的引导返回值去提醒用户配置（不做硬拦截）。
+const VIDEO_GEN_TRIGGERS = [
+  '生成视频', '生成个视频', '生成一段视频', '做个视频', '做段视频', '做一段视频',
+  '文生视频', '图生视频', 'ai视频', 'ai 视频', '视频生成',
+  '帮我生成视频', '用图生成视频', '把图变成视频', '让图片动起来', '让照片动起来',
+  'seedance', '即梦', '火山视频',
+  'generate video', 'text to video', 'image to video', 'make a video', 'create a video',
+]
 
 // 通用辅助：消息正文里是否含有给定触发词之一（lower-case 包含）。
 // 全部走 includes —— 中文不需要词边界，英文混进来无所谓多注入。
@@ -274,6 +283,8 @@ export function selectTools(ctx = {}) {
   if (mmCaps.includes('lyrics') && hits(body, LYRICS_TRIGGERS))    out.add(MM_GEN_TOOLS.lyrics)
   if (mmCaps.includes('music')  && hits(body, MUSIC_GEN_TRIGGERS)) out.add(MM_GEN_TOOLS.music)
   if (mmCaps.includes('image')  && hits(body, IMAGE_GEN_TRIGGERS)) out.add(MM_GEN_TOOLS.image)
+  // AI 视频生成：不 gate mmCaps，关键词命中即暴露（未配置时由工具返回值引导用户配置）
+  if (hits(body, VIDEO_GEN_TRIGGERS)) out.add('generate_video')
 
   // —— ActionLog 保活 ——
   // 上轮（或最近 10 次）调用过的工具强制带上：跨轮工作流不能因为关键词没命中就断链。

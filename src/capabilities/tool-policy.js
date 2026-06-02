@@ -46,6 +46,7 @@ const TOOL_RISK = {
   generate_lyrics: 'high',
   generate_music: 'high',
   generate_image: 'high',
+  generate_video: 'high',
   ui_register: 'high',
   set_security: 'high',
 }

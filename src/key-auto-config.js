@@ -1,7 +1,7 @@
 // 用户发送 API Key 时自动识别服务商、验证、写入配置
 // 支持 TTS（豆包、MiniMax、OpenAI、ElevenLabs、火山）和 ASR（阿里云、腾讯、讯飞）
 // 支持单条消息包含多个 key（如"百炼语音识别 sk-xxx 豆包语音发声 uuid-xxx"）
-import { setVoiceConfig, setTTSConfig } from './config.js'
+import { setVoiceConfig, setTTSConfig, setSeedanceConfig } from './config.js'
 import { streamTTS } from './voice/tts-providers.js'
 
 // 提取文本中所有候选 key 字符串（20~120 字符的字母数字 token）
@@ -273,12 +273,49 @@ async function testTTSKey(provider, streamKeys) {
   })
 }
 
+// Seedance / AI 视频生成（火山方舟 Ark）密钥识别。
+// 触发：消息里有视频生成相关关键词。可同时携带模型 ID / 推理接入点（ep-xxx）。
+// 返回 { apiKey, model? } 或 null。
+const SEEDANCE_HINT_RE = /seedance|文生视频|图生视频|ai\s*视频|视频生成|生成视频|火山.*视频|视频.*火山|方舟.*视频|即梦|doubao|dreamina|ep-[0-9a-z]/i
+// 模型 ID / 推理接入点 token 的特征。独立扫描（不受 candidate ≥20 字符限制约束），
+// 因为推理接入点（ep-xxxx）常常短于 20 字符，会被 extractCandidateKeys 漏掉。
+const SEEDANCE_MODEL_RE = /\b(ep-[0-9a-z]{6,}|doubao-[a-z0-9-]{4,}|dreamina-[a-z0-9-]{4,}|seedance-[a-z0-9-]{2,})\b/i
+
+export function detectSeedanceConfig(text) {
+  const t = String(text || '')
+  if (!SEEDANCE_HINT_RE.test(t)) return null
+
+  // 先抓模型 ID（如有）
+  const model = t.match(SEEDANCE_MODEL_RE)?.[1] || null
+
+  // apiKey = 第一个 ≥20 字符候选，且不等于模型 ID、本身不长得像模型
+  const candidates = extractCandidateKeys(t)
+  let apiKey = null
+  for (const c of candidates) {
+    if (model && c.key === model) continue
+    if (SEEDANCE_MODEL_RE.test(c.key)) continue
+    apiKey = c.key
+    break
+  }
+  // 没识别出 key → 放弃（避免把模型 ID 误当 key 写进去）
+  if (!apiKey) return null
+  return { apiKey, ...(model ? { model } : {}) }
+}
+
 // 主入口：检测并处理消息中的所有 API Key
 // 返回：
 //   { ok: true, results: [...] }  — 至少一个 key 配置成功，应静默处理（删消息、跳 LLM）
 //   { ok: false, error: '...' }   — 识别到 key 但全部验证失败，应让 LLM 告知用户
 //   null                           — 未识别到任何 key，正常流程
 export async function tryAutoConfigureKey(text, _recentContext = '') {
+  // Seedance 视频生成 key 优先识别（写入即生效，不需要网络验证；
+  // model ID 是否正确留给首次调用 generate_video 时由 Ark 报错引导）。
+  const seedance = detectSeedanceConfig(text)
+  if (seedance) {
+    setSeedanceConfig(seedance)
+    return { ok: true, hasTTS: false, service: 'video', provider: 'seedance' }
+  }
+
   const infos = detectAllKeyInfos(text)
   if (infos.length === 0) return null
 

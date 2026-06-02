@@ -20,7 +20,7 @@ import { execCommand, execKillProcess, execListProcesses } from './tools/shell.j
 import { execBrowserRead, execFetchUrl, execWebSearch } from './tools/web.js'
 import { execDowngradeMemory, execMergeMemories, execProbeMemory, execRecallMemory, execSearchMemory, execSkipConsolidation, execSkipRecognition, execUpsertMemory } from './tools/memory.js'
 import { execManageReminder } from './tools/reminders.js'
-import { execGenerateImage, execGenerateLyrics, execGenerateMusic, execMediaMode, execMusic, execSpeak } from './tools/media.js'
+import { execGenerateImage, execGenerateLyrics, execGenerateMusic, execGenerateVideo, execMediaMode, execMusic, execSpeak } from './tools/media.js'
 import { execManageRule } from './tools/rules.js'
 export { calculateNextDueAt } from './tools/reminders.js'
 export { autoSpeakForVoiceReply } from './tools/media.js'
@@ -102,6 +102,8 @@ async function executeToolUnchecked(name, args, context = {}) {
         return await execGenerateMusic(args)
       case 'generate_image':
         return await execGenerateImage(args)
+      case 'generate_video':
+        return await execGenerateVideo(args)
       case 'set_tick_interval':
         return execSetTickInterval(args)
       case 'media_mode':

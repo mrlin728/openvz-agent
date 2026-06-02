@@ -2,7 +2,7 @@ import { config, getMinimaxKey as _getMinimaxKey, getSecurity } from './config.j
 import { callLLM } from './llm.js'
 import { buildSystemPrompt, buildContextBlock, combinePromptForPreview } from './prompt.js'
 import { enqueueTurnForRecognition, configureRecognizerScheduler } from './memory/recognizer-scheduler.js'
-import { runInjector, formatMemoriesForPrompt, formatTaskKnowledge, formatPrefetchedItems, formatActiveUICards, formatTemporalRecall } from './memory/injector.js'
+import { runInjector, formatMemoriesForPrompt, formatTaskKnowledge, formatPrefetchedItems, formatActiveUICards, formatTemporalRecall, formatAIVideoPanel } from './memory/injector.js'
 import { updateFocusFrame } from './memory/focus.js'
 import { compressPoppedFrame } from './memory/focus-compress.js'
 import { runMemoryRefreshLoop } from './memory/refresh-loop.js'
@@ -23,6 +23,7 @@ import { getCustomIntervalMs, consumeTick as consumeTickerTick, getStatus as get
 import { seedSandboxOnce, seedMusicOnce, rescueDataFromInstallDir } from './paths.js'
 import { ensureSkillMemories } from './memory/seed-skills.js'
 import { loadInstalledTools } from './capabilities/marketplace/index.js'
+import { resumePendingVideoJobs, getAIVideoPanelState } from './capabilities/tools/media.js'
 import { dispatchSocialMessage } from './social/dispatch.js'
 import { startSocialConnectors } from './social/index.js'
 import { getWeatherCardProps, isWeatherQuery } from './weather.js'
@@ -951,7 +952,7 @@ async function runTurn(input, label, msg = null) {
     const agentName = getConfig('agent_name') || '小白龙'
     const entities = getKnownEntities()
     const hasActiveTask = !!state.task
-    const extraContextJoined = [presenceText, runtimeInjection.contextText, prefetchText, injection.uiSignalSummary, formatActiveUICards(injection.activeUICards)].filter(Boolean).join('\n\n')
+    const extraContextJoined = [presenceText, runtimeInjection.contextText, prefetchText, injection.uiSignalSummary, formatActiveUICards(injection.activeUICards), formatAIVideoPanel(getAIVideoPanelState())].filter(Boolean).join('\n\n')
 
     // system 只留稳定硬底线（agent_name / persona）—— 让 DeepSeek prefix cache
     // 真正命中。currentTime / existenceDesc / systemEnv / security 改走 <runtime> 段（每轮变化）。
@@ -1535,6 +1536,9 @@ async function main() {
     },
   })
   startSocialConnectors({ pushMessage, emitEvent }).catch(err => console.warn('[social] startup failed:', err.message))
+
+  // 恢复重启前未完成的 AI 视频生成任务（继续轮询，避免面板永远卡“生成中”）
+  try { resumePendingVideoJobs() } catch (err) { console.warn('[aivideo] resume failed:', err.message) }
 
   // Start TUI
   startTUI('ID:000001')

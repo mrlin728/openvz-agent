@@ -135,8 +135,9 @@ const createConsole = () => `
     <div id="chat-messages"></div>
   </div>
   <div id="input-row">
+    <div id="slash-menu" class="slash-menu" role="listbox" aria-label="命令" hidden></div>
     <span class="prompt-mark">▸</span>
-    <input id="msg-input" type="text" placeholder="向 Longma 发送消息…" autocomplete="off">
+    <input id="msg-input" type="text" placeholder="向 Longma 发送消息…（输入 / 调出命令）" autocomplete="off">
     <button id="send-btn" type="button">发送</button>
   </div>
 </section>
@@ -454,7 +455,7 @@ const createSettingsModal = () => `
             </div>
           </div>
 
-          <div class="settings-section">
+          <div class="settings-section" id="settings-tts-section">
             <div class="settings-section-label">语音合成（TTS）</div>
             <p class="settings-hint">用语音发消息时，Agent 回复会自动转为语音播放。首选推荐豆包语音合成 2.0（https://console.volcengine.com/speech/new/），也支持 MiniMax、OpenAI、ElevenLabs、火山引擎。</p>
             <div class="settings-row">
@@ -719,6 +720,69 @@ const createVideoPanel = () => `
 </div>
 `;
 
+const createAIVideoPanel = () => `
+<div class="aivideo-panel" id="aivideo-panel">
+  <div class="media-stage-head">
+    <div class="media-stage-title">AI 视频生成</div>
+    <div class="aivideo-head-spacer"></div>
+    <button class="aivideo-new-btn" id="aivideo-new-btn" type="button" title="清空输入">+ 新视频</button>
+    <button class="aivideo-exit-btn" id="aivideo-exit-btn" type="button" title="关闭 (Esc)">×</button>
+  </div>
+
+  <!-- 区1 生成栏 -->
+  <div class="aivideo-queue-wrap">
+    <div class="aivideo-queue-cap">生成栏 · QUEUE</div>
+    <div class="aivideo-queue" id="aivideo-queue"></div>
+  </div>
+
+  <!-- 区2 播放区 -->
+  <div class="aivideo-player">
+    <div class="aivideo-stage is-empty" id="aivideo-stage">
+      <video id="aivideo-feed" class="aivideo-feed" playsinline controls hidden></video>
+      <button class="aivideo-dl" id="aivideo-dl" type="button" hidden>↓ 下载</button>
+      <div class="aivideo-stage-empty" id="aivideo-stage-empty">
+        <svg class="aivideo-empty-icon" viewBox="0 0 48 48" fill="none" aria-hidden="true">
+          <rect x="6" y="9" width="36" height="30" rx="4" stroke="currentColor" stroke-width="2"/>
+          <circle cx="16.5" cy="19" r="3.5" stroke="currentColor" stroke-width="2"/>
+          <path d="M9 33l9-9 7 7 6-5 8 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <div class="aivideo-empty-text">暂无资源</div>
+        <div class="aivideo-empty-sub">在下方输入提示词或加图，点“生成”</div>
+      </div>
+    </div>
+    <div class="aivideo-player-meta" id="aivideo-player-meta"></div>
+  </div>
+
+  <!-- 区3 输入区 -->
+  <div class="aivideo-composer">
+    <div class="aivideo-dropzone" id="aivideo-dropzone"></div>
+    <div class="aivideo-modebar">
+      <span class="aivideo-modetag" id="aivideo-modetag">文生视频</span>
+      <span class="aivideo-modehint" id="aivideo-modehint">不加图 = 文生视频 · 1 张 = 图生视频 · 2 张 = 首尾帧</span>
+    </div>
+    <textarea id="aivideo-prompt-input" class="aivideo-prompt-input" rows="1"
+      placeholder="描述你想要的画面、动作、镜头运动、光线、风格…（Ctrl+Enter 生成）"></textarea>
+    <div class="aivideo-controls">
+      <select id="aivideo-ratio" title="画面比例">
+        <option value="adaptive">适配图片</option>
+        <option value="16:9" selected>16:9</option><option value="9:16">9:16</option><option value="1:1">1:1</option>
+        <option value="4:3">4:3</option><option value="3:4">3:4</option><option value="21:9">21:9</option>
+      </select>
+      <select id="aivideo-resolution" title="分辨率">
+        <option value="480p">480p</option><option value="720p" selected>720p</option><option value="1080p">1080p</option>
+      </select>
+      <select id="aivideo-duration" title="时长（秒）">
+        <option value="5" selected>5s</option><option value="10">10s</option><option value="15">15s</option>
+      </select>
+      <button type="button" class="aivideo-submit" id="aivideo-submit">生成</button>
+    </div>
+    <div class="aivideo-compose-err" id="aivideo-compose-err" hidden></div>
+  </div>
+
+  <input type="file" id="aivideo-file-input" accept="image/*" hidden>
+</div>
+`;
+
 const createMusicPanel = () => `
 <div class="music-panel" id="music-panel">
   <div class="media-stage-head">
@@ -799,6 +863,7 @@ export function createBrainUiMarkup() {
     createTooltip(),
     createSettingsModal(),
     createVideoPanel(),
+    createAIVideoPanel(),
     createMusicPanel(),
     createImagePanel(),
     createHotspotPanel(),
