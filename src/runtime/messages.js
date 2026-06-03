@@ -1,4 +1,4 @@
-import { normalizeChannel } from './channel.js'
+import { normalizeChannel, isSystemSignalRow } from './channel.js'
 
 // P0-1：把 row.focus_topic 渲染成短标签贴在 marker 上，让 LLM 在做代词消解时看到话题边界。
 // 空 topic / SYSTEM 行不渲染。
@@ -35,7 +35,8 @@ export function formatConversationMessage(row, currentMsg = null, prevChannel = 
   const rawChannel = row.channel || currentMsg?.channel || ''
   const normalizedChannel = normalizeChannel(rawChannel)
 
-  const isSystemSignal = row.from_id === 'SYSTEM' || normalizedChannel === 'SYSTEM' || rawChannel === 'APP_SIGNAL' || rawChannel === 'REMINDER'
+  // 保留 currentMsg 回退语义：row.channel 为空时回退到 currentMsg?.channel（同 rawChannel）。
+  const isSystemSignal = isSystemSignalRow(row, currentMsg?.channel)
 
   if (isSystemSignal) {
     const channelLabel = rawChannel ? ` · ${rawChannel}` : ''
@@ -188,7 +189,7 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
   for (const row of rows) {
     if (!row?.content) continue
     const rowNorm = normalizeChannel(row.channel || '')
-    const isSystemRow = row.from_id === 'SYSTEM' || rowNorm === 'SYSTEM' || row.channel === 'APP_SIGNAL' || row.channel === 'REMINDER'
+    const isSystemRow = isSystemSignalRow(row)
     const isCurrent = !!msg
       && row.role === 'user'
       && row.from_id === msg.fromId

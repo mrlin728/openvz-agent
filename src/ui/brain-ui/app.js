@@ -3574,6 +3574,27 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
   setInterval(tickTimers,500);
   function removeJob(id){ jobs=jobs.filter(function(j){ return j.id!==id; }); if(selId===id){ selId=null; clearPlayer(); } renderQueue(); }
 
+  // —— 重建历史：从后端拉已完成视频（newest-first），合并进 jobs。 ——
+  // 修复「面板关闭重开 / app 重启后队列空了」：jobs[] 原本纯内存，重载即丢，
+  // 而视频其实还在磁盘。这里按 id 去重，不覆盖本会话进行中的瓦片。
+  function hydrateHistory(){
+    fetch(API+"/aivideo/history").then(function(r){ return r.json(); }).then(function(d){
+      if(!d||!d.ok||!Array.isArray(d.jobs)) return;
+      var changed=false;
+      d.jobs.forEach(function(h){
+        if(!h||!h.id) return;
+        var ex=jobById(h.id);
+        if(ex){
+          if(ex.status!=="done"&&h.videoUrl){ ex.status="done"; ex.videoUrl=h.videoUrl; ex.mode=ex.mode||h.mode; ex.prompt=ex.prompt||h.prompt; ex.res=ex.res||h.res; ex.ratio=ex.ratio||h.ratio; ex.dur=ex.dur||h.dur; changed=true; }
+          return;
+        }
+        jobs.push({ id:h.id, status:"done", videoUrl:h.videoUrl, mode:h.mode, prompt:h.prompt, res:h.res, ratio:h.ratio, dur:h.dur });
+        changed=true;
+      });
+      if(changed) renderQueue();
+    }).catch(function(){});
+  }
+
   // —— 播放区 ——
   function clearPlayer(){ try{ feed.pause(); }catch(e){} feed.removeAttribute("src"); if(feed.load) feed.load(); feed.hidden=true; dlBtn.hidden=true; stageEmpty.hidden=false; if(stage) stage.classList.add("is-empty"); playerMeta.textContent=""; }
   function loadPlayer(j){
@@ -3655,6 +3676,7 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
   // —— 打开/关闭 ——
   function openPanel(configured){
     setActive(true);
+    hydrateHistory();   // 每次打开都拉一次历史，重建之前生成的视频队列
     if(configured===false){ composeErr.textContent="尚未配置火山方舟（Seedance）API Key —— 把 key 发给小白龙即可（例如「火山视频 你的APIKey」），配置后就能在这里生成。"; composeErr.hidden=false; }
     else composeErr.hidden=true;
     setTimeout(function(){ try{ promptInput.focus(); }catch(e){} },60);
@@ -3695,4 +3717,5 @@ initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
   window.bailongmaAIVideo={ handle:handle, open:openPanel, close:closePanel };
 
   renderDropzone(); updateMode(); renderQueue(); autoGrow();
+  hydrateHistory();   // 初始化即重建一次（覆盖 app 重启/渲染进程重载后的历史恢复）
 })();

@@ -629,6 +629,30 @@ body {
   flex-shrink: 0;
 }
 
+/* 展开按钮：默认折叠时是 ▸，展开后旋转 90° 朝下（▾）。
+   始终占 9px 一列，保证有/无 detail 的行图标对齐。 */
+.line-tool .tool-chevron {
+  flex-shrink: 0;
+  width: 9px;
+  text-align: center;
+  font-size: 9px;
+  line-height: 1;
+  opacity: 0.45;
+  transition: transform 0.15s ease, opacity 0.15s ease;
+}
+
+.line-tool.expandable {
+  cursor: pointer;
+}
+
+.line-tool.expandable:hover .tool-chevron {
+  opacity: 0.85;
+}
+
+.line-tool.expanded .tool-chevron {
+  transform: rotate(90deg);
+}
+
 .line-tool .tool-sep {
   flex-shrink: 0;
   opacity: 0.32;
@@ -678,6 +702,10 @@ body {
   background: rgba(224, 120, 120, 0.08);
 }
 
+.line-tool-detail.collapsed {
+  display: none;
+}
+
 .line-tool-detail {
   font-size: 10.5px;
   color: var(--ink2);
@@ -718,9 +746,11 @@ body {
 .line-thinking .dot:nth-child(3) { animation-delay: 0.3s; }
 .line-thinking .dot:nth-child(4) { animation-delay: 0.45s; }
 
-.line-thinking.done .dot {
-  animation: none;
-  opacity: 0.25;
+/* 思考结束后不再保留那一行小点：动画只在思考进行中有意义，
+   完成后头部已经切到"思考完成"，残留的点阵纯属噪声。多步轮次里
+   每次 stream_start→stream_end 都会留一行，叠起来就是"那么多行小点"。 */
+.line-thinking.done {
+  display: none;
 }
 
 @keyframes think-dot {

@@ -8,6 +8,7 @@ import { compressPoppedFrame } from './memory/focus-compress.js'
 import { runMemoryRefreshLoop } from './memory/refresh-loop.js'
 import { startConsolidationLoop } from './memory/consolidation-loop.js'
 import { runRuntimeInjector } from './context/runtime-injector.js'
+import { selectContextSections } from './context/section-gate.js'
 import { getDB, getConfig, setConfig, getKnownEntities, getOrInitBirthTime, insertConversation, insertMemory, getRecentConversationPartners, getDueReminders, markReminderFired, advanceReminderDueAt, getNextPendingReminder, getMemoryCount, getRecentConversationTimeline, loadFocusStack, saveFocusStack, setCurrentFocusTopic, updateUserMessageFocusTopic, insertActionLog } from './db.js'
 import { calculateNextDueAt, autoSpeakForVoiceReply, detectOpenFollowupQuestion } from './capabilities/executor.js'
 import { popMessage, hasMessages, hasUserMessages, getQueueSnapshot, setInterruptCallback, requeueMessage, pushMessage } from './queue.js'
@@ -38,6 +39,7 @@ import { tryAutoConfigureKey } from './key-auto-config.js'
 import { PRIMARY_USER_ID, formatPresenceForPrompt, normalizeChannel } from './identity.js'
 import { truncateToolResultForUI } from './runtime/tool-result-preview.js'
 import { buildLLMMessages } from './runtime/messages.js'
+import { parseMarkers } from './runtime/markers.js'
 
 // On first launch, copy sandbox seed files from the resource directory to the user data directory (Electron install)
 seedSandboxOnce()
@@ -429,7 +431,10 @@ export function buildToolContext({ currentTargetId = null, conversationWindow = 
   }
 
   const unique = [...new Set(visibleTargetIds.filter(Boolean))]
-  return { allowedTargetIds: unique, visibleTargetIds: unique }
+  // currentTargetId 必须回传：工具执行层（llm.js 的耗时工具即时回应 ack、send_message 协议兜底）
+  // 都靠 toolContext.currentTargetId 找"当前该回复谁"。早先只用它算 visibleTargetIds 却没放回
+  // 返回对象，导致 toolContext.currentTargetId 恒为 undefined —— ack 不发、fallback 投递也拿不到目标。
+  return { currentTargetId: currentTargetId || null, allowedTargetIds: unique, visibleTargetIds: unique }
 }
 
 function buildToolContextForProcess(msg, injection) {
@@ -1000,7 +1005,30 @@ async function runTurn(input, label, msg = null) {
       selfPerception: injection.selfPerception || null,
       selfSnapshot: injection.selfSnapshot || null,
     }
-    let contextBlock = buildContextBlock(baseContextArgs)
+
+    // ① 统一相关度门（动态上下文记忆池 / 少即是强：排除导向的精细化管理）。
+    // 在 buildContextBlock 渲染之前，对"几乎常驻但常无关"的 section 做相关度门控 + 全段埋点。
+    // 参照系 = 本轮 user 消息正文 + 当前焦点 topic（编排器已蒸馏的"在关注什么"）。
+    // 参照系信号不足时 selectContextSections 内部会自动跳过门控、保留全部（守连续感红线）。
+    const focusTopicWords = Array.isArray(state.focusStack) && state.focusStack.length
+      ? (state.focusStack[state.focusStack.length - 1]?.topic || []).join(' ')
+      : ''
+    const referenceFrame = [msg?.content || input || '', focusTopicWords].filter(Boolean).join(' ')
+    const gateResult = selectContextSections(baseContextArgs, {
+      referenceFrame,
+      enabled: !state.sectionGateDisabled,
+    })
+    emitEvent('context_section_gate', { audit: gateResult.audit, meta: gateResult.meta })
+    // 埋点即时可见：门控真正跑过的轮次，打一行全段相关度摘要（measure-only 的分数也看得到，
+    // 攒分布数据用）。* 标记本可被剔除但当前 measure-only 放行的段——它们是后续 flip enforce 的候选。
+    if (gateResult.meta.gated && gateResult.audit.length > 0) {
+      const summary = gateResult.audit
+        .map(a => `${a.section}=${a.score}${a.dropped ? '✂' : (a.enforce ? '' : (a.hits === 0 ? '*' : ''))}`)
+        .join(' ')
+      console.log(`[排除层] ${summary} | 参照系="${gateResult.meta.referenceFrame}"`)
+    }
+
+    let contextBlock = buildContextBlock(gateResult.args)
 
     // P0-1：把本轮焦点 topic 字符串传给 buildLLMMessages，用于：
     //   - conversationWindow 每条消息 marker 上的 topic 标签
@@ -1056,8 +1084,9 @@ async function runTurn(input, label, msg = null) {
           }
           const enrichedMemoriesText = memoriesText + '\n\n' + extraParts.join('\n\n')
           // Rebuild only the context block — system stays stable so prompt cache survives.
+          // 用 gateResult.args（过门后的）而非原始 baseContextArgs，让排除层的剔除在 refresh 重建里也保留。
           contextBlock = buildContextBlock({
-            ...baseContextArgs,
+            ...gateResult.args,
             memories: enrichedMemoriesText,
             roundInfo: { round: refreshResult.roundsRun },
           })
@@ -1101,11 +1130,16 @@ async function runTurn(input, label, msg = null) {
         } catch {
           ok = !/^(错误|请求失败|执行失败|命令超时|命令执行失败|error|failed|execution failed|command timed out)/.test(resultText.trim())
         }
+        // callLLM 的协议兜底会用 __fallback 标记它代为投递的那次 send_message，
+        // 让下方遥测能区分"模型自己发的"与"runtime 兜底发的"。该标记不进 UI 事件。
+        const isFallbackDelivery = !!(args && args.__fallback)
+        const cleanArgs = isFallbackDelivery ? { ...args } : args
+        if (isFallbackDelivery) delete cleanArgs.__fallback
         // 截断策略：保证 JSON 仍可解析，否则前端格式化器会回退展示原始 JSON 文本。
         // 优先压缩 stdout/stderr/content/snippet 等长字段，再整体 stringify，而非粗暴 slice。
         const resultForEvent = truncateToolResultForUI(parsed, resultText)
-        emitEvent('tool_call', { name, args, result: resultForEvent, ok })
-        toolCallLog.push({ name, args, result: resultText.slice(0, 500), ok })
+        emitEvent('tool_call', { name, args: cleanArgs, result: resultForEvent, ok })
+        toolCallLog.push({ name, args: cleanArgs, result: resultText.slice(0, 500), ok, fallback: isFallbackDelivery })
         // 注：send_message 的 conversations 写入已由 executor.js 内统一处理（带 channel + external_party_id）
         // 这里仅处理语音输入的 TTS 自动回放
         if (name === 'send_message' && args?.content && isVoiceChannel(msg?.channel)) {
@@ -1130,7 +1164,7 @@ async function runTurn(input, label, msg = null) {
   } catch (err) {
     if (err.name === 'AbortError') {
       console.log('[system] LLM processing interrupted (new message arrived)')
-      llmResult = { content: '', toolResult: null, aborted: true }
+      llmResult = { content: '', toolResult: null, aborted: true, delivered: false }
     } else {
       handleLLMFailure(err, label, msg)
       finishTurn()
@@ -1157,54 +1191,48 @@ async function runTurn(input, label, msg = null) {
   finishTurn(response)
 
   // User messages must not fail silently: if the model generated a response but forgot to call send_message,
-  // the runtime delivers it as a fallback; TICK/proactive messages must still go through explicit tool calls.
-  // 判断"是否漏了最终回复"必须看**最后一个**工具调用是不是 send_message，而不是"本轮是否出现过"。
-  // 否则 [send_message("好，我查一下"), web_fetch, read_file] 这种"前置旁白 + 真正干活"链条会绕过兜底，
-  // 模型在最后一步没补刀时直接静默退场——和 llm.js 内 sentMessage 同源的反模式，
-  // 参见 lessons-bailongma-silent-exit。
-  const lastToolCall = toolCallLog[toolCallLog.length - 1]
-  if (msg && msg.fromId && lastToolCall?.name !== 'send_message') {
-    // 仅剥离运行时协议标记（这些是 runtime 解析锚点，不是行为约束）。
-    // 内容本身按原文兜底投递，不做客套话裁剪 / 行去重 / meaning-first 改写。
-    const fallbackContent = response
-      .replace(/<think>[\s\S]*?<\/think>/gi, '')
-      .replace(/\[RECALL:\s*.+?\]/g, '')
-      .replace(/\[SET_TASK:\s*[\s\S]+?\]/g, '')
-      .replace(/\[CLEAR_TASK\]/g, '')
-      .replace(/\[UPDATE_PERSONA:\s*[\s\S]+?\]/g, '')
-      .trim()
-
-    if (fallbackContent) {
-      const timestamp = nowTimestamp()
-      console.warn(`[protocol fallback] Model did not call send_message — delivering response body to ${msg.fromId}`)
-      if (isVoiceChannel(msg.channel)) autoSpeakForVoiceReply(fallbackContent)
-      deliverFallbackReply(msg, fallbackContent, timestamp)
-      toolCallLog.push({
-        name: 'send_message',
-        args: { target_id: msg.fromId, content: fallbackContent },
-        result: 'fallback delivered from plain response',
-      })
-      emitEvent('protocol_violation', {
-        label,
-        reason: 'missing_send_message_fallback_delivered',
-        fromId: msg.fromId,
-        content: fallbackContent.slice(0, 500),
-      })
-    } else {
-      console.warn(`[protocol violation] Model did not call send_message and there is no response body to fall back on. from=${msg.fromId}`)
-      emitEvent('protocol_violation', {
-        label,
-        reason: 'missing_send_message',
-        fromId: msg.fromId,
-        content: response.slice(0, 500),
-      })
+  // the runtime delivers it as a fallback. **单一权威**：投递这件事现在完全由 callLLM 负责——
+  //   callLLM 在 mustReply && !delivered && 有可投递文本时，直接走真正的 send_message 执行器
+  //   （executeTool）代为投递，从而复用 executor 的去重 / open_question / social 派发，并把
+  //   action_log 标成 source:'fallback'（不变量 #8）。投递成功后 llmResult.delivered=true。
+  // 因此 index.js 不再从 toolCallLog 末项二次推导"是否已回复"，也不再手工 emit+dispatch+insert，
+  //   这里只剩遥测：根据 callLLM 返回的权威 delivered 信号区分"兜底投出了"与"完全无可投递文本"。
+  //   silentSignal 轮 callLLM 内部已守卫绝不投递（不变量 #1），这里也用同一守卫跳过遥测噪声。
+  if (msg && msg.fromId && !silentSignal) {
+    const lastToolCall = toolCallLog[toolCallLog.length - 1]
+    // "模型自己发的最终回复" = 末项是 send_message 且不是 runtime 兜底打的标记。
+    //   兜底投递虽然也会在 toolCallLog 留下一条 send_message（带 fallback:true），但那不算模型遵守协议。
+    const modelSentExplicitly = lastToolCall?.name === 'send_message' && !lastToolCall?.fallback
+    if (!modelSentExplicitly) {
+      if (llmResult.delivered) {
+        // callLLM 的协议兜底已经真正投递（含语音 TTS / 社交派发 / 去重 / source:'fallback' 落库）。
+        //   模型违反了"回复=调 send_message"协议但被 runtime 兜底救回——记一条遥测便于观测违规率。
+        console.warn(`[protocol fallback] Model did not call send_message — callLLM delivered the response body to ${msg.fromId}`)
+        emitEvent('protocol_violation', {
+          label,
+          reason: 'missing_send_message_fallback_delivered',
+          fromId: msg.fromId,
+          content: response.slice(0, 500),
+        })
+      } else {
+        // 既没显式 send_message，callLLM 也没能兜底投递（无可投递正文 / 被中止 等）→ 纯遥测。
+        console.warn(`[protocol violation] Model did not call send_message and runtime had nothing deliverable to fall back on. from=${msg.fromId}`)
+        emitEvent('protocol_violation', {
+          label,
+          reason: 'missing_send_message',
+          fromId: msg.fromId,
+          content: response.slice(0, 500),
+        })
+      }
     }
   }
 
+  // 协议标记解析：单一真相源 src/runtime/markers.js（只解析，副作用留在下方原地）。
+  const markers = parseMarkers(response)
+
   // 4. Detect [RECALL: ...]
-  const recallMatch = response.match(/\[RECALL:\s*(.+?)\]/)
-  if (recallMatch) {
-    state.prev_recall = recallMatch[1]
+  if (markers.recall !== null) {
+    state.prev_recall = markers.recall
     console.log(`[system] Recall requested: ${state.prev_recall}`)
     emitEvent('recall_requested', { query: state.prev_recall })
   } else {
@@ -1212,23 +1240,21 @@ async function runTurn(input, label, msg = null) {
   }
 
   // 5. Detect [UPDATE_PERSONA: ...]
-  const personaMatch = response.match(/\[UPDATE_PERSONA:\s*([\s\S]+?)\]/)
-  if (personaMatch) {
-    const newPersona = personaMatch[1].trim()
+  if (markers.updatePersona !== null) {
+    const newPersona = markers.updatePersona.trim()
     setConfig('persona', newPersona)
     console.log('[system] Persona updated')
     emitEvent('persona_updated', { persona: newPersona.slice(0, 200) })
   }
 
   // 6. Detect [SET_TASK: ...] / [CLEAR_TASK]
-  const setTaskMatch = response.match(/\[SET_TASK:\s*([\s\S]+?)\]/)
-  if (setTaskMatch) {
-    state.task = setTaskMatch[1].trim()
+  if (markers.setTask !== null) {
+    state.task = markers.setTask.trim()
     setConfig('current_task', state.task)
     console.log(`[system] Task set: ${state.task}`)
     emitEvent('task_set', { task: state.task })
   }
-  if (/\[CLEAR_TASK\]/.test(response)) {
+  if (markers.clearTask) {
     const clearedTask = state.task
     console.log(`[system] Task completed: ${clearedTask}`)
     emitEvent('task_cleared', { task: clearedTask })
@@ -1269,9 +1295,9 @@ async function runTurn(input, label, msg = null) {
 
   // 6. Recognizer: split think block and response body, pass full experience.
   //    Runs in the background — does not block the next message/TICK.
-  const thinkMatch = response.match(/<think>([\s\S]*?)<\/think>/i)
+  const thinkMatch = response.match(/<think(?:ing)?>([\s\S]*?)<\/think(?:ing)?>/i)
   const jarvisThink = thinkMatch ? thinkMatch[1].trim() : ''
-  const jarvisText = response.replace(/<think>[\s\S]*?<\/think>/gi, '').trim()
+  const jarvisText = response.replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '').trim()
 
   // Silent tick with no tool calls = nothing happened worth remembering; skip LLM call entirely.
   if (isTick && toolCallLog.length === 0 && !jarvisText) {

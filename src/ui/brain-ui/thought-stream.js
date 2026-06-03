@@ -665,15 +665,31 @@ export class ThoughtStream {
     }
 
     toolEl.appendChild(statusSpan);
-    this.curLine.appendChild(toolEl);
+
+    // 展开按钮：始终占一列保证图标对齐，仅当本行有 detail 时填充 ▸ 并可点击。
+    // 默认折叠——工具行只展示"大概"（图标+名称+对象+状态），点击整行展开 detail，
+    // ▸ 旋转成 ▾（向下）。再点收起。
+    const chevron = document.createElement("span");
+    chevron.className = "tool-chevron";
+    toolEl.insertBefore(chevron, toolEl.firstChild);
 
     const detailText = this.formatToolDetail(name, args, resultStr);
+    let detail = null;
     if (detailText) {
-      const detail = document.createElement("div");
-      detail.className = "line-tool-detail";
+      chevron.textContent = "▸";
+      toolEl.classList.add("expandable");
+      detail = document.createElement("div");
+      detail.className = "line-tool-detail collapsed";
       detail.textContent = detailText;
-      this.curLine.appendChild(detail);
+      toolEl.addEventListener("click", () => {
+        const open = toolEl.classList.toggle("expanded");
+        detail.classList.toggle("collapsed", !open);
+        if (open) this.scrollToLatest();
+      });
     }
+
+    this.curLine.appendChild(toolEl);
+    if (detail) this.curLine.appendChild(detail);
 
     this.scrollToLatest();
     this.lastToolEl = null;
@@ -699,6 +715,11 @@ export class ThoughtStream {
     statusSpan.className = `tool-status ${statusCls}`;
     statusSpan.textContent = this.toolFailed ? "已结束" : "完成";
 
+    // 空 chevron 占位，让收尾行与上面的工具行图标对齐（本行不可展开）。
+    const chevron = document.createElement("span");
+    chevron.className = "tool-chevron";
+
+    toolEl.appendChild(chevron);
     toolEl.appendChild(iconSpan);
     toolEl.appendChild(nameSpan);
     toolEl.appendChild(statusSpan);

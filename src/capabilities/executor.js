@@ -115,6 +115,8 @@ async function executeToolUnchecked(name, args, context = {}) {
       case 'person_card_mode':
         return execPersonCardMode(args)
       case 'music':
+        // 注意：放歌/搜索等耗时工具的"在找…"即时回应已统一在 llm.js 工具循环（ackSent）里发，
+        // 覆盖所有耗时工具且保证一个 turn 只应一声，这里不再单独发，避免重复两条。
         return await execMusic(args)
       case 'schedule_reminder':
       case 'manage_reminder':

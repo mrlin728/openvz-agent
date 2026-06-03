@@ -1,7 +1,7 @@
 {
   "name": "bailongma",
   "productName": "Bailongma",
-  "version": "2.1.281",
+  "version": "2.1.300",
   "description": "A continuously running digital consciousness framework",
   "type": "module",
   "main": "electron/main.cjs",
@@ -19,6 +19,7 @@
     "postinstall": "electron-builder install-app-deps",
     "test:rule-context": "electron ./src/test-rule-context.js",
     "test:relevance": "electron ./src/test-relevance-selection.js",
+    "test:section-gate": "node ./src/test-section-gate.js",
     "smoke:tools": "node scripts/smoke-tools.mjs",
     "smoke:brain-ui": "node scripts/smoke-brain-ui.mjs",
     "smoke:social": "node scripts/smoke-social.mjs"
@@ -111,3 +112,4 @@
     ]
   }
 }
+

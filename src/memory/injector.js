@@ -1,10 +1,8 @@
 import {
-  searchMemories,
   getActiveConstraints,
   getTaskKnowledge,
   getPersonMemory,
   getMemoriesByEntity,
-  getMemoriesByDateRange,
   getRecentConversation,
   getRecentConversationTimeline,
   getRecentActionLogs,
@@ -13,262 +11,42 @@ import {
   markUISignalsConsumed,
   getConfig,
   insertRecallAudit,
+  searchMemories,
 } from '../db.js'
 import { getActiveUICards } from '../events.js'
 import { getInstalledToolNames } from '../capabilities/marketplace/index.js'
 import { PRIMARY_USER_ID } from '../identity.js'
 import { extractKeywords } from './keywords.js'
-import { parseTemporalHints, stripTemporalWords } from './temporal-parser.js'
+import { stripTemporalWords } from './temporal-parser.js'
 import { selectTools } from './tool-router.js'
 import { computeSelfPerception, computeSelfSnapshot } from './self-perception.js'
 
+// runInjector 内部用到的检索/选择/解析原语（已拆到 ./injector-retrieval.js）
+import {
+  parseMessageInput,
+  searchRelevantMemories,
+  deduplicateMemories,
+  selectContextMemories,
+  gatherTemporalRecall,
+} from './injector-retrieval.js'
+// runInjector 内部用到的渲染函数（已拆到 ./injector-format.js）
+import { summarizeUISignals } from './injector-format.js'
+
+// —— 对外门面：保持 injector.js 作为统一入口，原有 import 路径不变 ——
 // 旧 import 路径兼容：focus.js / 其他模块也能从 injector 拿到 extractKeywords
 export { extractKeywords }
+export { selectContextMemories }
+export { searchAdditionalMemories } from './injector-retrieval.js'
+export {
+  formatTemporalRecall,
+  formatMemoriesForPrompt,
+  formatPrefetchedItems,
+  formatActiveUICards,
+  formatAIVideoPanel,
+  formatTaskKnowledge,
+} from './injector-format.js'
 
 const L2_CONTEXT_HOURS = 24 * 7
-
-function summarizeUISignals(signals = []) {
-  if (!signals.length) return ''
-  const now = Date.now()
-  const lines = signals.map(s => {
-    const age = Math.max(0, Math.round((now - s.ts) / 1000))
-    let payload = {}
-    try { payload = JSON.parse(s.payload || '{}') } catch {}
-    const target = s.target ? ` (${s.target})` : ''
-    let desc = s.type
-    if (s.type === 'card.mounted')        desc = `Card finished mounting${target}`
-    else if (s.type === 'card.dismissed') desc = `User dismissed the card${target} (${payload.by || 'unknown'}, dwell ${Math.round((payload.dwell_ms||0)/1000)}s)`
-    else if (s.type === 'card.dwell')     desc = `Card dwell ${Math.round((payload.dwell_ms||0)/1000)}s${target}`
-    else if (s.type === 'card.action')    desc = `User acted on card: ${payload.action || ''}${target}`
-    else if (s.type === 'card.error')     desc = `Card error: ${payload.message || ''}${target}`
-    return `- ${age}s ago: ${desc}`
-  })
-  return `UI behavior from the past minute. This is context only; do not speak proactively just because of it:\n${lines.join('\n')}`
-}
-
-// 消息格式解析
-// 格式：[ID:xxxxxx] 2026-04-13 10:00:00 [渠道] 内容
-// 或：  TICK 2026-04-13-10:00:00
-function parseMessageInput(message) {
-  if (/^TICK\s/i.test(message.trim())) {
-    return { isTick: true, senderId: null, messageBody: '' }
-  }
-  const match = message.match(/^\[([^\]]+)\]\s*[\d\-T:+]+\s*\[[^\]]*\]\s*(.*)$/s)
-  return {
-    isTick: false,
-    senderId: match ? match[1] : null,
-    messageBody: match ? match[2].trim() : message,
-  }
-}
-
-// 桶内重排：salience >= 4 的提到前面（按 salience 高到低），
-// 同 boost 组内 timestamp 距今超过 365 天的下沉到该组末尾，
-// 其余维持调用方传入的原顺序（JS Array.prototype.sort 在 ES2019+ 是 stable 的）
-function rerankByImportance(memories) {
-  if (!Array.isArray(memories) || memories.length === 0) return memories
-  const now = Date.now()
-  const isStale = (m) => {
-    const t = m.timestamp ? new Date(m.timestamp).getTime() : NaN
-    if (!Number.isFinite(t)) return false
-    return (now - t) / 86400000 > 365
-  }
-  const boostOf = (m) => {
-    const s = Number(m.salience) || 0
-    return s >= 4 ? s : 0
-  }
-  return [...memories].sort((a, b) => {
-    const ba = boostOf(a), bb = boostOf(b)
-    if (ba !== bb) return bb - ba          // 高 boost 在前
-    const sa = isStale(a) ? 1 : 0, sb = isStale(b) ? 1 : 0
-    if (sa !== sb) return sa - sb           // 同 boost 内陈旧（>365天）下沉
-    return 0                                // 其余维持原顺序（stable sort）
-  })
-}
-
-// 动态上下文记忆池 ·「少即是强」选择器（取代旧的 rerankByImportance(merged).slice(cap)）
-//
-// 旧逻辑的病灶：searchRelevantMemories 已按相关度排好序（focus FTS → 向量 → context FTS），
-// senderMemories 接在其后；但随后 rerankByImportance 按 salience 把整列重排，会把"重要但跟
-// 当前问题无关"的记忆（尤其 senderMemories 这种纯 entity 召回、对当前 query 零相关度的条目）
-// 顶到 context 前排 → 掺杂不相关信息 → 上下文焦虑 → 输出质量下降。
-//
-// 新逻辑：
-//   - 保留 candidates 既有的相关度序（不再按 salience 整体重排）。
-//   - 只给高 salience 锚（≥4，如硬约束/身份）留一条窄保留道：cap 之外的锚最多救回 anchorLane 条，
-//     替换掉 cap 内末尾（相关度最弱）的位置，确保常驻锚不被挤掉，但不喧宾夺主。
-//   - ftsFloor：相关度地板（基于 db.searchMemories 带出的 bm25 _ftsScore，越小越相关；
-//     丢弃 _ftsScore > ftsFloor 的弱命中，即使 cap 还有空位）。Phase 1 默认 null=关闭——
-//     先用现有 recall_audit 回看相关度分布，再于 Phase 2 标定阈值开启。无分的候选（向量/LIKE
-//     兜底/entity 召回）一律豁免地板。
-export function selectContextMemories(candidates, { cap, anchorLane = 2, ftsFloor = null } = {}) {
-  if (!Array.isArray(candidates) || candidates.length === 0) return []
-  const floored = ftsFloor == null
-    ? candidates
-    : candidates.filter(m => !Number.isFinite(m?._ftsScore) || m._ftsScore <= ftsFloor)
-  if (floored.length <= cap) return floored
-  const inCap = floored.slice(0, cap)
-  const overflow = floored.slice(cap)
-  const anchors = overflow.filter(m => (Number(m?.salience) || 0) >= 4).slice(0, Math.max(0, anchorLane))
-  if (anchors.length === 0) return inCap
-  const keep = inCap.slice(0, Math.max(0, cap - anchors.length))
-  return [...keep, ...anchors]
-}
-
-// 相关记忆搜索：双输入函数（focus + context） + 向量召回兜底
-// focusText 是当前消息+任务+hint，享受优先权；contextText 是对话历史，作为补充
-// 两路独立抽关键词、独立检索，focus 命中的记忆在前；contextText 的关键词排除已出现在 focus 关键词集合里的词
-// focusText 为空时直接返回空数组，不用 contextText 兜底
-// 注意：函数 async 是为了等向量召回；未配置 embedding 时整体行为退化为旧的 FTS5-only 同步路径
-async function searchRelevantMemories({
-  focusText,
-  contextText = '',
-  focusLimit = 12,
-  contextLimit = 8,
-  focusKeywords = 8,
-  contextKeywords = 10,
-  perKeyword = 3,
-}) {
-  if (!focusText) return []
-
-  const focusKws = extractKeywords(focusText, focusKeywords)
-  if (focusKws.length === 0) return []
-
-  const seen = new Set()
-  const focusHits = []
-
-  for (const keyword of focusKws) {
-    const hits = searchMemories(keyword, perKeyword)
-    for (const memory of hits) {
-      if (!seen.has(memory.id)) {
-        seen.add(memory.id)
-        focusHits.push(memory)
-      }
-    }
-    if (focusHits.length >= focusLimit) break
-  }
-
-  const focusHitsCapped = focusHits.slice(0, focusLimit)
-  // 重置 seen，但先把 focus 命中放进去，避免 context 重复
-  const seenAll = new Set(focusHitsCapped.map(m => m.id))
-  const contextHits = []
-
-  if (contextText && contextLimit > 0) {
-    const focusKwSet = new Set(focusKws)
-    const contextKwsRaw = extractKeywords(contextText, contextKeywords)
-    const contextKws = contextKwsRaw.filter(kw => !focusKwSet.has(kw))
-    const ctxPerKeyword = Math.max(1, perKeyword - 1)
-
-    for (const keyword of contextKws) {
-      const hits = searchMemories(keyword, ctxPerKeyword)
-      for (const memory of hits) {
-        if (!seenAll.has(memory.id)) {
-          seenAll.add(memory.id)
-          contextHits.push(memory)
-        }
-      }
-      if (contextHits.length >= contextLimit) break
-    }
-  }
-
-  const contextHitsCapped = contextHits.slice(0, contextLimit)
-
-  // 向量召回兜底：focusText 算 embedding，找 FTS5 没召回到的 top-N 语义相似记忆，
-  // 追加到 focus 桶末尾。失败/超时/未配置时静默跳过，行为完全等同 FTS5-only。
-  // 注：800ms 硬超时——挡在主 LLM 调用之前，embedding 网络慢一点都会被用户感知为"卡顿"
-  let vecAppended = []
-  try {
-    const { computeEmbedding, isEmbeddingConfigured } = await import('../embedding.js')
-    if (isEmbeddingConfigured() && focusText) {
-      const queryEmb = await Promise.race([
-        computeEmbedding(focusText),
-        new Promise(resolve => setTimeout(() => resolve(null), 800)),
-      ])
-      if (queryEmb) {
-        const { searchByEmbedding } = await import('../db.js')
-        const vecHits = searchByEmbedding(queryEmb, Math.min(focusLimit, 10))
-        // 只追加未被 FTS5 命中过的（避免重复），且 _vecScore > 0.5 过滤掉明显无关的
-        const existingIds = new Set([...focusHitsCapped, ...contextHitsCapped].map(m => m.id))
-        vecAppended = vecHits.filter(m => !existingIds.has(m.id) && m._vecScore > 0.5)
-      }
-    }
-  } catch {
-    // 静默：embedding 模块导入失败、API 异常等都不影响 FTS5 兜底结果
-  }
-
-  const focusHitsRanked   = rerankByImportance(focusHitsCapped)
-  const contextHitsRanked = rerankByImportance(contextHitsCapped)
-  const vecRanked         = rerankByImportance(vecAppended)
-  // 顺序：focus FTS5 → 向量补充 → context FTS5
-  return [...focusHitsRanked, ...vecRanked, ...contextHitsRanked].slice(0, focusLimit + contextLimit)
-}
-
-function deduplicateMemories(arrays) {
-  const seen = new Set()
-  const result = []
-  for (const memory of arrays.flat()) {
-    if (!memory || seen.has(memory.id)) continue
-    seen.add(memory.id)
-    result.push(memory)
-  }
-  return result
-}
-
-// 时间词触发的自动注入：把用户消息里的"昨天/前天/今天"映射成日期窗口，
-// 在该窗口内拉 focus_conclusion（每帧 pop 时压成的 1-2 句话结论），
-// 形成"听见昨天就立马想起几件事"的轮廓注入。
-//
-// 设计点：
-//   - 上限 5 条 / 区间，按 salience desc + 时间正序排列
-//   - 只在有 senderId 的用户消息上触发（TICK / agent 自言自语不触发）
-//   - 召回为空就返回 null，整个 <temporal-recall> 块不出现
-//   - 不注入对话原文，只注入压缩后的结论，控制注入量在 600 token 以内
-//   - 多个时间词共存（"昨天和前天的事"）时，各自取 5 条然后合并去重
-function gatherTemporalRecall(messageBody) {
-  if (!messageBody) return null
-  const hints = parseTemporalHints(messageBody)
-  if (hints.length === 0) return null
-
-  const buckets = []
-  const seenIds = new Set()
-  for (const hint of hints) {
-    const memories = getMemoriesByDateRange(hint.from, hint.to, {
-      types: ['focus_conclusion'],
-      limit: 5,
-      orderBy: 'COALESCE(salience, 3) DESC, timestamp ASC',
-    })
-    // 去重：同一条记忆若被两个区间命中（理论上日期窗口不重叠不会发生），只算一次
-    const filtered = memories.filter(m => {
-      if (seenIds.has(m.id)) return false
-      seenIds.add(m.id)
-      return true
-    })
-    if (filtered.length === 0) continue
-    buckets.push({
-      label: hint.label,
-      date: hint.from.slice(0, 10), // YYYY-MM-DD
-      memories: filtered,
-    })
-  }
-  if (buckets.length === 0) return null
-  return buckets
-}
-
-// 渲染成 <temporal-recall> 块的字符串（多个区间各自一段）。
-// 给 prompt.js / system-prompt-preview.js 用，injector 只负责出 buckets 数据。
-export function formatTemporalRecall(buckets) {
-  if (!buckets || buckets.length === 0) return ''
-  return buckets.map(b => {
-    const lines = b.memories.map(m => {
-      const timePart = (m.timestamp || '').slice(11, 16) // HH:MM
-      const star = (m.salience ?? 3) >= 4 ? '★ ' : ''
-      const title = m.title ? m.title.replace(/^专注结论：/, '').trim() : ''
-      const topicHint = title ? `[${title}] ` : ''
-      const body = (m.content || '').replace(/\s+/g, ' ').trim()
-      return `- ${timePart} ${star}${topicHint}${body}`
-    }).join('\n')
-    return `<temporal-recall date="${b.date}" label="${b.label}">\n${lines}\n</temporal-recall>`
-  }).join('\n\n')
-}
 
 // hint：一层思考器的输出文本，用于扩展 L2 的记忆检索范围
 export async function runInjector({ message, state, hint = '' }) {
@@ -480,114 +258,4 @@ export async function runInjector({ message, state, hint = '' }) {
     selfPerception,
     selfSnapshot,
   }
-}
-
-// 从 memory.tags（JSON 字符串）中解出 body_path 标签
-function extractBodyPath(memory) {
-  try {
-    const tags = JSON.parse(memory.tags || '[]')
-    if (!Array.isArray(tags)) return null
-    const tag = tags.find(t => typeof t === 'string' && t.startsWith('body_path:'))
-    return tag ? tag.replace('body_path:', '') : null
-  } catch {
-    return null
-  }
-}
-
-// 普通记忆：摘要行，带类型标签和 title（如有）。article 类型附正文路径提示。
-// RECALL 记忆：带完整 detail
-export function formatMemoriesForPrompt(memories, recallMemories = []) {
-  const parts = []
-
-  if (memories?.length > 0) {
-    parts.push(memories.map(memory => {
-      const typeLabel = memory.event_type ? `[${memory.event_type}] ` : ''
-      const titlePart = memory.title ? `《${memory.title}》 ` : ''
-      const bodyPath = extractBodyPath(memory)
-      const bodyHint = bodyPath ? `\n  ↳ Full text: read_file("${bodyPath}")` : ''
-      const salienceMark = memory.salience >= 4 ? ` ★${memory.salience}` : ''
-      return `- [${memory.timestamp.slice(0, 10)}${salienceMark}] ${typeLabel}${titlePart}${memory.content}${bodyHint}`
-    }).join('\n'))
-  }
-
-  if (recallMemories?.length > 0) {
-    parts.push('[Recall details]\n' + recallMemories.map(memory => {
-      const titlePart = memory.title ? `《${memory.title}》 ` : ''
-      const bodyPath = extractBodyPath(memory)
-      const bodyHint = bodyPath ? `\n  ↳ Full text: read_file("${bodyPath}")` : ''
-      return `- [${memory.timestamp.slice(0, 10)}] ${titlePart}${memory.content}\n  ${memory.detail}${bodyHint}`
-    }).join('\n'))
-  }
-
-  return parts.join('\n\n')
-}
-
-// 预热缓存：格式化注入文本
-export function formatPrefetchedItems(prefetchedItems = []) {
-  if (!prefetchedItems?.length) return ''
-  const body = prefetchedItems.map(item => {
-    const fetchedTime = item.fetched_at?.slice(11, 16) || ''
-    return `[${item.source}] (${fetchedTime} already fetched)\n${item.content}`
-  }).join('\n\n')
-  return body + '\n\nThe data above has already been prefetched. Use it directly and phrase the response naturally; do not reuse the same sentence pattern every time.'
-}
-
-// 当前屏幕上的存活 ACUI 卡片列表
-export function formatActiveUICards(cards = []) {
-  if (!cards?.length) return ''
-  const lines = cards.map(c => `  - id="${c.id}"  component=${c.component}`)
-  return `[Active UI cards on screen]\n${lines.join('\n')}\nUse ui_hide with the id to close a card; use ui_update to update its content.`
-}
-
-// AI 视频生成面板「感知」：把面板开关状态 + 用户正在编辑的提示词草稿贴进上下文。
-// state 来自 media.js 的 getAIVideoPanelState()。面板关闭且无草稿时不渲染（零噪声）。
-export function formatAIVideoPanel(state) {
-  if (!state || (!state.open && !state.prompt)) return ''
-  const lines = ['<aivideo-panel>']
-  lines.push(state.open ? 'AI 视频生成面板：当前已打开。' : 'AI 视频生成面板：当前已关闭。')
-  const draft = String(state.prompt || '').trim()
-  if (draft) {
-    lines.push(`用户在提示词输入框里的当前草稿："${draft}"`)
-    lines.push('如果用户让你"优化/改写提示词"，直接基于上面这段草稿改——你已经看得到它，不要再追问用户写了什么。')
-    lines.push('默认只在对话里给出改写后的版本让用户过目；不要自动覆盖输入框。只有用户明确表示"采用/就用这个"之后，才调用 generate_video(action="set_prompt", prompt="…") 把它写回输入框。用户也可以自己从你的回复里复制粘贴。')
-  } else if (state.open) {
-    lines.push('提示词输入框当前为空。')
-  }
-  lines.push('</aivideo-panel>')
-  return lines.join('\n')
-}
-
-// 任务知识库：显示完整 content + detail
-export function formatTaskKnowledge(taskKnowledge = []) {
-  if (!taskKnowledge?.length) return ''
-  return taskKnowledge.map(memory => {
-    const tags = JSON.parse(memory.tags || '[]')
-    const kindTag = tags.find(tag => tag.startsWith('kind:'))
-    const kind = kindTag ? kindTag.replace('kind:', '') : ''
-    const prefix = kind ? `[${kind}] ` : ''
-    return `${prefix}${memory.content}\n  ${memory.detail}`
-  }).join('\n')
-}
-
-// 根据涌现概念追加搜索记忆，排除已召回的记忆 ID
-// concepts: string[]  - 概念列表（来自 concept-extractor.js 的输出）
-// excludeIds: Set<number|string>  - 已召回记忆的 id 集合（避免重复）
-// limit: number  - 最多返回多少条，默认 10
-// returns: Memory[]  - 新增记忆对象数组（与 runInjector 返回的 memories 结构相同）
-export function searchAdditionalMemories(concepts, excludeIds, limit = 10) {
-  const seen = new Set()
-  const results = []
-
-  for (const concept of concepts) {
-    const hits = searchMemories(concept, 3)
-    for (const memory of hits) {
-      if (excludeIds.has(memory.id)) continue
-      if (seen.has(memory.id)) continue
-      seen.add(memory.id)
-      results.push(memory)
-      if (results.length >= limit) return results
-    }
-  }
-
-  return results
 }

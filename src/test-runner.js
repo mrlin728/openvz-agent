@@ -7,6 +7,7 @@ import { runInjector, formatMemoriesForPrompt } from './memory/injector.js'
 import { getDB, getConfig, setConfig } from './db.js'
 import { pushMessage, popMessage, hasMessages } from './queue.js'
 import { formatTick, nowTimestamp } from './time.js'
+import { parseMarkers } from './runtime/markers.js'
 
 getDB()
 
@@ -54,15 +55,14 @@ async function process(input, label) {
     return
   }
 
-  const recallMatch = response.match(/\[RECALL:\s*(.+?)\]/)
-  if (recallMatch) {
-    state.prev_recall = recallMatch[1]
+  const markers = parseMarkers(response)
+  if (markers.recall !== null) {
+    state.prev_recall = markers.recall
     console.log(`\n[系统] 回忆请求：${state.prev_recall}`)
   }
 
-  const personaMatch = response.match(/\[UPDATE_PERSONA:\s*([\s\S]+?)\]/)
-  if (personaMatch) {
-    setConfig('persona', personaMatch[1].trim())
+  if (markers.updatePersona !== null) {
+    setConfig('persona', markers.updatePersona.trim())
     console.log(`[系统] 人格已更新`)
   }
 

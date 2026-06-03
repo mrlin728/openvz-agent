@@ -5,6 +5,7 @@ import { getToolSchemas } from './capabilities/schemas.js'
 import { recordUsage, shouldThrottle } from './quota.js'
 import { insertActionLog } from './db.js'
 import { isTerminalInternalToolRound } from './runtime/tool-protocol.js'
+import { stripMarkers } from './runtime/markers.js'
 
 // 延迟创建 OpenAI 客户端：激活流程把 key 写入 config 后再调用这里，
 // 避免模块加载阶段就锁死尚未填入的 apiKey/baseURL。
@@ -370,6 +371,14 @@ function shouldPersistActionLog(toolName) {
   return false
 }
 
+// 仅剥离运行时协议标记（runtime 解析锚点，不是给用户看的内容）。与 index.js 的 fallback
+// 剥离保持一致：去掉 <think>/<thinking> 块和 [RECALL:]/[SET_TASK:]/[CLEAR_TASK]/[UPDATE_PERSONA:]
+// 文本标记后返回正文。内容本身不做客套裁剪 / 行去重 / 改写。
+function stripProtocolMarkersForDelivery(text) {
+  // 单一真相源：src/runtime/markers.js。剥离语义（含末尾 trim）与原正则完全一致。
+  return stripMarkers(text)
+}
+
 const TOOL_LOOP_LIMITS = {
   maxRounds: 100,
   maxTotalCalls: 30,
@@ -452,6 +461,51 @@ function createToolLoopState() {
 // 出现"工具调不动 + 嘴也被堵住"的死锁（lessons-bailongma-silent-exit 的镜像问题）。
 // 同指纹反复失败仍由 sameFailureCounts / recentFingerprints 拦截，安全网完好。
 const REPORT_CHANNEL_TOOLS = new Set(['send_message', 'express'])
+
+// ── 耗时工具即时回应 ──────────────────────────────────────────────────────────
+// 模型执行任务型工具链时遵循"先把活干完再汇报"的惯性，在最慢的那步（下载/搜索/生成/
+// 跑命令）之前不会主动 send_message，用户因此对着静默以为卡死（action_logs 实测坐实）。
+// 这些工具一旦被调用，就由运行时在执行前替它"应一声"——一个 turn 只发一次（见 callLLM 的
+// ackSent）。只覆盖真正会让人等的工具；秒回的普通问答不在此列，避免把简单对话变啰嗦。
+const SLOW_ACK_TOOLS = new Set([
+  'generate_video', 'generate_image', 'generate_music', 'generate_lyrics',
+  'web_search', 'fetch_url', 'browser_read', 'deep_research', 'exec_command',
+])
+function isSlowAckTool(name, args) {
+  if (name === 'music') return String(args?.action || '').trim() === 'download'  // 仅下载慢；search/list 秒回
+  return SLOW_ACK_TOOLS.has(name)
+}
+function slowAckText(name, args) {
+  if (name === 'music') {
+    const s = String(args?.title || args?.query || '').trim()
+    return s ? `在找《${s}》了，稍等一下～` : '在找了，稍等一下～'
+  }
+  if (name === 'generate_image') return '在画了，稍等一下～'
+  if (name === 'generate_video') return '在生成视频了，稍等一下～'
+  if (name === 'generate_music' || name === 'generate_lyrics') return '在创作了，稍等一下～'
+  if (name === 'web_search' || name === 'fetch_url' || name === 'browser_read' || name === 'deep_research') {
+    const q = String(args?.query || args?.q || args?.url || '').trim()
+    return q ? `我查一下「${q.length > 30 ? q.slice(0, 30) + '…' : q}」～` : '我查一下～'
+  }
+  if (name === 'exec_command') return '我跑一下～'
+  return '收到，我处理一下～'
+}
+
+// ── 播放收尾静音 ──────────────────────────────────────────────────────────────
+// 音乐/视频播放是"开始时应一声（ack），放好之后不用再说"。但模型习惯在 media_mode 播放后
+// 补一句"好了/在放了/播放中"——多余。本 turn 播放过媒体后，这类播放确认短消息会被运行时拦掉。
+// 判定保守：只抓明确的播放确认词或极短回复，避免误伤"放歌顺便回答的实质信息"。
+// 播放确认词：可能单独成句（"在播了。"），也可能带歌名前缀（"浮誇，在播了。"）。
+// 用"包含匹配"而非整句锚定，并配合长度上限，既抓住带歌名的确认、又不误伤放歌后真正的实质回复。
+// 只认明确的"正在播放"动词。泛化的"好的/好了"不放进来——纯"好了"已被 ≤6 字规则覆盖，
+// 而"好的，帮你查一下…"这类带实质内容的回复不能被误吞成表情。
+const MEDIA_CLOSER_RE = /(在播了?|在放了?|放好了?|放上了?|播放中|播放了|开始播放?|这就放|给你放|now playing|playing now)/i
+function isMediaCloser(content) {
+  const s = String(content || '').trim()
+  if (!s) return true
+  if (s.length <= 6) return true                       // 极短回复（"在播了""好了"）
+  return s.length <= 16 && MEDIA_CLOSER_RE.test(s)     // 带歌名的短确认（"浮誇，在播了。"）
+}
 
 function getToolLoopStopReason(state, name, fingerprint) {
   const isReportChannel = REPORT_CHANNEL_TOOLS.has(name)
@@ -613,13 +667,19 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
 
   if (shouldThrottle()) {
     console.log('[配额] 用量超过 95%，跳过本次调用')
-    return { content: '（配额接近上限，等待窗口滚动）', toolResult: null, aborted: false }
+    return { content: '（配额接近上限，等待窗口滚动）', toolResult: null, aborted: false, delivered: false }
   }
 
   let allContent = ''
   let lastToolResult = null
   let sawToolCall = false
   let sentMessage = false
+  // delivered 语义：本次 callLLM 调用中是否**真正投递过**至少一条回复给用户。
+  //   = 「≥1 次未被 silent / closer 拦截、且未熔断的 send_message 执行过」。
+  //   这是"用户到底有没有收到实质回复"的**单一权威信号**，调用方不准再从 toolCallLog 二次推导。
+  //   注意与 sentMessage 区分：sentMessage 是"最后一个动作是不是 send_message"（用于内部补刀 nudge），
+  //   delivered 是"整轮有没有发出去过"（用于决定要不要兜底）。closer 被拦时主回复通常已把 delivered 置 true。
+  let delivered = false
   let finalNudgeUsed = false
   let missingToolNudgeUsed = false
   let plainTextReplyNudgeUsed = false
@@ -637,6 +697,13 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   // 模式）+ "已发实质消息"前置条件（length>=15 且非 closer）控制——纯短回复"好的"/"已开"
   // 不命中 pattern，不会被误拦。
   const turnSendHistory = new Map()
+  // 本 turn 是否已替模型"应过一声"（耗时工具即时回应）——保证一个 turn 只发一次。
+  let ackSent = false
+  // 本 turn 是否播放过音乐/视频——之后模型补的播放确认短收尾会被改成单个表情（"放好不用说"，
+  // 但发送本身允许，避免 UI 显示"失败"；语音模式下纯表情不会被念出来）。
+  let mediaPlayed = false
+  let mediaPlayedKind = null   // 'music' | 'video'，决定用哪个表情
+  let mediaEmojiSent = false   // 本 turn 已用表情代替过一次播放确认（一个 turn 只发一个表情）
 
   for (let round = 0; round < TOOL_LOOP_LIMITS.maxRounds; round++) {
     throwIfAborted(signal)
@@ -745,7 +812,9 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       // 安全网：工具已结束、最近一次工具不是 send_message、且模型本轮也没继续动作。
       // 不再用 !allContent.trim() 做守卫——跨轮累积的旁白会让这个守卫错误地静默 break，
       // 真正可靠的信号是 sentMessage（line 691 在每个工具后维护）。
-      if (mustReply && sawToolCall && !sentMessage && !finalNudgeUsed) {
+      // mediaPlayed：本 turn 播放了音乐/视频时，不催模型补"最终回复"——播放类操作放好就结束，
+      // 开场已替它 ack 过；催补尾只会逼出多余的"好了"。
+      if (mustReply && sawToolCall && !sentMessage && !finalNudgeUsed && !mediaPlayed) {
         // 关键修复：把上一轮的 assistant text 推入 messages，让模型在下一轮知道"自己刚才说过 X"。
         // 否则模型被 nudge 后会重新生成一段近似内容，叠加进 allContent 导致 fallback 投递出双段重复。
         // 同时清空 allContent，避免本轮的旁白和下一轮的回复被拼起来当一条消息发出。
@@ -796,6 +865,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       let result
       let closerSuppressed = false
       let silentSignalSuppressed = false
+      let mediaCloserSuppressed = false
       if (stopReason) {
         result = makeToolLoopStoppedResult(tc.name, stopReason)
         console.log(`[工具熔断] ${tc.name}: ${stopReason}`)
@@ -827,6 +897,21 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
             }
           }
         }
+
+        // 播放收尾：本 turn 已经播放过音乐/视频（开场也已替它 ack 过），模型若再补一句播放确认
+        // 短消息（"好了"/"在放了"/"播放中"…）——不直接拦成"失败"，而是把内容换成一个表情照常发出：
+        // 既不啰嗦、UI 显示成功，语音模式下纯表情也不会被 TTS 念出来。一个 turn 只发一个表情，
+        // 多余的才真正拦掉。判定保守见 isMediaCloser。
+        if (!silentSignalSuppressed && !closerSuppressed && tc.name === 'send_message'
+            && mediaPlayed && isMediaCloser(String(normalizedArgs.content || ''))) {
+          if (mediaEmojiSent) {
+            mediaCloserSuppressed = true
+          } else {
+            normalizedArgs.content = mediaPlayedKind === 'video' ? '🎬' : '🎵'
+            mediaEmojiSent = true
+          }
+        }
+
         if (silentSignalSuppressed) {
           result = JSON.stringify({
             ok: false,
@@ -843,11 +928,37 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
             reason: 'You already sent the main reply to this user in this turn. This second message is a closing pleasantry (e.g. "有需要随时叫我", "希望对你有帮助") with no new information — the runtime suppressed it. Do not split a closer into a second send_message; merge it into the main reply or omit entirely, and end the round.',
           })
           console.log(`[closer dedup] 拦截 send_message → ${normalizedArgs.target_id}: ${String(normalizedArgs.content || '').slice(0, 30)}`)
+        } else if (mediaCloserSuppressed) {
+          result = JSON.stringify({
+            ok: false,
+            tool: 'send_message',
+            skipped: 'media_play_closer',
+            reason: 'You already acknowledged the playback with a single emoji this turn (and the system told the user when you started looking for it). This further play-confirmation is redundant — the player is visibly running. The runtime suppressed it. For music/video playback: one emoji at most after a successful play, then just end the round.',
+          })
+          console.log(`[media closer] 拦截 send_message → ${normalizedArgs.target_id}: ${String(normalizedArgs.content || '').slice(0, 30)}`)
         } else {
+          // 耗时工具即时回应：用户消息触发了一个会让人干等的工具（下载/搜索/生成/跑命令）时，
+          // 本 turn 第一次就先替模型"应一声"。系统直接投递，不依赖模型在工具链中途主动开口
+          // （实测它不会）。一个 turn 只发一次；模型已先回过话（delivered）则跳过，不重复。
+          if (!ackSent && !delivered && mustReply && !silentSignal
+              && toolContext?.currentTargetId && isSlowAckTool(tc.name, normalizedArgs)) {
+            ackSent = true
+            try {
+              await executeTool(
+                'send_message',
+                { target_id: toolContext.currentTargetId, content: slowAckText(tc.name, normalizedArgs) },
+                { ...toolContext, signal, source: 'ack' },
+              )
+              delivered = true
+            } catch { /* ack 投递失败不影响主流程 */ }
+          }
           // 真正开始执行前通知 UI —— 让用户知道当前停留在哪一步的工具上
           onToolExecute?.(tc.name, normalizedArgs)
           result = await executeTool(tc.name, normalizedArgs, { ...toolContext, signal })
           recordToolLoopOutcome(toolLoopState, tc.name, fingerprint, result)
+          // 单一权威：一次未被 silent/closer 拦截、未熔断的 send_message 真正执行过 →
+          //   用户确实收到了回复。这是 delivered 唯一被置 true 的地方（除文末协议兜底外）。
+          if (tc.name === 'send_message') delivered = true
         }
       }
       throwIfAborted(signal)
@@ -860,8 +971,8 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       if (tc.name === 'send_message') {
         sentMessage = true
         // 仅对真实发出的（未被 dedup 拦截的）send_message 记录到 turn 历史，避免被拦截的
-        // closer / silent signal 反过来污染后续判断（已经被拦截的就当没发生）。
-        if (!closerSuppressed && !silentSignalSuppressed) {
+        // closer / silent signal / media-closer 反过来污染后续判断（已经被拦截的就当没发生）。
+        if (!closerSuppressed && !silentSignalSuppressed && !mediaCloserSuppressed) {
           const target = normalizedArgs.target_id
           const content = String(normalizedArgs.content || '')
           if (target) {
@@ -874,6 +985,15 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         sentMessage = false
       }
       calledTools.add(tc.name)
+      // 标记本 turn 播放过音乐/视频——之后模型补的播放确认短收尾会被静音（见上面 mediaCloser 判定）。
+      if (tc.name === 'media_mode') {
+        const m = String(normalizedArgs.mode || '')
+        const a = String(normalizedArgs.action || 'show')
+        if ((m === 'music' || m === 'video') && (a === 'show' || a === 'play')) {
+          mediaPlayed = true
+          mediaPlayedKind = m
+        }
+      }
       if (shouldPersistActionLog(tc.name)) {
         insertActionLog({
           timestamp: new Date().toISOString(),
@@ -1015,5 +1135,47 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
     if (terminalInternalRound) break
   }
 
-  return { content: allContent, toolResult: lastToolResult, aborted: signal?.aborted ?? false }
+  const aborted = signal?.aborted ?? false
+
+  // ── 单一权威的协议兜底 ──────────────────────────────────────────────
+  // 模型产出了可投递的回复文本，但整轮从未真正执行过 send_message（delivered=false），
+  // 且本轮要求回复用户（mustReply 且非 silent 信号）。此时由 runtime 代为投递——
+  // 关键：走**真正的 send_message 执行器**（executeTool），从而复用 executor 里的
+  //   findRecentJarvisDuplicate 去重 / open_question 检测 / dispatchSocialMessage 社交派发，
+  //   不再像旧的 index.js fallback 那样手工重做副作用却漏掉这些安全检查。
+  // 硬不变量：
+  //   #1 silent 轮绝不投递 —— !silentSignal 守卫。
+  //   #4 不双发 —— 仅 !delivered 时触发；一旦投出立刻 delivered=true，index.js 不会再补。
+  //   #5 投递前剥离 <think>/[RECALL:] 等协议标记。
+  //   #8 source:'fallback' 由 executeTool→tool-audit 自动写入 action_log，区分协议兜底与显式调用。
+  if (mustReply && !silentSignal && !delivered && !aborted) {
+    let fallbackContent = stripProtocolMarkersForDelivery(allContent)
+    const fallbackTarget = toolContext?.currentTargetId
+    // 播放收尾一致性：视频流程里模型常不调 send_message 而是留 body 走兜底（音乐则习惯调
+    // send_message 被 isMediaCloser 替换）。这里对兜底 body 做同样处理——本 turn 播放过媒体、
+    // 且 body 正是一句播放确认时换成单个表情，确保"播放中"之类文字不会原样发出/被语音念。
+    if (fallbackContent && fallbackTarget && mediaPlayed && !mediaEmojiSent && isMediaCloser(fallbackContent)) {
+      fallbackContent = mediaPlayedKind === 'video' ? '🎬' : '🎵'
+      mediaEmojiSent = true
+    }
+    if (fallbackContent && fallbackTarget) {
+      console.warn(`[protocol fallback] 模型未调 send_message —— callLLM 代为投递给 ${fallbackTarget}`)
+      try {
+        const fbArgs = { target_id: fallbackTarget, content: fallbackContent }
+        // source:'fallback' 让 tool-audit 把这条 action_log 标记为协议兜底（不变量 #8）。
+        const fbResult = await executeTool('send_message', fbArgs, { ...toolContext, signal, source: 'fallback' })
+        // 兜底也是"真正执行过的 send_message"：置 delivered，并触发与正常路径同样的
+        //   onToolCall 回调（语音渠道自动 TTS、UI tool_call 事件、toolCallLog 登记都在那里）。
+        //   __fallback 标记仅给 onToolCall 用于遥测分类；executeTool 收到的是干净的 fbArgs。
+        delivered = true
+        lastToolResult = { name: 'send_message', args: fbArgs, result: fbResult }
+        if (onToolCall) onToolCall('send_message', { ...fbArgs, __fallback: true }, fbResult)
+      } catch (err) {
+        if (err?.name === 'AbortError') throw err
+        console.warn('[protocol fallback] callLLM 兜底投递失败:', err?.message || err)
+      }
+    }
+  }
+
+  return { content: allContent, toolResult: lastToolResult, aborted, delivered }
 }

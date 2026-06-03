@@ -86,26 +86,27 @@ When the user asks to play a song or music, the only valid flow is:
 
 1. Call the music tool with action="search" and query="song artist" to search the local library.
 2. If found and file_path exists, jump to step 4.
-3. If not found, call the music tool with action="download", url="YouTube or Bilibili URL", title="song", artist="artist".
-   - During download, say nothing and do not call send_message.
+3. If not found, call the music tool with action="download" to fetch it. You normally do NOT need a URL — just pass query="song artist" (plus title/artist). The tool auto-searches and downloads the first match.
+   - Set platform="bilibili" if the user's Country Code is CN or the Timezone is a China timezone; otherwise platform="youtube" (or omit). The tool falls back to the other platform automatically if the first fails.
+   - Only pass url= when you already have a confirmed video page URL. Never invent or guess a URL.
+   - Download is synchronous and can take 30s–2min. The SYSTEM automatically sends the user a "在找…" notice the moment a download starts, so do NOT announce it yourself — just call download and wait for the result. Say nothing and send no progress updates during the download.
 4. If lrc is empty, call the music tool with action="get_lyrics", id=track id, title=..., artist=....
 5. Call media_mode with mode="music", action="show", src="file:///absolute path", title=..., artist=..., lrc=..., autoplay=true.
    - src must be a local file path using file:///. Never pass a YouTube or Bilibili URL.
-6. Do not call send_message anywhere in this flow. The player opens automatically and needs no text confirmation.
+6. During this flow the system already shows a "在找…" notice when the download starts, and the player opens automatically. Do not send any TEXT message before or after playback. At most, once it is playing you may send a single emoji (e.g. 🎵) as a light acknowledgement — never words like "好了"/"在放了".
 
 Absolutely forbidden:
 - Do not call media_mode(mode="video") to play music. Video mode is for watching videos, not local music playback.
-- Do not pass YouTube or Bilibili links directly to media_mode src.
-- Do not use web_search to find music and then play a video link directly; download it into a local file first.
+- Do not pass YouTube or Bilibili links directly to media_mode src. Only a local file:// path can be played — always download into a local file first.
 - Do not send progress messages during download.
 - Do not send a confirmation like "started playing ..." after playback succeeds.`
 
 // 2) Video Mode —— 播放视频后的回复极简化
 const VIDEO_KEYWORD_RE = /看视频|播放视频|放视频|B站|bilibili|youtube|youtu\.be|看个.*片|看电影|看剧/i
-const VIDEO_MODE_BLOCK = `## Video Mode: Reply Brevity
+const VIDEO_MODE_BLOCK = `## Video Mode
+- Platform (IMPORTANT): if the user is in China (Country Code CN or a China timezone), you MUST use a Bilibili BV link (https://www.bilibili.com/video/BVxxxxxxxxxx). Do NOT use YouTube — in CN it usually cannot be embedded and the runtime will reject youtube.com links (costing a retry and showing "此视频不能观看"). First web_search like "bilibili 关键词" to find a real, official/high-view BV, then play it. Confirm it is a normal complete video, not a collection/playlist or a live replay.
 - After calling media_mode(mode="video") to open a video, the player autoplays on its own. Do not narrate the process.
-- The accompanying send_message must be at most a few characters — e.g. "播放中"、"开始了"、"打开了"、"好"。No subject, no object, no explanation, no follow-up question.
-- If the user clearly already knows what they asked for (e.g. they named the exact video), it is acceptable to skip send_message entirely and only call media_mode.
+- After a successful open, do NOT send a text play-confirmation (no "播放中"/"开始了"/"好了"). At most a single emoji (e.g. 🎬). Same rule as music: a short heads-up only when you START looking/searching for it; once it is playing, no words — the player is visibly running (the runtime turns any trailing text confirmation into a lone emoji anyway).
 - Never describe the video, summarize plot, list candidates, or report URL/platform after a successful open.`
 
 // 2b) AI Video Generation —— Seedance 文生/图生视频

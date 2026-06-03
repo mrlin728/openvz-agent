@@ -203,6 +203,15 @@ export async function collectGeoWeather() {
 // ─── 对外接口 ─────────────────────────────────────────────────────────────────
 
 /**
+ * 同步返回缓存的国家代码（大写，如 "CN"）。collectGeoWeather() 完成前或失败时返回 null。
+ * 供工具层（如 media_mode 视频平台决策）快速判断用户地区，无需走 prompt。
+ */
+export function getCountryCode() {
+  const cc = _cached?.location?.country_code
+  return cc ? String(cc).toUpperCase() : null
+}
+
+/**
  * 返回注入 system prompt 的纯文本块。
  * 必须在 collectGeoWeather() 完成后调用。
  */

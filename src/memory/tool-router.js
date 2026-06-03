@@ -237,6 +237,10 @@ export function selectTools(ctx = {}) {
   }
   if (hits(body, MEDIA_TRIGGERS)) {
     for (const t of MEDIA_TOOLS) out.add(t)
+    // 媒体场景常需要先联网找链接——尤其视频要 web_search 搜到可嵌入的 B 站 BV 才能播。
+    // 不一并注入 web 工具的话，模型拿不到 web_search，会误以为"没有联网搜索"而直接放弃找视频
+    // （这是"找的视频不能播放/找不到视频"的一个隐藏根因）。音乐用不到也无妨。
+    for (const t of WEB_TOOLS) out.add(t)
   }
   if (hits(body, REMINDER_TRIGGERS) || isTick) {
     for (const t of REMINDER_TOOLS) out.add(t)

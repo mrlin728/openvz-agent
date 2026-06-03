@@ -19,6 +19,7 @@ import { getTTSCredentials, getSeedanceConfig } from '../../config.js'
 import { streamTTS } from '../../voice/tts-providers.js'
 import { paths } from '../../paths.js'
 import { SANDBOX_ROOT } from '../sandbox.js'
+import { getCountryCode } from '../../geo-weather.js'
 
 const IS_WIN = process.platform === 'win32'
 
@@ -75,6 +76,9 @@ export function autoSpeakForVoiceReply(text) {
     .replace(/\n+/g, ' ')
     .trim()
   if (!plain) return
+  // 纯表情 / 标点（没有任何可读文字）不合成语音：播放确认现在用单个 emoji 代替，
+  // 语音模式下不该把它念出来（\p{L}=字母含汉字，\p{N}=数字）。
+  if (!/[\p{L}\p{N}]/u.test(plain)) return
   emitEvent('tts_reply', { text: plain })
 }
 
@@ -141,6 +145,23 @@ export function execMediaMode(args = {}) {
     return JSON.stringify({ ok: false, tool: 'media_mode', error: 'unsupported action' })
   }
 
+  // 视频平台预检：CN 网络下 YouTube 视频经常无法 iframe 嵌入播放（embeddable=false / 地区限制），
+  // 这是"视频无法播放/此视频不能观看"的主因。CN 用户传 YouTube 链接时挡回，引导改用 B 站 BV 重播
+  // （B 站稿件几乎都可嵌入、国内也快）。country 未知时按 CN 保守处理。摄像头模式不拦。
+  if (mode === 'video' && action === 'show' && args.camera !== true) {
+    const u = String(args.url || args.src || '')
+    if (/youtube\.com|youtu\.be/i.test(u)) {
+      const cc = getCountryCode()
+      if (cc === 'CN' || cc === null) {
+        emitEvent('action', { tool: 'media_mode', summary: 'YouTube 链接已挡回（CN→改用 B 站）', detail: u.slice(0, 60) })
+        return JSON.stringify({
+          ok: false, tool: 'media_mode', error: 'youtube_not_embeddable_cn',
+          guide: '当前网络在中国大陆，YouTube 视频经常无法嵌入播放（用户会看到"此视频不能观看"）。不要用 YouTube 链接。请改用 web_search 在 Bilibili 上搜同一主题的视频，拿到形如 https://www.bilibili.com/video/BVxxxxxxxxxx 的链接后，再用 media_mode(mode="video") 重新播放。优先选官方/高播放量的稿件，确认是可正常播放的完整视频而不是合集/直播回放。',
+        })
+      }
+    }
+  }
+
   const payload = {
     mode,
     action,
@@ -185,6 +206,7 @@ const SEEDANCE_VIDEO_DIR = path.resolve(SANDBOX_ROOT, 'videos')
 const SEEDANCE_VIDEO_KEEP = 20                          // sandbox/videos 只保留最近 N 条
 const SEEDANCE_PENDING_FILE = path.join(paths.userDir, 'aivideo-pending.json')
 const SEEDANCE_PENDING_TTL_MS = 48 * 60 * 60 * 1000     // 火山任务约 48h 内可查，过期不再恢复
+const SEEDANCE_HISTORY_FILE = path.join(paths.userDir, 'aivideo-history.json')  // 已完成视频历史（面板重开/重启后重建队列）
 
 function newVideoJobId() {
   return `vid_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`
@@ -236,6 +258,37 @@ function writePending(list) {
 function addPending(entry) { writePending([...readPending().filter(e => e.taskId !== entry.taskId), entry]) }
 function removePending(taskId) { writePending(readPending().filter(e => e.taskId !== taskId)) }
 
+// ── 已完成视频历史：任务成功落盘后记一条，按 jobId 去重、只留最近 N 条。 ──
+// 面板关闭重开 / app 重启后，前端拉 GET /aivideo/history 重建生成栏队列，
+// 避免“视频还在磁盘上，队列却空了”——这是历史丢失 bug 的根因（jobs[] 原本纯内存）。
+function readHistory() {
+  try { const v = JSON.parse(fs.readFileSync(SEEDANCE_HISTORY_FILE, 'utf-8')); return Array.isArray(v) ? v : [] }
+  catch { return [] }
+}
+function writeHistory(list) {
+  try {
+    const tmp = SEEDANCE_HISTORY_FILE + '.tmp'
+    fs.writeFileSync(tmp, JSON.stringify(list, null, 2), 'utf-8')
+    fs.renameSync(tmp, SEEDANCE_HISTORY_FILE)
+  } catch {}
+}
+function addHistory(entry) {
+  // 新的放最前；同 jobId 去重；最多留 SEEDANCE_VIDEO_KEEP 条（与磁盘保留数对齐）
+  const next = [entry, ...readHistory().filter(e => e && e.jobId !== entry.jobId)].slice(0, SEEDANCE_VIDEO_KEEP)
+  writeHistory(next)
+}
+
+// 供前端 /aivideo/history 拉取：过滤掉本地 mp4 已被清理的条目，整形成前端 job 形状（newest-first）。
+export function getVideoHistory() {
+  return readHistory()
+    .filter(e => e && e.jobId && fs.existsSync(path.join(SEEDANCE_VIDEO_DIR, `${e.jobId}.mp4`)))
+    .map(e => ({
+      id: e.jobId, status: 'done', videoUrl: `/media/video/${encodeURIComponent(e.jobId)}.mp4`,
+      mode: e.mode || 'text', prompt: e.prompt || '',
+      res: e.resolution || '', ratio: e.ratio || '', dur: e.duration || '',
+    }))
+}
+
 // 保留最近 N 条生成视频，删更旧的，防止 sandbox/videos 无限膨胀
 function pruneVideoDir() {
   try {
@@ -262,7 +315,7 @@ async function downloadGeneratedVideo(videoUrl, jobId) {
 }
 
 // 后台轮询任务直到终态，全程 emit 面板事件；不返回给模型
-async function seedancePollLoop({ taskId, jobId, baseURL, apiKey, prompt = '', mode = 'text' }) {
+async function seedancePollLoop({ taskId, jobId, baseURL, apiKey, prompt = '', mode = 'text', ratio = '', resolution = '', duration = '' }) {
   const deadline = Date.now() + SEEDANCE_MAX_POLL_MS
   const headers = { Authorization: `Bearer ${apiKey}` }
   try {
@@ -294,6 +347,8 @@ async function seedancePollLoop({ taskId, jobId, baseURL, apiKey, prompt = '', m
         try {
           const localUrl = await downloadGeneratedVideo(videoUrl, jobId)
           emitAIVideo('ready', { jobId, videoUrl: localUrl })
+          // 落盘成功后记入已完成历史，面板重开/重启时能重建队列
+          addHistory({ jobId, mode, prompt, ratio, resolution, duration, doneAt: Date.now() })
           emitEvent('action', { tool: 'generate_video', summary: 'AI 视频生成完成', detail: jobId })
         } catch (e) {
           // 下载失败时退而求其次：直接播远端 URL（临时链接，可能数小时后过期）
@@ -431,7 +486,7 @@ export async function execGenerateVideo(args = {}) {
   addPending({ taskId, jobId, mode, prompt: prompt.slice(0, 120), ratio, resolution, duration, baseURL, createdAt: Date.now() })
 
   // 后台轮询（不阻塞当前 turn）
-  seedancePollLoop({ taskId, jobId, baseURL, apiKey, prompt: prompt.slice(0, 120), mode }).catch(err => {
+  seedancePollLoop({ taskId, jobId, baseURL, apiKey, prompt: prompt.slice(0, 120), mode, ratio, resolution, duration }).catch(err => {
     emitAIVideo('error', { jobId, message: `轮询异常：${err.message}` })
     removePending(taskId)
   })
@@ -482,7 +537,7 @@ export function resumePendingVideoJobs() {
         jobId: e.jobId, mode: e.mode, prompt: e.prompt,
         ratio: e.ratio, resolution: e.resolution, duration: e.duration, status: 'running',
       })
-      seedancePollLoop({ taskId: e.taskId, jobId: e.jobId, baseURL: e.baseURL || baseURL, apiKey, prompt: e.prompt, mode: e.mode })
+      seedancePollLoop({ taskId: e.taskId, jobId: e.jobId, baseURL: e.baseURL || baseURL, apiKey, prompt: e.prompt, mode: e.mode, ratio: e.ratio, resolution: e.resolution, duration: e.duration })
         .catch(() => removePending(e.taskId))
     }
     console.log(`[aivideo] 已恢复 ${fresh.length} 个未完成的视频生成任务`)
@@ -567,6 +622,12 @@ function runProcess(file, args = [], cwd) {
 
 const YTDLP_LOCAL = path.join(paths.musicDir, 'yt-dlp.exe')
 const YTDLP_URL   = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
+// 国内裸连 GitHub release 经常超时/失败，准备几个镜像兜底（按序尝试）。
+const YTDLP_DOWNLOAD_SOURCES = [
+  YTDLP_URL,
+  `https://gh-proxy.com/${YTDLP_URL}`,
+  `https://ghfast.top/${YTDLP_URL}`,
+]
 
 async function resolveYtDlp() {
   // 1. 系统 PATH 里有就直接用
@@ -579,14 +640,20 @@ async function resolveYtDlp() {
     if (local.code === 0) return YTDLP_LOCAL
   }
 
-  // 3. 自动下载 yt-dlp.exe 到 music 目录
+  // 3. 自动下载 yt-dlp.exe 到 music 目录（GitHub 直连 + 国内镜像兜底）
   emitEvent('action', { tool: 'music', summary: 'yt-dlp 未安装，正在自动下载…', detail: YTDLP_URL })
-  const res = await fetch(YTDLP_URL, { signal: AbortSignal.timeout(60000) })
-  if (!res.ok) return null
-  const buf = Buffer.from(await res.arrayBuffer())
-  fs.writeFileSync(YTDLP_LOCAL, buf)
-  fs.chmodSync(YTDLP_LOCAL, 0o755)
-  return YTDLP_LOCAL
+  for (const src of YTDLP_DOWNLOAD_SOURCES) {
+    try {
+      const res = await fetch(src, { signal: AbortSignal.timeout(60000) })
+      if (!res.ok) continue
+      const buf = Buffer.from(await res.arrayBuffer())
+      if (buf.length < 1_000_000) continue   // 太小八成是错误页/重定向，不是真 exe
+      fs.writeFileSync(YTDLP_LOCAL, buf)
+      try { fs.chmodSync(YTDLP_LOCAL, 0o755) } catch {}
+      return YTDLP_LOCAL
+    } catch { /* 换下一个源 */ }
+  }
+  return null
 }
 
 export async function execMusic(args = {}) {
@@ -642,25 +709,66 @@ export async function execMusic(args = {}) {
 
   // ── download ──────────────────────────────────────────────────────────────
   if (action === 'download') {
-    const url = String(args.url || '').trim()
-    if (!url) return JSON.stringify({ ok: false, error: 'url required' })
-
     // 自动解析 yt-dlp 路径（没有则自动下载）
     const ytdlp = await resolveYtDlp()
-    if (!ytdlp) return JSON.stringify({ ok: false, error: 'yt-dlp 自动下载失败，请检查网络连接' })
+    if (!ytdlp) return JSON.stringify({ ok: false, error: 'yt-dlp 自动下载失败（可能无法连接 GitHub）。请检查网络，或手动把 yt-dlp.exe 放到 music 目录。' })
 
-    // Download: print final filepath after conversion
-    const outTemplate = path.join(musicDir, '%(title)s.%(ext)s').replace(/\\/g, '/')
-    const dlArgs = ['-x', '--audio-format', 'mp3', '--audio-quality', '192K', '--no-playlist', '--print', 'after_move:filepath', '-o', outTemplate]
-    let result = await runProcess(ytdlp, [...dlArgs, url])
+    const url = String(args.url || '').trim()
+    // query 兜底：没有明确 URL 时，用关键词让 yt-dlp 自己搜索并下载第一条，
+    // 这样 agent 不必凭空找/猜一个真实视频 URL（这是放歌失败的主因）。
+    const query = String(args.query || '').trim()
+      || [String(args.title || '').trim(), String(args.artist || '').trim()].filter(Boolean).join(' ')
 
-    // SSL 握手失败时降级：加 --no-check-certificates 重试一次
-    if (result.code !== 0 && /ssl|EOF occurred in violation of protocol/i.test(result.stderr)) {
-      result = await runProcess(ytdlp, [...dlArgs, '--no-check-certificates', url])
+    // 构造按序尝试的下载目标：
+    //  - 有明确 URL → 只用它
+    //  - 否则用关键词搜索：按 platform 选搜索源，另一平台自动兜底
+    const platform = String(args.platform || '').trim().toLowerCase()
+    let targets = []
+    if (url) {
+      targets = [url]
+    } else if (query) {
+      const yt = `ytsearch1:${query}`
+      const bili = `bilisearch1:${query}`
+      // CN/bilibili 优先 B 站，否则优先 YouTube；两者互为兜底。
+      targets = platform === 'bilibili' ? [bili, yt] : [yt, bili]
+    } else {
+      return JSON.stringify({ ok: false, error: 'download 需要 url 或 query（歌名/歌手），至少给一个' })
     }
 
-    if (result.code !== 0) {
-      return JSON.stringify({ ok: false, error: `yt-dlp failed: ${result.stderr.slice(0, 400)}` })
+    // 文件命名：Agent 传了 title 就用干净标题命名。query 直下时 yt-dlp 默认用
+    // 视频标题（一长串脏名），用 title/artist 命名既好看，定位文件也更稳。
+    const wantArtist = String(args.artist || '').trim()
+    const wantTitle = String(args.title || '').trim()
+    const niceName = wantTitle
+      ? (wantArtist ? `${wantArtist} - ${wantTitle}` : wantTitle)
+          .replace(/[\\/:*?"<>|\x00-\x1f]/g, '').trim().slice(0, 100)
+      : ''
+
+    // Download: print final filepath after conversion
+    const outTemplate = (niceName
+      ? path.join(musicDir, `${niceName}.%(ext)s`)
+      : path.join(musicDir, '%(title)s.%(ext)s')
+    ).replace(/\\/g, '/')
+    const dlArgs = ['-x', '--audio-format', 'mp3', '--audio-quality', '192K', '--no-playlist', '--print', 'after_move:filepath', '-o', outTemplate]
+
+    // 下载同步阻塞 30s–2min，先 emit 一条进度 action，让用户在界面看到“正在下载”，
+    // 而不是面对一段静默以为卡死。
+    emitEvent('action', { tool: 'music', summary: `正在下载歌曲：${niceName || query || url}`, detail: '' })
+
+    let result = null
+    let lastErr = ''
+    for (const target of targets) {
+      result = await runProcess(ytdlp, [...dlArgs, target])
+      // SSL 握手失败时降级：加 --no-check-certificates 重试一次
+      if (result.code !== 0 && /ssl|EOF occurred in violation of protocol/i.test(result.stderr)) {
+        result = await runProcess(ytdlp, [...dlArgs, '--no-check-certificates', target])
+      }
+      if (result.code === 0) break
+      lastErr = result.stderr
+    }
+
+    if (!result || result.code !== 0) {
+      return JSON.stringify({ ok: false, error: `yt-dlp failed: ${String(lastErr).slice(0, 400)}` })
     }
 
     // Parse output filepath (last non-empty line)
@@ -690,7 +798,7 @@ export async function execMusic(args = {}) {
       lrc = await fetchLrcFromNet(title, artist) || ''
     }
 
-    const track = upsertMusicTrack({ title, artist, album: String(args.album || ''), filePath, lrc, sourceUrl: url })
+    const track = upsertMusicTrack({ title, artist, album: String(args.album || ''), filePath, lrc, sourceUrl: url || query })
     return JSON.stringify({ ok: true, track, lrc_fetched: Boolean(lrc) })
   }
 

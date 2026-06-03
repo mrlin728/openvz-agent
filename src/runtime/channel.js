@@ -23,3 +23,13 @@ export function normalizeChannel(channel) {
   if (CHANNEL_NORMALIZE[channel] != null) return CHANNEL_NORMALIZE[channel]
   return String(channel).toUpperCase()
 }
+
+// 共享谓词：判断这条对话记录是不是"系统信号"（非用户/非 jarvis 的真实消息），
+// 用于决定是否要把它渲染成 [system signal · ...] 块。
+// fallbackChannel：当 row.channel 为空时回退使用的 channel（formatConversationMessage
+//   在 row.channel 缺失时会回退到 currentMsg.channel，必须保住这个语义）。
+export function isSystemSignalRow(row, fallbackChannel = '') {
+  const ch = (row?.channel) || fallbackChannel || ''
+  const norm = normalizeChannel(ch)
+  return row?.from_id === 'SYSTEM' || norm === 'SYSTEM' || ch === 'APP_SIGNAL' || ch === 'REMINDER'
+}

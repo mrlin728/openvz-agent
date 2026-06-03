@@ -17,7 +17,7 @@ import { restartConnector } from './social/index.js'
 // manager.js (Whisper local server) removed
 import { replaceProvider } from './providers/registry.js'
 import { persistAppState } from './capabilities/executor.js'
-import { execGenerateVideo, saveGeneratedVideo, setAIVideoPanelState } from './capabilities/tools/media.js'
+import { execGenerateVideo, saveGeneratedVideo, setAIVideoPanelState, getVideoHistory } from './capabilities/tools/media.js'
 import { MinimaxProvider } from './providers/minimax.js'
 import { handleSocialWebhook, isSocialWebhookPath } from './social/webhooks.js'
 import { getClawbotQR, logoutClawbot } from './social/wechat-clawbot.js'
@@ -632,6 +632,16 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
           jsonResponse(res, 400, { ok: false, error: e.message })
         }
       })
+      return
+    }
+
+    // GET /aivideo/history — 面板打开时拉取已完成视频历史，重建生成栏队列（修复关闭重开后历史丢失）
+    if (req.method === 'GET' && url.pathname === '/aivideo/history') {
+      try {
+        jsonResponse(res, 200, { ok: true, jobs: getVideoHistory() })
+      } catch (e) {
+        jsonResponse(res, 200, { ok: false, jobs: [], error: e.message })
+      }
       return
     }
 

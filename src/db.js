@@ -1667,19 +1667,22 @@ export function insertActionLog({
 }
 
 // 获取最近 N 条行动日志（时间正序）
-// 默认排除 source='recognizer'：识别器是后台 housekeeping，不算主 Agent 的"自我历史"。
-// 一旦混进 self-snapshot 的"工具习惯（近 10 次调用）"和 runtime 的 "Recent tool/action log"，
-// 主 Agent 看到自己最近全在 skip_recognition，就会把后续无关问题误读成"用户在问识别器"。
-// 极少数审计/诊断场景需要看全部时，传 { includeRecognizer: true }。
-export function getRecentActionLogs(limit = 50, { includeRecognizer = false } = {}) {
+// 默认排除后台 housekeeping 人格（recognizer / consolidator）：它们不算主 Agent 的"自我历史"。
+// 一旦混进 self-snapshot 的"工具习惯（近 10 次调用）"、tool-router 的 ActionLog 保活，
+// 主 Agent 会(1)误以为自己最近在做识别/整理，把无关问题误读成"用户在问识别器"，
+// (2)被把 skip_recognition / skip_consolidation 这类后台专属工具重新注入工具表，
+//    于是在普通对话回完话后顺手补一个 skip_consolidation 当收尾（多余的"跳过整理"步骤）。
+// 极少数审计/诊断场景需要看全部时，传 { includeHousekeeping: true }。
+export function getRecentActionLogs(limit = 50, { includeHousekeeping = false, includeRecognizer = false } = {}) {
   const db = getDB()
-  if (includeRecognizer) {
+  if (includeHousekeeping || includeRecognizer) {
     return db.prepare(`
       SELECT * FROM action_logs ORDER BY id DESC LIMIT ?
     `).all(limit).reverse()
   }
   return db.prepare(`
-    SELECT * FROM action_logs WHERE source IS NULL OR source != 'recognizer'
+    SELECT * FROM action_logs
+    WHERE source IS NULL OR source NOT IN ('recognizer', 'consolidator')
     ORDER BY id DESC LIMIT ?
   `).all(limit).reverse()
 }
@@ -2022,12 +2025,18 @@ export function getMusicTrack(id) {
 
 export function searchMusicLibrary(query, limit = 20) {
   const db = getDB()
-  const q = `%${query}%`
+  const tokens = String(query || '').trim().split(/\s+/).filter(Boolean)
+  if (!tokens.length) return []
+  // 每个词都要命中 title/artist/album 之一（per-token OR，token 之间 AND）：
+  // 这样 "歌名 歌手" 能匹配到 title 只含歌名、artist 只含歌手的行，避免漏命中后白跑下载。
+  const clauses = tokens.map(() => '(title LIKE ? OR artist LIKE ? OR album LIKE ?)')
+  const params = []
+  for (const t of tokens) { const like = `%${t}%`; params.push(like, like, like) }
   return db.prepare(`
     SELECT * FROM music_library
-    WHERE title LIKE ? OR artist LIKE ? OR album LIKE ?
+    WHERE ${clauses.join(' AND ')}
     ORDER BY added_at DESC LIMIT ?
-  `).all(q, q, q, limit)
+  `).all(...params, limit)
 }
 
 export function listMusicLibrary(limit = 50) {
