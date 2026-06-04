@@ -472,6 +472,43 @@ const createSettingsModal = () => `
               <label class="settings-label" for="tts-voice-select">声音</label>
               <select class="settings-select" id="tts-voice-select"></select>
             </div>
+            <div class="settings-row">
+              <label class="settings-label" for="tts-streaming-toggle">流式合成</label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--ink2);">
+                <input type="checkbox" id="tts-streaming-toggle" />
+                边合成边播放，回复更快出声（默认开）
+              </label>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="tts-fx-toggle">机器人音效</label>
+              <label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:12px;color:var(--ink2);">
+                <input type="checkbox" id="tts-fx-toggle" />
+                给当前声音叠加混响 / 机械质感（默认关）
+              </label>
+            </div>
+            <div id="tts-fx-lock" style="display:none;flex-direction:column;align-items:stretch;gap:6px;padding:8px 0 4px;">
+              <p class="settings-hint" style="margin:0;color:#e0a64d;">未来感音效需要付费，这是维持这个项目动力，请联系作者索要密码</p>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <input class="settings-input" type="text" id="tts-fx-pw" placeholder="输入密码解锁" style="flex:1;">
+                <button class="settings-save-btn" id="tts-fx-unlock" type="button" style="padding:4px 14px;font-size:12px;">解锁</button>
+              </div>
+              <span id="tts-fx-unlock-msg" style="font-size:11px;color:var(--ink2);"></span>
+            </div>
+            <div id="tts-fx-sliders" style="display:none;flex-direction:column;gap:7px;padding:8px 0 4px;">
+              <div class="tts-fx-srow"><label for="tts-fx-wet">混响</label><input type="range" id="tts-fx-wet" min="0" max="2" step="0.01"><span id="tts-fx-wet-val"></span></div>
+              <div class="tts-fx-srow"><label for="tts-fx-reverbSeconds">混响长度</label><input type="range" id="tts-fx-reverbSeconds" min="0.2" max="3.5" step="0.1"><span id="tts-fx-reverbSeconds-val"></span></div>
+              <div class="tts-fx-srow"><label for="tts-fx-driveMix">失真 / 重量</label><input type="range" id="tts-fx-driveMix" min="0" max="2" step="0.01"><span id="tts-fx-driveMix-val"></span></div>
+              <div class="tts-fx-srow"><label for="tts-fx-metallic">金属感</label><input type="range" id="tts-fx-metallic" min="0" max="2" step="0.01"><span id="tts-fx-metallic-val"></span></div>
+              <div class="tts-fx-srow"><label for="tts-fx-ring">机器人感</label><input type="range" id="tts-fx-ring" min="0" max="2" step="0.01"><span id="tts-fx-ring-val"></span></div>
+              <div class="tts-fx-srow"><label for="tts-fx-chorus">合成厚度</label><input type="range" id="tts-fx-chorus" min="0" max="2" step="0.01"><span id="tts-fx-chorus-val"></span></div>
+              <div class="tts-fx-srow"><label for="tts-fx-metallicFeedback">金属共振</label><input type="range" id="tts-fx-metallicFeedback" min="0" max="0.92" step="0.01"><span id="tts-fx-metallicFeedback-val"></span></div>
+              <div class="tts-fx-srow"><label for="tts-fx-metallicDelayMs">金属音调</label><input type="range" id="tts-fx-metallicDelayMs" min="2" max="20" step="0.5"><span id="tts-fx-metallicDelayMs-val"></span></div>
+              <div class="tts-fx-srow"><label for="tts-fx-ringHz">机器人音调</label><input type="range" id="tts-fx-ringHz" min="30" max="600" step="5"><span id="tts-fx-ringHz-val"></span></div>
+              <div style="display:flex;justify-content:space-between;align-items:center;">
+                <span class="settings-hint" style="margin:0;">拖动即时生效，下次播放 / 试听可听到</span>
+                <button class="settings-save-btn" id="tts-fx-reset" type="button" style="padding:3px 10px;font-size:12px;">恢复默认</button>
+              </div>
+            </div>
 
             <div id="tts-creds-doubao" style="display:none;">
               <div class="settings-row">
@@ -490,7 +527,16 @@ const createSettingsModal = () => `
                 <label class="settings-label" for="tts-doubao-access-key">Access Key</label>
                 <input class="settings-input" type="password" id="tts-doubao-access-key" placeholder="旧版控制台 Access Token，留空则不修改">
               </div>
-              <p class="settings-hint">在<a href="https://console.volcengine.com/speech/new/" target="_blank" style="color:var(--cool)">豆包语音合成控制台</a>获取 API Key。2.0 音色使用 seed-tts-2.0；1.0/moon/BV 音色使用 seed-tts-1.0 或控制台对应资源。</p>
+              <div class="settings-row">
+                <label class="settings-label" for="tts-doubao-style">情感风格</label>
+                <input class="settings-input" type="text" id="tts-doubao-style" placeholder="可空。例：用低沉沉稳、情绪饱满带金属感的人工智能管家声音">
+              </div>
+              <div class="tts-fx-srow" style="margin-bottom:8px;">
+                <label for="tts-doubao-rate">语速</label>
+                <input type="range" id="tts-doubao-rate" min="-50" max="100" step="5">
+                <span id="tts-doubao-rate-val"></span>
+              </div>
+              <p class="settings-hint">在<a href="https://console.volcengine.com/speech/new/" target="_blank" style="color:var(--cool)">豆包语音合成控制台</a>获取 API Key。2.0 音色使用 seed-tts-2.0；1.0/moon/BV 音色使用 seed-tts-1.0 或控制台对应资源。<br>「情感风格」用自然语言描述语气（越具体越好，短词无效），留空＝中性。要贾维斯感建议配男声（云舟 zh_male_m191_uranus_bigtts）。</p>
             </div>
 
             <div id="tts-creds-minimax" style="display:none;">

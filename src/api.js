@@ -1372,6 +1372,8 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
               doubaoAppId:   creds.doubaoAppId,
               doubaoAccessKey: creds.doubaoAccessKey,
               doubaoResourceId: creds.doubaoResourceId,
+              doubaoStyle:   creds.doubaoStyle,
+              doubaoSpeechRate: creds.doubaoSpeechRate,
               minimaxKey:    creds.minimaxKey,
               openaiKey:     creds.openaiKey,
               openaiBaseURL: creds.openaiBaseURL,
@@ -1464,8 +1466,8 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
           const provider = rawCfg.voiceProvider || msg.provider || 'aliyun'
           session = createCloudASRSession(
             { provider, lang: msg.lang || 'zh', ...rawCfg },
-            (text, isFinal) => {
-              try { ws.send(JSON.stringify({ type: 'transcript', text, is_final: isFinal })) } catch {}
+            (text, isFinal, seg) => {
+              try { ws.send(JSON.stringify({ type: 'transcript', text, is_final: isFinal, seg })) } catch {}
             },
             (errMsg) => {
               try { ws.send(JSON.stringify({ type: 'error', message: errMsg })) } catch {}

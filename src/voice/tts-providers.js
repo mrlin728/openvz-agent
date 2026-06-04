@@ -139,6 +139,8 @@ async function streamDoubao({
   appId,
   accessKey,
   resourceId,
+  style,
+  speechRate,
 }) {
   const token = accessKey || apiKey
   if (!token) throw new Error('豆包 TTS: 缺少 API Key/Access Key，请在设置中填写豆包语音凭证')
@@ -152,16 +154,28 @@ async function streamDoubao({
   if (appId) headers['X-Api-App-Id'] = appId
   if (accessKey) headers['X-Api-Access-Key'] = accessKey
   if (apiKey) headers['X-Api-Key'] = apiKey
+  const reqParams = {
+    text,
+    speaker,
+    audio_params: { format: 'mp3', sample_rate: 24000 },
+  }
+  // 语速：speech_rate 范围 -50~100（0=正常，100=2倍速，-50=0.5倍速，正数更快）
+  const rate = Number(speechRate)
+  if (Number.isFinite(rate) && rate !== 0) {
+    reqParams.audio_params.speech_rate = Math.max(-50, Math.min(100, Math.round(rate)))
+  }
+  // 情感风格：自然语言描述（如"用低沉沉稳、情绪饱满带金属感的人工智能管家声音"），
+  // 通过 additions.context_texts 注入。additions 必须是序列化后的 JSON 字符串。
+  const styleText = (style || '').trim()
+  if (styleText) {
+    reqParams.additions = JSON.stringify({ context_texts: [styleText], model_type: 4 })
+  }
   const resp = await fetch('https://openspeech.bytedance.com/api/v3/tts/unidirectional', {
     method: 'POST',
     headers,
     body: JSON.stringify({
       user: { uid: 'bailongma' },
-      req_params: {
-        text,
-        speaker,
-        audio_params: { format: 'mp3', sample_rate: 24000 },
-      },
+      req_params: reqParams,
     }),
   })
   if (!resp.ok) {
@@ -307,6 +321,8 @@ export async function streamTTS({ text, provider, voiceId, keys = {} }) {
         appId: keys.doubaoAppId,
         accessKey: keys.doubaoAccessKey,
         resourceId: keys.doubaoResourceId,
+        style: keys.doubaoStyle,
+        speechRate: keys.doubaoSpeechRate,
       })
     case 'minimax':
       return streamMiniMax({ text, voiceId, apiKey: keys.minimaxKey })

@@ -34,6 +34,9 @@ import { getStatus as getTickerStatus } from '../ticker.js'
 const CORE_TOOLS = [
   'send_message',
   'recall_memory',
+  // find_tool：工具发现入口。每轮只注入约 35 个工具里命中意图的子集，模型若需要一个本轮没注入的
+  // 工具（比如关键词没命中导致 generate_image / exec_command 没进来），可调 find_tool 搜出来并当场装载。
+  'find_tool',
   'ui_show', 'ui_update', 'ui_hide', 'ui_register', 'ui_patch',
 ]
 
@@ -177,6 +180,28 @@ const VIDEO_GEN_TRIGGERS = [
   '帮我生成视频', '用图生成视频', '把图变成视频', '让图片动起来', '让照片动起来',
   'seedance', '即梦', '火山视频',
   'generate video', 'text to video', 'image to video', 'make a video', 'create a video',
+]
+
+// 触发词 → 工具组的单一数据源。selectTools（按轮注入）和 find_tool（模型主动搜工具）
+// 共用它，避免两处各维护一份中文关键词。注：CORE / task / memory / 多模态 mmCaps gate 等
+// 特殊注入逻辑仍在 selectTools 里，这里只收录"纯关键词触发的专业组"，正好是 find_tool 要搜的范围。
+export const TOOL_GROUPS = [
+  { triggers: FILESYSTEM_TRIGGERS,   tools: FILESYSTEM_TOOLS },
+  { triggers: EXEC_TRIGGERS,         tools: EXEC_TOOLS },
+  { triggers: WEB_TRIGGERS,          tools: WEB_TOOLS },
+  { triggers: MEDIA_TRIGGERS,        tools: MEDIA_TOOLS },
+  { triggers: REMINDER_TRIGGERS,     tools: REMINDER_TOOLS },
+  { triggers: PREFETCH_TRIGGERS,     tools: PREFETCH_TOOLS },
+  { triggers: TICKER_TRIGGERS,       tools: TICKER_TOOLS },
+  { triggers: HOTSPOT_TRIGGERS,      tools: HOTSPOT_TOOLS },
+  { triggers: PERSON_CARD_TRIGGERS,  tools: PERSON_CARD_TOOLS },
+  { triggers: FOCUS_BANNER_TRIGGERS, tools: FOCUS_BANNER_TOOLS },
+  { triggers: ADMIN_TRIGGERS,        tools: ADMIN_TOOLS },
+  { triggers: TTS_TRIGGERS,          tools: [MM_GEN_TOOLS.tts] },
+  { triggers: LYRICS_TRIGGERS,       tools: [MM_GEN_TOOLS.lyrics] },
+  { triggers: MUSIC_GEN_TRIGGERS,    tools: [MM_GEN_TOOLS.music] },
+  { triggers: IMAGE_GEN_TRIGGERS,    tools: [MM_GEN_TOOLS.image] },
+  { triggers: VIDEO_GEN_TRIGGERS,    tools: ['generate_video'] },
 ]
 
 // 通用辅助：消息正文里是否含有给定触发词之一（lower-case 包含）。

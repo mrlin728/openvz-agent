@@ -207,6 +207,22 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
 
   const hasCurrentMessage = currentMessageIndex >= 0
 
+  // 显著度锚点：把"紧挨着当前用户消息之前的那条 jarvis 回复"显式标成「你上一句」。
+  //   接追问 / 指代消解的核心信号——历史窗口里这条本就在，但和更早的若干条混在一起没有
+  //   区分度。用户当前这句（"继续 / 那个 / 再来一个 / 这个呢"）绝大多数是在回应/承接「这一条」，
+  //   而不是窗口里更早的某句。给它一个一行 marker，让模型先把指代绑定到这里再往外找。
+  //   只在确实存在上一条回复（= 进行中的对话）时才标，首条消息无可锚定。
+  let priorReplyIndex = -1
+  if (hasCurrentMessage) {
+    for (let i = currentMessageIndex - 1; i >= 0; i--) {
+      if (messages[i].role === 'assistant') { priorReplyIndex = i; break }
+    }
+    if (priorReplyIndex >= 0) {
+      messages[priorReplyIndex].content =
+        `[↑ your last reply — the user's current message most likely responds to or follows from THIS]\n${messages[priorReplyIndex].content}`
+    }
+  }
+
   if (!hasCurrentMessage) {
     // TICK 心跳路径：fallback 消息会以 role:'user' 注入，结构上跟真用户消息没区别。
     // 不加 marker 时模型会把 "TICK 2026-..." 当成用户在重新发问，于是反复回答自己上一轮
@@ -220,6 +236,14 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
       content: fallbackContent,
     })
     currentMessageIndex = messages.length - 1
+  }
+
+  // 复合意图 + 指代的即时提醒：贴在当前用户消息「原话之后」，靠 recency 把模型的注意力
+  //   从前面那一大块 <context> 背景拉回到这一句真正的诉求上。只在进行中的对话里加（有上一条
+  //   回复时），首条消息交给系统提示里的常驻规则即可，避免每轮无谓加料。非 TICK。
+  if (priorReplyIndex >= 0 && !isTick && currentMessageIndex >= 0) {
+    messages[currentMessageIndex].content +=
+      `\n[intent check · in <think>: (1) resolve every pronoun/ellipsis here ("继续/那个/这个呢/再来一个/换一个") against your last reply and the exchange just above, before reaching for older context; (2) list EVERY distinct request this one message carries — finish all of them this turn, not just the first.]`
   }
 
   // Prepend this round's <context>...</context> to the current user message.

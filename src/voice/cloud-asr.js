@@ -62,7 +62,9 @@ function createAliyunSession(apiKey, lang, onTranscript, onError, onClose) {
         const sentence = msg?.payload?.output?.sentence
         if (sentence?.text) {
           const isFinal = sentence.status === 'sentence_end'
-          onTranscript(sentence.text, isFinal)
+          // begin_time 唯一标识一句：同一句的多帧（含重复 final）共用同一 seg，供前端去重
+          const seg = sentence.begin_time != null ? `a${sentence.begin_time}` : null
+          onTranscript(sentence.text, isFinal, seg)
         }
       } else if (event === 'task-failed') {
         onError(msg?.header?.error_message || '阿里云 ASR 错误')
@@ -142,7 +144,8 @@ function createTencentSession(secretId, secretKey, appId, lang, onTranscript, on
       const result = msg.result
       if (result?.voice_text_str) {
         const isFinal = result.slice_type === 2
-        onTranscript(result.voice_text_str, isFinal)
+        const seg = result.index != null ? `t${result.index}` : null
+        onTranscript(result.voice_text_str, isFinal, seg)
       }
     } catch {}
   })

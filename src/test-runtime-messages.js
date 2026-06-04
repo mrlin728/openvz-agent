@@ -95,7 +95,11 @@ assert(currentUser.content.includes('· WECHAT'), 'current user message shows no
 assert(currentUser.content.includes('channel switch: TUI → WECHAT'), 'current user message marks channel switch')
 
 const assistant = messages.find(m => m.role === 'assistant')
-assert(assistant.content === '我看到了', 'assistant history is trimmed before injection')
+// The assistant line immediately preceding the current user message is the "last reply":
+// it carries the salience anchor tag, then the verbatim original content.
+assert(assistant.content.includes('我看到了，随时为您效劳！'), 'assistant history content preserved verbatim')
+assert(assistant.content.includes('your last reply'), 'last reply is tagged as the salience anchor')
+assert(assistant.content.endsWith('我看到了，随时为您效劳！'), 'tag is prepended, original content kept verbatim at the end')
 
 const fallbackMessages = buildLLMMessages({
   systemPrompt: 'SYS',

@@ -231,6 +231,9 @@ export function initVoicePanel({
       if (vol > 0.02) {
         s.amp = lerp(s.amp, 0.08 + vol * 1.2, 0.4);
         s.spd = lerp(s.spd, 1.0 + vol * 5.0, 0.2);
+        // 用户还在出声（音频活动早于转录回调到达）→ 刷新活动时间戳，
+        // 让自动发送的静音计时顺延，避免在说话间隙误发。仅在录音且非 TTS 时计。
+        if (micActive && !suspendedByMedia) noteVoiceActivity();
         // speaking 状态下用户开口 → 视觉反馈但不覆盖状态（等 barge-in 触发后自然切换）
         if (sk !== 'recognizing' && sk !== 'event' && sk !== 'speaking')
           setStatus(vol > 0.15 ? 'recognizing' : 'listening');
@@ -309,6 +312,10 @@ export function initVoicePanel({
   // 打断预缓冲：TTS 期间把 PCM 写入环形缓冲，打断后一并发给 ASR
   let bargeinBuffer = []  // Int16Array 块的环形队列
   let bargeinBuffering = false // true = 正在 TTS，写缓冲而非发 WS
+  // 重连预缓冲：WS 断开/重连的死区里把 PCM 暂存，连上后立即补发，避免丢字。
+  // 这是「长了之后停顿一下后面没了」的根因——旧逻辑在 WS 未 OPEN 时直接丢弃音频。
+  let reconnectBuffer = []  // Int16Array 块
+  const RECONNECT_MAX_CHUNKS = Math.ceil(8000 * 16000 / 1000 / 4096) // ≈8s，防长断连无限堆积
   // 噪音误触发恢复：barge-in 后若 ASR 一直无输出则重新播放 TTS
   let bargeinNoSpeechTimer = null
   const BARGEIN_NO_SPEECH_MS = 3500 // 3.5s 内没有识别到语音 → 视为误触发
@@ -324,10 +331,57 @@ export function initVoicePanel({
   // 自动发送防抖
   let lastTranscriptText = '';
   let autoSendTimer = null;
+  // 「攒成一条，说完再发」：只有真正停足够久才发，中途思考停顿不切断。
+  // 静音阈值可经 localStorage 调，默认 3.5s（比一次思考停顿长，比一句话间隔长）。
+  const SILENCE_SEND_MS = (() => {
+    const v = parseInt(localStorage.getItem('bailongma-voice-silence-ms') || '', 10);
+    return Number.isFinite(v) && v >= 800 ? v : 3500;
+  })();
+  // 最近一次「用户还在说」的时间戳（语音活动 or 转录都刷新它）。
+  // 自动发送靠它自校正：计时器到点时若期间又有活动，则顺延而不是误发。
+  let lastVoiceActivityTs = 0;
+  function noteVoiceActivity() { lastVoiceActivityTs = Date.now(); }
   // PTT 按住期间禁用自动发送（由 pttEnd 在松手时统一发送）
   let pttHolding = false;
   // 多句累积：Paraformer 按句回调，需拼接完整段落
   let accumulatedText = '';
+  // 已定稿句子列表 [{seg, text}]。seg 为云端给的句子唯一标识（如 begin_time）：
+  // 同一句的多帧 final（VAD 抖动 / 网络重发 / 重连后对同一句重判终）共用同一 seg，
+  // 据此去重，避免同一句被反复追加成「X，X，X，…」。
+  let committed = [];
+  const committedText = () => committed.map(s => s.text).join('，');
+  function resetTranscriptAccumulation() {
+    committed = [];
+    accumulatedText = '';
+  }
+
+  // 收到一条 transcript 消息：写入累积/显示，返回是否为 final。两条 WS 路径共用，
+  // 保证去重逻辑只有一份。
+  function applyTranscript(msg) {
+    const text = (msg.text || '').trim();
+    if (!text) return false;
+    const seg = (msg.seg === undefined || msg.seg === null) ? null : msg.seg;
+    if (msg.is_final) {
+      const last = committed[committed.length - 1];
+      // 与上一句同 seg（或文本完全相同）→ 视为同一句的重复/修正帧，替换而非追加
+      if (last && ((seg !== null && last.seg === seg) || last.text === text)) {
+        last.text = text;
+      } else {
+        committed.push({ seg, text });
+      }
+      accumulatedText = committedText();
+      lastTranscriptText = accumulatedText;
+      if (transcript) transcript.textContent = accumulatedText;
+      const input = getChatInput?.();
+      if (input) input.value = accumulatedText;
+      return true;
+    }
+    // interim：仅用于实时显示，不写入 committed
+    const base = committedText();
+    lastTranscriptText = base ? base + '，' + text : text;
+    if (transcript) transcript.textContent = lastTranscriptText;
+    return false;
+  }
 
   async function startMic() {
     try {
@@ -367,17 +421,33 @@ export function initVoicePanel({
     const input = getChatInput?.();
     if (input) input.value = lastTranscriptText;
     getSendMessage?.({ channel: '语音识别', label: 'You · 语音识别' });
+    // 发出后清空累积：已发的内容不能再被后续语音追加/重发。
+    // （此处只清文字层，reconnectBuffer 是尚未识别的原始音频，由音频层自管理）
+    resetTranscriptAccumulation();
+    lastTranscriptText = '';
+    if (transcript) transcript.textContent = '';
   }
 
-  // 防抖自动发送：收到任意转录文字就重置 2s 计时器，停说 2s 后自动发
+  // 自动发送：攒成一条，只有真正停说 SILENCE_SEND_MS 后才整条发出。
+  // 中途停顿（思考、换气、句间）只要还在 SILENCE_SEND_MS 内就不发，避免把长消息切碎/丢尾。
+  // 计时器到点时若期间又有语音活动（noteVoiceActivity），自动顺延剩余时间，而不是误发。
   function scheduleAutoSend() {
     if (pttHolding) return;
-    if (autoSendTimer) clearTimeout(autoSendTimer);
-    autoSendTimer = setTimeout(() => {
-      autoSendTimer = null;
-      setStatus('processing');
-      sendRecognizedVoiceText();
-    }, 2000);
+    if (getAutoSend?.() === false) return; // 关了自动发送 → 纯手动（回车 / 松 PTT）
+    noteVoiceActivity();
+    if (autoSendTimer) return; // 已有计时器在跑，靠 lastVoiceActivityTs 自校正，无需重置
+    const tick = () => {
+      const idle = Date.now() - lastVoiceActivityTs;
+      if (idle >= SILENCE_SEND_MS) {
+        autoSendTimer = null;
+        setStatus('processing');
+        sendRecognizedVoiceText();
+      } else {
+        // 期间又说话了 → 顺延到「最后活动 + 静音窗口」
+        autoSendTimer = setTimeout(tick, SILENCE_SEND_MS - idle);
+      }
+    };
+    autoSendTimer = setTimeout(tick, SILENCE_SEND_MS);
   }
 
   // ─── Cloud ASR 模式（后端代理） ───
@@ -395,6 +465,13 @@ export function initVoicePanel({
       const lang = getLang?.()?.split('-')[0] || 'zh';
       ws.send(JSON.stringify({ type: 'config', provider, lang }));
       setStatus('listening');
+      // 补发重连死区里暂存的音频，避免断连期间说的话丢失
+      if (reconnectBuffer.length) {
+        for (const chunk of reconnectBuffer) {
+          if (ws.readyState === WebSocket.OPEN) ws.send(chunk.buffer);
+        }
+        reconnectBuffer = [];
+      }
       // 注意：此处不重置 accumulatedText，由调用方在首次启动时负责清空
     };
 
@@ -403,19 +480,8 @@ export function initVoicePanel({
       try {
         const msg = JSON.parse(ev.data);
         if (msg.type === 'transcript') {
-          const text = (msg.text || '').trim();
-          if (!text) return;
-          if (msg.is_final) {
-            accumulatedText = accumulatedText ? accumulatedText + '，' + text : text;
-            lastTranscriptText = accumulatedText;
-            if (transcript) transcript.textContent = accumulatedText;
-            const input = getChatInput?.();
-            if (input) input.value = accumulatedText;
-            triggerDone();
-          } else {
-            lastTranscriptText = accumulatedText ? accumulatedText + '，' + text : text;
-            if (transcript) transcript.textContent = lastTranscriptText;
-          }
+          if (!(msg.text || '').trim()) return;
+          if (applyTranscript(msg)) triggerDone();
           scheduleAutoSend();
         } else if (msg.type === 'error') {
           setStatus('error');
@@ -450,7 +516,8 @@ export function initVoicePanel({
     }
 
     // 首次启动清空累积文字；重连时由 connectCloudWs 直接调用，不经过此处
-    accumulatedText = '';
+    resetTranscriptAccumulation();
+    reconnectBuffer = [];
     if (transcript) transcript.textContent = '';
     connectCloudWs();
   }
@@ -473,7 +540,12 @@ export function initVoicePanel({
         if (bargeinBuffer.length > BARGEIN_MAX_CHUNKS) bargeinBuffer.shift();
         return;
       }
-      if (!cloudWs || cloudWs.readyState !== WebSocket.OPEN) return;
+      if (!cloudWs || cloudWs.readyState !== WebSocket.OPEN) {
+        // WS 重连死区：暂存音频，连上后由 onopen 补发，绝不丢字
+        reconnectBuffer.push(i16);
+        if (reconnectBuffer.length > RECONNECT_MAX_CHUNKS) reconnectBuffer.shift();
+        return;
+      }
       cloudWs.send(i16.buffer);
     };
   }
@@ -523,6 +595,8 @@ export function initVoicePanel({
     duckHighFrames = 0;
     duckLowFrames = 0;
     lastTranscriptText = '';
+    resetTranscriptAccumulation();
+    reconnectBuffer = [];
     micActive = false;
     if (!keepIntent) userWantedMic = false;
     btn?.classList.toggle('active', Boolean(keepIntent && userWantedMic));
@@ -568,7 +642,7 @@ export function initVoicePanel({
       // barge-in 触发的恢复：等待真实语音，超时则续播
       if (fromBargein) startBargeinNoSpeechTimer();
 
-      accumulatedText = '';
+      resetTranscriptAccumulation();
       if (transcript) transcript.textContent = '';
       const bargeinWs = new WebSocket(CLOUD_WS_URL);
       bargeinWs.binaryType = 'arraybuffer';
@@ -588,23 +662,12 @@ export function initVoicePanel({
         try {
           const msg = JSON.parse(ev.data);
           if (msg.type === 'transcript') {
-            const text = (msg.text || '').trim();
-            if (!text) return;
+            if (!(msg.text || '').trim()) return;
             // 收到真实语音 → 取消所有误触发恢复机制
             bargeinFastCheckActive = false;
             bargeinFastSilentFrames = 0;
             clearBargeinNoSpeechTimer();
-            if (msg.is_final) {
-              accumulatedText = accumulatedText ? accumulatedText + '，' + text : text;
-              lastTranscriptText = accumulatedText;
-              if (transcript) transcript.textContent = accumulatedText;
-              const input = getChatInput?.();
-              if (input) input.value = accumulatedText;
-              triggerDone();
-            } else {
-              lastTranscriptText = accumulatedText ? accumulatedText + '，' + text : text;
-              if (transcript) transcript.textContent = lastTranscriptText;
-            }
+            if (applyTranscript(msg)) triggerDone();
             scheduleAutoSend();
           } else if (msg.type === 'error') {
             setStatus('error');

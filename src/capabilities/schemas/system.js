@@ -104,6 +104,24 @@ export const systemSchemas = {
     }
   },
 
+  find_tool: {
+    type: 'function',
+    function: {
+      name: 'find_tool',
+      description: 'Search the full tool catalog for a capability you need but do NOT currently have in your tool list, and load the matching tools so you can call them immediately. Each turn only a subset of tools is loaded based on the message; if you realize you need something not available right now (run a command, generate an image, set a reminder, read a file, check trending news, manage a rule, etc.), call find_tool with a short description of what you want to do — the matched tools become callable on your next step. Do NOT use it to look up tools you already have.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'A short natural-language description of the capability you need, e.g. "生成一张图片", "运行命令", "设置提醒", "读取文件", "看热搜". Chinese or English both work.'
+          }
+        },
+        required: ['query']
+      }
+    }
+  },
+
   set_security: {
     type: 'function',
     function: {

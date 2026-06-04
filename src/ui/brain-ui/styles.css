@@ -1591,6 +1591,32 @@ body {
   margin-bottom: 14px;
 }
 
+/* ── TTS 机器人音效滑块 ── */
+.tts-fx-srow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.tts-fx-srow label {
+  font-size: 11px;
+  color: var(--ink2);
+  min-width: 68px;
+  flex-shrink: 0;
+}
+.tts-fx-srow input[type="range"] {
+  flex: 1;
+  min-width: 0;
+  accent-color: var(--cool);
+  cursor: pointer;
+}
+.tts-fx-srow span {
+  width: 38px;
+  text-align: right;
+  font-size: 11px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  color: var(--ink);
+}
+
 /* ── Voice panel (left message processor card) ── */
 .voice-panel {
   width: 100%;

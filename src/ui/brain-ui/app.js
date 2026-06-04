@@ -9,6 +9,7 @@ import { initHotspot, toggleHotspot, setHotspotMode, moveVoicePanelToBody, resto
 import { enrichVisiblePersonCardFromText, initPersonCard, setPersonCardMode, showPersonCardByName } from "./person-card.js";
 import { initDocPanel, setDocPanelMode } from "./doc.js";
 import { initWechatPopup, showWechatPopup } from "./wechat-popup.js";
+import { attachJarvisFx, isFxEnabledForVoice, setFxEnabledForVoice, getJarvisFxParams, setJarvisFxParams, resetJarvisFxParams, isFxUnlocked, tryUnlockFx } from "./tts-fx.js";
 renderBrainUiApp(document.body);
 const THEME_KEY = "jarvis-brain-ui-theme";
 const PHYSICS_STORAGE_KEY = "jarvis-brain-ui-physics";
@@ -1516,11 +1517,29 @@ function playJarvisStartupSound() {
 // ── TTS reply playback ────────────────────────────────────────────────────────
 let ttsAudioEl = null;
 let ttsCurrentText = '';
+let activeTTSVoiceId = null; // 后端当前配置的 TTS 音色，用于决定播放时是否叠加机器人音效
 let ttsInterruptedRemaining = '';
 let lastJarvisContent = '';
 let ttsInterruptedOriginalContent = '';
 let ttsInterruptionApplied = false;
 let ttsInterruptionDbTimer = null;
+let ttsStreamReader = null; // 当前流式合成的网络读取器；打断/重播时取消，避免旧流继续占用
+
+// 流式语音合成：边下边播，首包到达即出声（后端 /tts/stream 本就分块返回，
+// 这里用 MediaSource 消费，省去"等整段下载完再播"的延迟）。默认开启，可在设置关闭。
+const TTS_STREAMING_KEY = 'bailongma.tts.streaming';
+function isTTSStreamingEnabled() {
+  try { return localStorage.getItem(TTS_STREAMING_KEY) !== '0'; } catch { return true; } // 默认开启
+}
+function setTTSStreamingEnabled(on) {
+  try { localStorage.setItem(TTS_STREAMING_KEY, on ? '1' : '0'); } catch {}
+}
+// 仅当开启 + 浏览器支持 MSE 流式 MP3 时才走流式，否则退回整段 blob 播放（绝不让声音变哑）
+function ttsCanStream() {
+  if (!isTTSStreamingEnabled()) return false;
+  if (typeof window.MediaSource === 'undefined') return false;
+  try { return MediaSource.isTypeSupported('audio/mpeg'); } catch { return false; }
+}
 
 // Estimate spoken char count from audio progress, snapping to a sentence boundary
 function calcRemainingText(text, currentTime, duration) {
@@ -1593,6 +1612,7 @@ window.stopTTS = () => {
   applyTTSInterruption(spokenUpTo);
   ttsAudioEl.pause();
   try { URL.revokeObjectURL(ttsAudioEl.src); } catch {}
+  if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
   ttsAudioEl = null;
 };
 
@@ -1621,11 +1641,70 @@ window.resumeTTSIfNoSpeech = () => {
   playTTSReply(text);
 };
 
+// 接管一个 <audio> 元素开始播放：叠加音色音效、挂起 ASR、注册结束/出错清理。
+// revokeUrl 为该元素 src 的 objectURL（播放结束/出错时回收）。两条播放路径共用。
+function startTTSAudio(audioEl, revokeUrl) {
+  ttsAudioEl = audioEl;
+  audioEl.volume = 1.0; // ensure full volume (avoid residual duck state from previous play)
+  attachJarvisFx(audioEl, activeTTSVoiceId); // 仅当该音色开启了机器人音效才叠加；否则原生播放
+  // Suspend cloud ASR but keep the mic hardware open for interruption detection
+  window.bailongmaVoice?.suspendForTTS?.();
+  // 结束/出错收尾。注意：被新一轮播放替换掉的旧元素，其 onerror 可能在 pause/revoke 后迟到触发；
+  // 此时全局已指向新元素，必须用 ttsAudioEl===audioEl 守卫，否则会误杀新播放的流读取器和状态。
+  const finish = () => {
+    if (revokeUrl) { try { URL.revokeObjectURL(revokeUrl); } catch {} } // 释放本元素 URL（无论是否当前）
+    if (ttsAudioEl !== audioEl) return; // 已不是当前播放对象：仅回收 URL，不动全局
+    if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
+    ttsAudioEl = null;
+    ttsCurrentText = '';
+    window.bailongmaVoice?.resumeAfterMedia();
+  };
+  audioEl.onended = finish;
+  audioEl.onerror = finish;
+  audioEl.play().catch(() => {
+    if (ttsAudioEl === audioEl) window.bailongmaVoice?.resumeAfterMedia();
+  });
+}
+
+// 流式播放：把 /tts/stream 的分块响应喂进 MediaSource，首包到达即出声。
+function playTTSViaMediaSource(resp) {
+  const mediaSource = new MediaSource();
+  const url = URL.createObjectURL(mediaSource);
+  startTTSAudio(new Audio(url), url); // play() 会在缓冲到首包后自动开始
+  mediaSource.addEventListener('sourceopen', () => {
+    let sb;
+    try { sb = mediaSource.addSourceBuffer('audio/mpeg'); }
+    catch { try { mediaSource.endOfStream(); } catch {} return; }
+    const reader = resp.body.getReader();
+    ttsStreamReader = reader;
+    const queue = [];
+    let finished = false;
+    // appendBuffer 是异步的，更新中不能再次 append；用队列在 updateend 时串行送入
+    const flush = () => {
+      if (sb.updating) return;
+      if (queue.length) { try { sb.appendBuffer(queue.shift()); } catch {} return; }
+      if (finished && mediaSource.readyState === 'open') { try { mediaSource.endOfStream(); } catch {} }
+    };
+    sb.addEventListener('updateend', flush);
+    (async () => {
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) { finished = true; flush(); break; }
+          if (value && value.byteLength) { queue.push(value); flush(); }
+        }
+      } catch { finished = true; flush(); } // 被取消/网络中断：收尾，已播部分照常结束
+    })();
+  }, { once: true });
+}
+
 async function playTTSReply(text) {
   ttsCurrentText = text;
   ttsInterruptedRemaining = '';
   ttsInterruptionApplied = false;
   ttsInterruptedOriginalContent = '';
+  // 取消上一段仍在进行的流式读取，避免旧网络流继续占用
+  if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
   try {
     const resp = await fetch(`${API}/tts/stream`, {
       method: "POST",
@@ -1637,27 +1716,15 @@ async function playTTSReply(text) {
       try { const j = await resp.json(); errMsg = j.error || errMsg; } catch {}
       throw new Error(errMsg);
     }
-    const blob = await resp.blob();
-    const url = URL.createObjectURL(blob);
-    if (ttsAudioEl) { ttsAudioEl.pause(); URL.revokeObjectURL(ttsAudioEl.src); }
-    ttsAudioEl = new Audio(url);
-    ttsAudioEl.volume = 1.0; // ensure full volume (avoid residual duck state from previous play)
-    // Suspend cloud ASR but keep the mic hardware open for interruption detection
-    window.bailongmaVoice?.suspendForTTS?.();
-    ttsAudioEl.onended = () => {
-      URL.revokeObjectURL(url);
-      ttsAudioEl = null;
-      ttsCurrentText = '';
-      window.bailongmaVoice?.resumeAfterMedia();
-    };
-    ttsAudioEl.onerror = () => {
-      ttsAudioEl = null;
-      ttsCurrentText = '';
-      window.bailongmaVoice?.resumeAfterMedia();
-    };
-    ttsAudioEl.play().catch(() => {
-      window.bailongmaVoice?.resumeAfterMedia();
-    });
+    if (ttsAudioEl) { ttsAudioEl.pause(); try { URL.revokeObjectURL(ttsAudioEl.src); } catch {} }
+    // 默认流式：边下边播；不支持 MSE / 已关闭流式 → 退回整段 blob 播放
+    if (ttsCanStream() && resp.body) {
+      playTTSViaMediaSource(resp);
+    } else {
+      const blob = await resp.blob();
+      const url = URL.createObjectURL(blob);
+      startTTSAudio(new Audio(url), url);
+    }
   } catch {
     ttsCurrentText = '';
     window.bailongmaVoice?.resumeAfterMedia();
@@ -1768,9 +1835,106 @@ function initTTSSettings() {
   const voiceSel    = document.getElementById("tts-voice-select");
   const testBtn     = document.getElementById("tts-test-btn");
   const testStatus  = document.getElementById("tts-test-status");
+  const fxToggle    = document.getElementById("tts-fx-toggle");
   if (!providerSel) return;
 
+  // 流式合成开关（默认开）：纯播放行为，存在 localStorage
+  const streamingToggle = document.getElementById("tts-streaming-toggle");
+  if (streamingToggle) {
+    streamingToggle.checked = isTTSStreamingEnabled();
+    streamingToggle.addEventListener("change", () => setTTSStreamingEnabled(streamingToggle.checked));
+  }
+
   let allVoices = {};
+
+  // ── 机器人音效：开关 + 滑块面板 ──
+  const fxSlidersBox = document.getElementById("tts-fx-sliders");
+  // 滑块对应的参数键，及数值显示精度
+  const FX_SLIDERS = [
+    { key: "wet",              digits: 2 },
+    { key: "reverbSeconds",    digits: 1 },
+    { key: "driveMix",         digits: 2 },
+    { key: "metallic",         digits: 2 },
+    { key: "ring",             digits: 2 },
+    { key: "chorus",           digits: 2 },
+    { key: "metallicFeedback", digits: 2 },
+    { key: "metallicDelayMs",  digits: 1 },
+    { key: "ringHz",           digits: 0 },
+  ];
+
+  function loadFxSliders() {
+    const p = getJarvisFxParams();
+    for (const s of FX_SLIDERS) {
+      const el = document.getElementById(`tts-fx-${s.key}`);
+      const val = document.getElementById(`tts-fx-${s.key}-val`);
+      const v = Number(p[s.key] ?? 0);
+      if (el) el.value = v;
+      if (val) val.textContent = v.toFixed(s.digits);
+    }
+  }
+
+  for (const s of FX_SLIDERS) {
+    const el = document.getElementById(`tts-fx-${s.key}`);
+    const val = document.getElementById(`tts-fx-${s.key}-val`);
+    if (!el) continue;
+    el.addEventListener("input", () => {
+      const v = parseFloat(el.value);
+      setJarvisFxParams({ [s.key]: v });
+      if (val) val.textContent = v.toFixed(s.digits);
+    });
+  }
+
+  const fxReset = document.getElementById("tts-fx-reset");
+  if (fxReset) {
+    fxReset.addEventListener("click", () => { resetJarvisFxParams(); loadFxSliders(); });
+  }
+
+  // 语速滑块（豆包 speech_rate，-50~100，0=正常）：显示更新；存档走保存/试听
+  const fmtRate = (r) => (r === 0 ? "正常" : (r > 0 ? "+" + r : String(r)));
+  const doubaoRateEl = document.getElementById("tts-doubao-rate");
+  const doubaoRateVal = document.getElementById("tts-doubao-rate-val");
+  if (doubaoRateEl) {
+    doubaoRateEl.addEventListener("input", () => {
+      if (doubaoRateVal) doubaoRateVal.textContent = fmtRate(parseInt(doubaoRateEl.value, 10) || 0);
+    });
+  }
+
+  // 付费解锁
+  const fxLockBox = document.getElementById("tts-fx-lock");
+  const fxPwInput = document.getElementById("tts-fx-pw");
+  const fxUnlockBtn = document.getElementById("tts-fx-unlock");
+  const fxUnlockMsg = document.getElementById("tts-fx-unlock-msg");
+
+  // 机器人音效开关跟随当前选中的音色；未解锁则禁用开关+显示付费提示；解锁且开启时展开滑块
+  function syncFxToggle() {
+    const unlocked = isFxUnlocked();
+    const on = unlocked && isFxEnabledForVoice(voiceSel?.value);
+    if (fxToggle) { fxToggle.checked = on; fxToggle.disabled = !unlocked; }
+    if (fxSlidersBox) fxSlidersBox.style.display = on ? "flex" : "none";
+    if (fxLockBox) fxLockBox.style.display = unlocked ? "none" : "flex";
+  }
+  if (fxToggle) {
+    fxToggle.addEventListener("change", () => {
+      if (!isFxUnlocked()) { fxToggle.checked = false; syncFxToggle(); return; }
+      setFxEnabledForVoice(voiceSel?.value, fxToggle.checked);
+      if (fxSlidersBox) fxSlidersBox.style.display = fxToggle.checked ? "flex" : "none";
+    });
+  }
+  if (fxUnlockBtn) {
+    fxUnlockBtn.addEventListener("click", () => {
+      const res = tryUnlockFx(fxPwInput?.value?.trim() || "");
+      if (fxUnlockMsg) {
+        fxUnlockMsg.textContent = res.ok ? "已解锁 ✓ 现在可以开启机器人音效了" : res.reason;
+        fxUnlockMsg.style.color = res.ok ? "#3ba55d" : "#e05050";
+      }
+      if (res.ok) syncFxToggle();
+    });
+  }
+  if (voiceSel) {
+    voiceSel.addEventListener("change", syncFxToggle);
+  }
+  loadFxSliders();
+  syncFxToggle();
 
   const credSections = {
     doubao:     document.getElementById("tts-creds-doubao"),
@@ -1795,6 +1959,7 @@ function initTTSSettings() {
     if (savedId && voices.some(v => v.id === savedId)) {
       voiceSel.value = savedId;
     }
+    syncFxToggle();
   }
 
   providerSel.addEventListener("change", () => {
@@ -1808,12 +1973,22 @@ function initTTSSettings() {
     if (tts?.ttsProvider) providerSel.value = tts.ttsProvider;
     else providerSel.value = "doubao";
     updateVoiceOptions(provider, tts?.ttsVoiceId);
+    activeTTSVoiceId = voiceSel?.value || tts?.ttsVoiceId || null;
     const appidEl = document.getElementById("tts-volcano-appid");
     if (appidEl && tts?.volcanoAppId?.value) appidEl.value = tts.volcanoAppId.value;
     const doubaoAppIdEl = document.getElementById("tts-doubao-appid");
     if (doubaoAppIdEl && tts?.doubaoAppId?.value) doubaoAppIdEl.value = tts.doubaoAppId.value;
     const doubaoResourceEl = document.getElementById("tts-doubao-resource");
     if (doubaoResourceEl && tts?.doubaoResourceId) doubaoResourceEl.value = tts.doubaoResourceId;
+    const doubaoStyleEl = document.getElementById("tts-doubao-style");
+    if (doubaoStyleEl && tts?.doubaoStyle) doubaoStyleEl.value = tts.doubaoStyle;
+    const rateEl = document.getElementById("tts-doubao-rate");
+    if (rateEl) {
+      const r = Number(tts?.doubaoSpeechRate || 0) || 0;
+      rateEl.value = r;
+      const rv = document.getElementById("tts-doubao-rate-val");
+      if (rv) rv.textContent = r === 0 ? "正常" : (r > 0 ? "+" + r : String(r));
+    }
     const baseurlEl = document.getElementById("tts-openai-baseurl");
     if (baseurlEl && tts?.openaiTtsBaseURL) baseurlEl.value = tts.openaiTtsBaseURL;
     showCredSection(provider);
@@ -1826,13 +2001,17 @@ function initTTSSettings() {
     origSaveBtn.addEventListener("click", () => {
       const ttsBody = { ttsProvider: providerSel.value };
       const voiceId  = voiceSel?.value?.trim();
-      if (voiceId) ttsBody.ttsVoiceId = voiceId;
+      if (voiceId) { ttsBody.ttsVoiceId = voiceId; activeTTSVoiceId = voiceId; }
       const minimaxKey = document.getElementById("tts-minimax-key")?.value?.trim();
       if (minimaxKey) ttsBody.minimaxKey = minimaxKey;
       const doubaoKey = document.getElementById("tts-doubao-key")?.value?.trim();
       if (doubaoKey) ttsBody.doubaoKey = doubaoKey;
       const doubaoResource = document.getElementById("tts-doubao-resource")?.value?.trim();
       if (doubaoResource) ttsBody.doubaoResourceId = doubaoResource;
+      const doubaoStyleEl2 = document.getElementById("tts-doubao-style");
+      if (doubaoStyleEl2) ttsBody.doubaoStyle = doubaoStyleEl2.value.trim(); // 空＝清除（回中性）
+      const rateEl2 = document.getElementById("tts-doubao-rate");
+      if (rateEl2) ttsBody.doubaoSpeechRate = rateEl2.value;
       const doubaoAppId = document.getElementById("tts-doubao-appid")?.value?.trim();
       if (doubaoAppId) ttsBody.doubaoAppId = doubaoAppId;
       const doubaoAccessKey = document.getElementById("tts-doubao-access-key")?.value?.trim();
@@ -1868,13 +2047,17 @@ function initTTSSettings() {
       try {
         const preBody = { ttsProvider: providerSel.value };
         const currentVoice = voiceSel?.value?.trim();
-        if (currentVoice) preBody.ttsVoiceId = currentVoice;
+        if (currentVoice) { preBody.ttsVoiceId = currentVoice; activeTTSVoiceId = currentVoice; }
         const minimaxKey2 = document.getElementById("tts-minimax-key")?.value?.trim();
         if (minimaxKey2) preBody.minimaxKey = minimaxKey2;
         const doubaoKey = document.getElementById("tts-doubao-key")?.value?.trim();
         if (doubaoKey) preBody.doubaoKey = doubaoKey;
         const doubaoResource = document.getElementById("tts-doubao-resource")?.value?.trim();
         if (doubaoResource) preBody.doubaoResourceId = doubaoResource;
+        const doubaoStyleEl3 = document.getElementById("tts-doubao-style");
+        if (doubaoStyleEl3) preBody.doubaoStyle = doubaoStyleEl3.value.trim();
+        const rateEl3 = document.getElementById("tts-doubao-rate");
+        if (rateEl3) preBody.doubaoSpeechRate = rateEl3.value;
         const doubaoAppId = document.getElementById("tts-doubao-appid")?.value?.trim();
         if (doubaoAppId) preBody.doubaoAppId = doubaoAppId;
         const doubaoAccessKey = document.getElementById("tts-doubao-access-key")?.value?.trim();
@@ -1911,6 +2094,7 @@ function initTTSSettings() {
         }
         const ttsUrl = URL.createObjectURL(ttsBlob);
         const ttsAudio = new Audio(ttsUrl);
+        attachJarvisFx(ttsAudio, voiceSel?.value || activeTTSVoiceId); // 试听按当前选中音色的开关决定是否叠加
         ttsAudio.onended = () => { URL.revokeObjectURL(ttsUrl); if (testStatus) testStatus.textContent = ""; };
         ttsAudio.onerror = () => { URL.revokeObjectURL(ttsUrl); if (testStatus) testStatus.textContent = "播放失败"; };
         await ttsAudio.play();

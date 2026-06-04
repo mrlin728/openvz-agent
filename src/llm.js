@@ -7,6 +7,27 @@ import { insertActionLog } from './db.js'
 import { isTerminalInternalToolRound } from './runtime/tool-protocol.js'
 import { stripMarkers } from './runtime/markers.js'
 
+// find_tool 命中后，把它返回的 loaded 工具 schema 原地追加进本轮 toolSchemas。
+// 已在列表里的跳过；schema 取不到的跳过。数组原地 mutate —— 调用方传的是 callLLM 的 toolSchemas
+// 引用，push 后下一轮 streamOnceWithRetry 自动带上这些新工具，模型即可直接调用。
+function injectFoundToolSchemas(result, toolSchemas) {
+  try {
+    const parsed = JSON.parse(result)
+    const loaded = parsed?.loaded
+    if (!Array.isArray(loaded) || loaded.length === 0) return
+    const present = new Set(toolSchemas.map(s => s?.function?.name).filter(Boolean))
+    for (const name of loaded) {
+      if (typeof name !== 'string' || present.has(name)) continue
+      const schema = getToolSchemas([name])[0]
+      if (schema) {
+        toolSchemas.push(schema)
+        present.add(name)
+        console.log(`[find_tool] 装载工具 → ${name}`)
+      }
+    }
+  } catch { /* 非 JSON 结果（如错误串）忽略 */ }
+}
+
 // 延迟创建 OpenAI 客户端：激活流程把 key 写入 config 后再调用这里，
 // 避免模块加载阶段就锁死尚未填入的 apiKey/baseURL。
 let client = null
@@ -655,8 +676,17 @@ function isCloserPattern(content) {
 //   refresh agent 的上下文"，**不**期望模型回复用户。当 silentSignal=true 时，
 //   runtime 直接拦截 send_message 调用（不让它真投递），并在工具结果里告知
 //   "本轮是 silent 系统信号，不要 send_message"，让模型从这次拒绝里学到边界。
-export async function callLLM({ systemPrompt, message, messages: inputMessages = null, temperature = 0.5, topP = 0.9, tools = [], maxTokens, thinking = true, signal, onToolCall, onToolExecute, onStream, onRetry, toolContext = {}, mustReply = false, silentSignal = false }) {
+export async function callLLM({ systemPrompt, message, messages: inputMessages = null, temperature = 0.5, topP = 0.9, tools = [], maxTokens, thinking = true, signal, onToolCall, onToolExecute, onStream, onRetry, toolContext = {}, mustReply = false, silentSignal = false, localReply = false }) {
   const toolSchemas = getToolSchemas(tools)
+
+  // 本地渠道（语音 / TUI）下纯文本即回复：模型直接产出 text 就算回复，runtime 协议兜底会替它
+  // 真正投递（含语音 TTS）。社交渠道（微信/Discord/飞书/企微）必须显式 send_message 才能送达外部平台。
+  // 这条 deliverInstruction 决定各处催补 nudge 该让模型"写纯文本"还是"调 send_message"——
+  // 本地走纯文本能省掉 send_message 那一整轮额外 LLM 调用（send_message 后还要再跑一轮才收尾），
+  // 这正是语音响应慢的主因。
+  const deliverInstruction = localReply
+    ? 'give the user your final reply now as plain text — in this local channel your message text reaches the user directly (and is spoken aloud on voice), you do NOT need to call send_message'
+    : 'call send_message now to deliver your final reply to the user'
 
   const messages = Array.isArray(inputMessages) && inputMessages.length > 0
     ? inputMessages.map(item => ({ ...item }))
@@ -769,7 +799,9 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       // 不修复也能跑（主循环的 deliverFallbackReply 会把 content 投递出去），但 LLM 会逐渐
       // 失去"回复 = 调 send_message 工具"的反射，越来越依赖 fallback。这条 nudge 引导它回到
       // 正确的工具范式，同时保留 fallback 作最后一道兜底。
-      if (mustReply && !sawToolCall && !sentMessage && allContent.trim() && !plainTextReplyNudgeUsed) {
+      // localReply 守卫：本地渠道下纯文本就是回复（兜底会真正投递），不能再催它补 send_message——
+      // 那会逼出一整轮多余的 LLM 调用，正是要消除的延迟来源。只有社交渠道才需要这条 nudge。
+      if (!localReply && mustReply && !sawToolCall && !sentMessage && allContent.trim() && !plainTextReplyNudgeUsed) {
         const draft = allContent.trim()
         if (content) messages.push({ role: 'assistant', content })
         allContent = ''
@@ -814,6 +846,10 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       // 真正可靠的信号是 sentMessage（line 691 在每个工具后维护）。
       // mediaPlayed：本 turn 播放了音乐/视频时，不催模型补"最终回复"——播放类操作放好就结束，
       // 开场已替它 ack 过；催补尾只会逼出多余的"好了"。
+      // localReply 且已有可投递正文：纯文本就是回复，直接收尾走兜底投递，不再多催一轮。
+      if (localReply && mustReply && sawToolCall && !sentMessage && allContent.trim()) {
+        break
+      }
       if (mustReply && sawToolCall && !sentMessage && !finalNudgeUsed && !mediaPlayed) {
         // 关键修复：把上一轮的 assistant text 推入 messages，让模型在下一轮知道"自己刚才说过 X"。
         // 否则模型被 nudge 后会重新生成一段近似内容，叠加进 allContent 导致 fallback 投递出双段重复。
@@ -822,7 +858,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         allContent = ''
         messages.push({
           role: 'user',
-          content: 'Tool results have returned, but you have not sent the user a final reply yet. Based on the available tool results, call send_message now to reply to the user. If information is insufficient, explain what was found, the failure source, and the limitations; do not end silently. Do NOT repeat what you just wrote in plain text — wrap your reply in a send_message call.',
+          content: `Tool results have returned, but you have not given the user a final reply yet. Based on the available tool results, ${deliverInstruction}. If information is insufficient, explain what was found, the failure source, and the limitations; do not end silently.${localReply ? '' : ' Do NOT repeat what you just wrote in plain text — wrap your reply in a send_message call.'}`,
         })
         finalNudgeUsed = true
         continue
@@ -830,7 +866,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       if (mustReply && !sentMessage && !allContent.trim() && !emptyReplyNudgeUsed) {
         messages.push({
           role: 'user',
-          content: 'You ended this user-message turn without sending a reply and without producing fallback text. You must now call send_message with a brief, useful response to the user. If no tools are needed, answer directly. Do not end silently.',
+          content: `You ended this user-message turn without producing any reply. You must now ${deliverInstruction}, with a brief, useful response. If no tools are needed, answer directly. Do not end silently.`,
         })
         emptyReplyNudgeUsed = true
         continue
@@ -959,6 +995,9 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           // 单一权威：一次未被 silent/closer 拦截、未熔断的 send_message 真正执行过 →
           //   用户确实收到了回复。这是 delivered 唯一被置 true 的地方（除文末协议兜底外）。
           if (tc.name === 'send_message') delivered = true
+          // find_tool 动态装载：把搜到的工具 schema 当场注入本轮 toolSchemas（数组原地 push，
+          // 下一轮 streamOnceWithRetry 即带上），模型下一步就能直接调用搜出来的工具。
+          if (tc.name === 'find_tool') injectFoundToolSchemas(result, toolSchemas)
         }
       }
       throwIfAborted(signal)
@@ -1082,7 +1121,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
             ? `Tool execution results:\n${resultSummary}\n\nMessage sent. Default action: end the round now — to end, just stop: emit no further tool call and no text.\n\nDo NOT send a second message just to add a closing pleasantry ("有需要随时叫我", "希望对你有帮助"), a follow-up check ("还有什么需要吗"), or to restate your reply — those are pure noise. Do NOT narrate your decision to stop either: "已经回复过了，不需要再发" / "安静等待" is internal reasoning, not a message — never send it. Only call send_message again if there is genuinely NEW substantive information the user does not yet know.`
             : toolLoopStopReason
               ? buildToolLoopStopNudge(toolLoopStopReason, lastToolResult)
-              : `Tool execution results:\n${resultSummary}\n\nContinue completing the task. If this is a user message and the information is sufficient, call send_message to give the user a final reply. If a tool failed, explain the failure and available clues; do not end silently.`,
+              : `Tool execution results:\n${resultSummary}\n\nContinue completing the task. If this is a user message and the information is sufficient, ${deliverInstruction}. If a tool failed, explain the failure and available clues; do not end silently.`,
         })
       }
     } else {
@@ -1128,7 +1167,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       } else if (mustReply) {
         messages.push({
           role: 'user',
-          content: 'Tool results have returned. Continue completing the user request based on the available results. If the information is sufficient, you must call send_message to send the final reply to the user. For files, directories, commands, or network requests, state only facts verified by tool results, such as ok/verified/path/bytes/exit_code/status. Do not claim completion of any action without tool evidence. If a tool failed or the data is insufficient, explain the limitation and next suggested step; do not end silently.',
+          content: `Tool results have returned. Continue completing the user request based on the available results. If the information is sufficient, ${deliverInstruction}. For files, directories, commands, or network requests, state only facts verified by tool results, such as ok/verified/path/bytes/exit_code/status. Do not claim completion of any action without tool evidence. If a tool failed or the data is insufficient, explain the limitation and next suggested step; do not end silently.`,
         })
       }
     }
@@ -1159,7 +1198,10 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       mediaEmojiSent = true
     }
     if (fallbackContent && fallbackTarget) {
-      console.warn(`[protocol fallback] 模型未调 send_message —— callLLM 代为投递给 ${fallbackTarget}`)
+      // localReply 渠道：纯文本直投是设计内的快路径（省掉 send_message 那一轮），不是协议违规；
+      // 社交渠道走到这里才是模型漏调 send_message 的兜底。日志分级表达，避免把正常路径当告警噪声。
+      if (localReply) console.log(`[local reply] 纯文本直投给 ${fallbackTarget}（本地渠道无需 send_message）`)
+      else console.warn(`[protocol fallback] 模型未调 send_message —— callLLM 代为投递给 ${fallbackTarget}`)
       try {
         const fbArgs = { target_id: fallbackTarget, content: fallbackContent }
         // source:'fallback' 让 tool-audit 把这条 action_log 标记为协议兜底（不变量 #8）。

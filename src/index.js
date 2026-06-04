@@ -36,7 +36,7 @@ import { collectGeoWeather, getGeoWeatherBlock } from './geo-weather.js'
 import { collectTrending, getTrendingBlock } from './trending.js'
 import { collectAgents, buildAgentContextBlock, buildDelegationAskDirections } from './agents/registry.js'
 import { tryAutoConfigureKey } from './key-auto-config.js'
-import { PRIMARY_USER_ID, formatPresenceForPrompt, normalizeChannel } from './identity.js'
+import { PRIMARY_USER_ID, formatPresenceForPrompt, normalizeChannel, isExternalChannel } from './identity.js'
 import { truncateToolResultForUI } from './runtime/tool-result-preview.js'
 import { buildLLMMessages } from './runtime/messages.js'
 import { parseMarkers } from './runtime/markers.js'
@@ -557,6 +557,18 @@ function getProcessPriority(msg) {
 
 function isVoiceChannel(channel) {
   return channel === 'voice' || channel === '语音识别' || channel === 'FocusBanner'
+}
+
+// 语音轮里"明显要往外部/社交渠道发送"的意图——命中则保留 send_message 工具，
+// 否则语音轮默认撤掉它（回复走纯文本直投+TTS）。宁可漏判（少数情况下模型够不到外发通道，
+// 会如实说一声）也不误判（"发"字太宽泛不收，必须带明确渠道词或"发到/发给我"这类路由意图）。
+const EXTERNAL_SEND_HINTS = [
+  '微信', 'wechat', 'discord', '飞书', 'feishu', '企微', 'wecom',
+  '发到', '推送到', '发给我', '转给', '发条微信', '发个微信', '发我微信',
+]
+function voiceTurnNeedsSendMessage(text) {
+  const b = String(text || '').toLowerCase()
+  return EXTERNAL_SEND_HINTS.some(k => b.includes(k.toLowerCase()))
 }
 
 function isFastUserMessage(msg) {
@@ -1104,7 +1116,18 @@ async function runTurn(input, label, msg = null) {
     // 3. Call Jarvis LLM (can be interrupted by a new message)
     const toolContext = buildToolContextForProcess(msg, injection)
     const voiceTurn = isVoiceChannel(msg?.channel)
-    const turnTools = resolveTurnTools(injection.tools, { silentSignal })
+    // localReply：本地渠道（语音 / TUI，非社交）下纯文本即回复，模型无需调 send_message——
+    // runtime 协议兜底会替它真正投递（含语音 TTS）。社交渠道（微信/Discord/飞书/企微）才必须
+    // send_message 才能送达外部平台。省掉 send_message 那一整轮额外 LLM 调用是语音提速的关键。
+    const localReply = !!msg?.fromId && !silentSignal && !isExternalChannel(msg?.channel)
+    let turnTools = resolveTurnTools(injection.tools, { silentSignal })
+    // 语音轮撤掉 send_message（用户决策）：语音回复直接走纯文本 → runtime 协议兜底 executeTool
+    // 投递 + 自动 TTS，模型既不必也不能调 send_message，彻底消除"调工具那一轮"的延迟，也不让它
+    // 在 UI 里显式出现。例外：消息意图明显要往外部/社交渠道发（"发到我微信"等）时保留，否则模型
+    // 够不到外发通道。撤的只是模型的工具入口——本地投递通道（fallback / slow-ack）不受影响。
+    if (voiceTurn && !silentSignal && !voiceTurnNeedsSendMessage(input)) {
+      turnTools = turnTools.filter(t => t !== 'send_message')
+    }
     // thinking 始终开启：不再用"消息是否 trivial"的正则判定来关 reasoning。
     // 浅层模式不该替模型决定"这题不用想"——复合意图下会把需要 reasoning 的部分误杀。
     // 真正 trivial 的问题，模型开着 thinking 也会几乎瞬间收尾（深度由模型自控）；
@@ -1120,6 +1143,7 @@ async function runTurn(input, label, msg = null) {
       toolContext,
       mustReply: !!msg?.fromId && !silentSignal,
       silentSignal,
+      localReply,
       onToolCall: (name, args, result) => {
         const resultText = String(result)
         let ok = true
@@ -1204,9 +1228,12 @@ async function runTurn(input, label, msg = null) {
     //   兜底投递虽然也会在 toolCallLog 留下一条 send_message（带 fallback:true），但那不算模型遵守协议。
     const modelSentExplicitly = lastToolCall?.name === 'send_message' && !lastToolCall?.fallback
     if (!modelSentExplicitly) {
-      if (llmResult.delivered) {
-        // callLLM 的协议兜底已经真正投递（含语音 TTS / 社交派发 / 去重 / source:'fallback' 落库）。
-        //   模型违反了"回复=调 send_message"协议但被 runtime 兜底救回——记一条遥测便于观测违规率。
+      if (llmResult.delivered && localReply) {
+        // 本地渠道（语音 / TUI）：纯文本直投是设计内的快路径，不是协议违规——不发 violation 遥测。
+        //   callLLM 兜底已真正投递（含语音 TTS / 去重 / source:'fallback' 落库）。
+        console.log(`[local reply] Plain-text reply delivered to ${msg.fromId} without send_message (fast path)`)
+      } else if (llmResult.delivered) {
+        // 社交渠道：模型违反了"回复=调 send_message"协议但被 runtime 兜底救回——记一条遥测便于观测违规率。
         console.warn(`[protocol fallback] Model did not call send_message — callLLM delivered the response body to ${msg.fromId}`)
         emitEvent('protocol_violation', {
           label,
