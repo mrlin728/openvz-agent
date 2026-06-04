@@ -310,7 +310,7 @@ function buildStartupSelfCheckDirections(checkState) {
     `Complete the following 3 checks in order. Before each one, you must simultaneously play a Chinese voice announcement and show a progress card. After the check completes, close the card before moving to the next:`,
     `1. Call speak text="正在检查文件读写能力"; call ui_show("SelfCheckStepCard", {step:1, total:3, name:"文件读写", icon:"📁"}) and save the returned id as step_card_id. Then: use write_file to write self_check.txt in the sandbox root (content = current timestamp), then read_file it back to verify consistency. Record the result and call ui_hide(step_card_id).`,
     `2. Call speak text="正在检查热点面板"; call ui_show("SelfCheckStepCard", {step:2, total:3, name:"热点面板", icon:"🌐"}) and save the returned id as step_card_id. Then: hotspot_mode action=show; confirm it returns ok, then hotspot_mode action=hide. Record the result and call ui_hide(step_card_id).`,
-    `3. Call speak text="正在检查视频模式"; call ui_show("SelfCheckStepCard", {step:3, total:3, name:"视频模式", icon:"🎬"}) and save the returned id as step_card_id. Then: web_search for "bilibili Iron Man JARVIS" to find a BV number; media_mode mode=video action=show url=https://www.bilibili.com/video/<BV> autoplay=true; wait ~5 seconds; media_mode mode=video action=hide. Record the result and call ui_hide(step_card_id).`,
+    `3. Call speak text="正在检查视频模式"; call ui_show("SelfCheckStepCard", {step:3, total:3, name:"视频模式", icon:"🎬"}) and save the returned id as step_card_id. Then: web_search for "bilibili Iron Man JARVIS" ONCE — this is only a self-check, so take the FIRST BV number that appears in the results and stop immediately; do NOT keep searching for more videos or compare options, one valid BV id is enough. media_mode mode=video action=show url=https://www.bilibili.com/video/<BV> autoplay=true; wait ~5 seconds; media_mode mode=video action=hide. Record the result and call ui_hide(step_card_id).`,
     `Result values: use ok, degraded, error, or skipped_* for each item. Continue to the next item even if one fails.`,
     `[FINAL TWO STEPS — REQUIRED]\n(a) Call ui_show to display SelfCheckCard with props: { results: [{name:"文件读写",status:"ok/error",...},{name:"热点面板",...},{name:"视频模式",...}], overall:"ok/degraded/error" }. Infer overall from actual results: all ok → ok; any skipped → degraded; any error → error.\n(b) Call complete_startup_self_check with a summary (one sentence) and the results object.`,
   ].join('\n')
@@ -1132,6 +1132,13 @@ async function runTurn(input, label, msg = null) {
     // 浅层模式不该替模型决定"这题不用想"——复合意图下会把需要 reasoning 的部分误杀。
     // 真正 trivial 的问题，模型开着 thinking 也会几乎瞬间收尾（深度由模型自控）；
     // trivial 的延迟优化交给 prefix cache + focus 分类的 async 后台化，而非削能力。
+    //
+    // 流式回复：onStream 把 text/think 两种模式的 token 逐块吐出。curStreamMode 跟踪当前模式
+    // 让 stream_chunk 也带上 mode（前端据此区分"思考流"与"正文流"）。sawTextStream 标记本轮
+    // 是否流出过正文——若是，则语音 TTS 由前端边出边逐句合成（见 onToolCall 的 autoSpeak 守卫），
+    // 后端不再整段补一次 autoSpeakForVoiceReply，避免重复念。
+    let curStreamMode = null
+    let sawTextStream = false
     llmResult = await callLLM({
       systemPrompt,
       message: input,
@@ -1166,7 +1173,10 @@ async function runTurn(input, label, msg = null) {
         toolCallLog.push({ name, args: cleanArgs, result: resultText.slice(0, 500), ok, fallback: isFallbackDelivery })
         // 注：send_message 的 conversations 写入已由 executor.js 内统一处理（带 channel + external_party_id）
         // 这里仅处理语音输入的 TTS 自动回放
-        if (name === 'send_message' && args?.content && isVoiceChannel(msg?.channel)) {
+        // 语音渠道才自动播报。本轮若流出过正文（sawTextStream），说明前端已边出边逐句流式合成，
+        // 后端不再整段补一次，否则会和前端流式重复念。仅当没有正文流（极少：模型直接发了 send_message
+        // 而没流任何正文）时才由后端兜底整段合成，保证语音不会变哑。
+        if (name === 'send_message' && args?.content && isVoiceChannel(msg?.channel) && !sawTextStream) {
           const speakText = String(args.content).trim()
           if (speakText) autoSpeakForVoiceReply(speakText)
         }
@@ -1178,9 +1188,20 @@ async function runTurn(input, label, msg = null) {
         emitEvent('tool_executing', { name })
       },
       onStream: ({ event, mode, text, name }) => {
-        if (event === 'start') emitEvent('stream_start', { mode })
-        else if (event === 'chunk') emitEvent('stream_chunk', { text })
-        else if (event === 'end') emitEvent('stream_end', {})
+        if (event === 'start') {
+          curStreamMode = mode
+          // plainReply：本地渠道（语音 / TUI，非社交）下正文流即用户可见回复——前端据此把正文实时
+          //   打进聊天气泡（社交渠道回复在 send_message 工具参数里，正文流非回复，不实时显示）。
+          // speak：语音轮才自动播报——前端据此对正文流逐句流式合成。
+          emitEvent('stream_start', {
+            mode,
+            plainReply: mode === 'text' && localReply,
+            speak: mode === 'text' && voiceTurn && !silentSignal,
+          })
+        } else if (event === 'chunk') {
+          if (curStreamMode === 'text') sawTextStream = true
+          emitEvent('stream_chunk', { text, mode: curStreamMode })
+        } else if (event === 'end') emitEvent('stream_end', { mode: curStreamMode })
         else if (event === 'tool_preparing') emitEvent('tool_preparing', { name })
       },
     })

@@ -835,6 +835,18 @@ body {
   border-color: color-mix(in srgb, var(--cool) 25%, transparent);
 }
 
+/* 流式输出中的气泡：正文末尾跟一个脉冲光标，提示 AI 正在打字 */
+.msg-live .msg-body > *:last-child::after {
+  content: "▍";
+  display: inline;
+  margin-left: 1px;
+  color: var(--cool);
+  animation: msg-caret-blink 1s steps(2, start) infinite;
+}
+@keyframes msg-caret-blink {
+  to { opacity: 0; }
+}
+
 .msg-external {
   align-self: center;
   color: var(--ink2);

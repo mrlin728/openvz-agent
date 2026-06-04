@@ -1253,6 +1253,13 @@ function handle({ type, data = {} }) {
   switch (type) {
     case "message_received": {
       currentPath = "l1";
+      // 兜底：上一轮若被打断、message/response 均未到达，实时气泡会成孤儿、流式会话可能还挂着麦克风
+      // ——定稿气泡、收尾流式会话（恢复麦克风）、复位状态，再开新一轮。
+      if (sttsActive) endStreamingTTS();
+      if (chat.hasLiveJarvisMsg()) chat.finalizeLiveJarvisMsg(null);
+      liveReplyActive = false;
+      liveRawText = "";
+      liveTurnSpeak = false;
       L1.beginRound();
       const parsed = parseUserMessageInput(data.input);
       L1.newLine("user message received", {
@@ -1272,14 +1279,33 @@ function handle({ type, data = {} }) {
       break;
     case "stream_start":
       currentStream().startThinkingSession();
+      // 正文流（plainReply）：把 token 实时打进聊天气泡。一轮可能有多段正文（正文→工具→正文），
+      // 只在尚未开始时建气泡，后续段累积进同一个。speak 轮（语音）额外开启逐句流式合成。
+      if (data.mode === "text" && data.plainReply) {
+        if (data.speak) liveTurnSpeak = true;
+        if (!liveReplyActive) {
+          liveReplyActive = true;
+          liveRawText = "";
+          chat.beginLiveJarvisMsg({ alert: true });
+          if (liveTurnSpeak && isTTSStreamingEnabled()) beginStreamingTTS();
+        }
+      }
       break;
     case "stream_chunk":
-      // No longer rendering thought content — only drives the token-rate indicator
+      // 思考流：只驱动 token 速率指示器，不进聊天（保持 dashboard 纯净）
       currentStream().clearStatus();
       bumpTokens(data.text);
+      // 正文流：累积 + 实时重渲染气泡（剥离协议标记 / 藏半截标记）；语音轮喂给逐句合成队列
+      if (data.mode === "text" && liveReplyActive) {
+        liveRawText += data.text;
+        chat.updateLiveJarvisMsg(cleanStreamText(liveRawText));
+        if (sttsActive) feedStreamingTTS(liveRawText);
+      }
       break;
     case "stream_end":
       currentStream().stopThinking();
+      // 正文段结束：把残句先送去合成，降低尾句延迟（不结束会话，可能还有后续正文段）
+      if (data.mode === "text" && sttsActive) flushStreamingTTSBuf();
       break;
     case "tool_preparing": {
       // 思考动画已停，但工具尚未真正执行 —— 给一个占位状态避免 UI 死寂
@@ -1304,6 +1330,12 @@ function handle({ type, data = {} }) {
     case "response":
       // Round complete — stop all animations
       currentStream().end();
+      // 兜底：本轮结束时（response 必在 message 之后发）若流式合成会话仍开着——极少见，模型只调了工具
+      // 没产出可投递正文、message 未到达——标记正文已尽让队列放完即恢复麦克风，避免麦克风一直挂起。
+      // 正常情况 message 已 finalize 过，此处幂等无副作用，不会打断仍在播放的尾句。
+      if (sttsActive) finalizeStreamingTTS();
+      if (chat.hasLiveJarvisMsg()) chat.finalizeLiveJarvisMsg(null);
+      liveReplyActive = false; liveRawText = ""; liveTurnSpeak = false;
       break;
     case "processing_preempted":
       currentStream().end();
@@ -1383,7 +1415,20 @@ function handle({ type, data = {} }) {
         lastJarvisContent = data.content;
         const viaLabel = friendlyChannelLabel(data.channel);
         const content = viaLabel ? `_→ ${viaLabel}_  \n${data.content}` : data.content;
-        addMsg("jarvis", content);
+        // 若本轮正文已流式进了实时气泡：用权威全文定稿同一个气泡，避免新建重复气泡
+        if (chat.hasLiveJarvisMsg()) {
+          chat.finalizeLiveJarvisMsg(content);
+        } else {
+          addMsg("jarvis", content);
+        }
+        // 语音轮的 TTS 收尾：逐句会话进行中 → flush 尾句并收尾；若未走逐句（流式合成关闭）→ 整段播一次
+        if (liveTurnSpeak) {
+          if (sttsActive) finalizeStreamingTTS();
+          else playTTSReply(toPlainSpeech(data.content));
+        }
+        liveReplyActive = false;
+        liveRawText = "";
+        liveTurnSpeak = false;
         enrichVisiblePersonCardFromText(data.content, { source: 'assistant_message' });
         openChat(true);
       }
@@ -1525,6 +1570,29 @@ let ttsInterruptionApplied = false;
 let ttsInterruptionDbTimer = null;
 let ttsStreamReader = null; // 当前流式合成的网络读取器；打断/重播时取消，避免旧流继续占用
 
+// ── 边出文字边逐句流式合成（streaming sentence TTS）─────────────────────────────
+// 正文 token 边到边按句末标点切句入队，一个顺序播放队列逐句 /tts/stream 播放——第一句在
+// 后面还在生成时就出声。麦克风的挂起/恢复由队列在首段/末段统一各做一次（不可每段反复，
+// 否则 ttsStartTime/bargein 缓冲会被反复重置）。
+let ttsStreamingMode = false; // 本轮 TTS 走逐句队列（true）还是单段整段（false）；stopTTS 据此分支
+let sttsActive = false;       // 逐句会话进行中
+let sttsConsumed = 0;         // liveRawText 已喂入切句器的「干净文本」长度
+let sttsBuf = '';             // 尚未凑成整句的残句缓冲
+let sttsQueue = [];           // 已切出、待合成播放的句子
+let sttsPlaying = false;      // 当前有一段正在 fetch / 播放
+let sttsSpoken = '';          // 已完整播放过的句子拼接（打断时算"已说到哪"）
+let sttsCurSeg = '';          // 当前正在播放的句子文本
+let sttsStreamDone = false;   // 正文已全部到达（message 定稿），队列放完即收尾
+let sttsMicSuspended = false; // 已对麦克风做过一次 suspendForTTS
+
+const STTS_SENTENCE_RE = /[^。！？!?\n]*[。！？!?\n]+/g;
+function sttsHasReadable(s) { return /[\p{L}\p{N}]/u.test(s); }
+
+// 本轮流式回复状态：是否正在把正文打进实时气泡 / 累积的原始正文 / 本轮是否语音播报
+let liveReplyActive = false;
+let liveRawText = '';
+let liveTurnSpeak = false;
+
 // 流式语音合成：边下边播，首包到达即出声（后端 /tts/stream 本就分块返回，
 // 这里用 MediaSource 消费，省去"等整段下载完再播"的延迟）。默认开启，可在设置关闭。
 const TTS_STREAMING_KEY = 'bailongma.tts.streaming';
@@ -1601,6 +1669,7 @@ function applyTTSInterruption(spokenUpTo) {
 
 // Called by voice-panel interruption detection: stop current TTS and record cut point
 window.stopTTS = () => {
+  if (ttsStreamingMode && sttsActive) { stopStreamingTTS(); return; }
   if (!ttsAudioEl) return;
   const { remaining, spokenUpTo } = calcRemainingText(
     ttsCurrentText,
@@ -1642,13 +1711,16 @@ window.resumeTTSIfNoSpeech = () => {
 };
 
 // 接管一个 <audio> 元素开始播放：叠加音色音效、挂起 ASR、注册结束/出错清理。
-// revokeUrl 为该元素 src 的 objectURL（播放结束/出错时回收）。两条播放路径共用。
-function startTTSAudio(audioEl, revokeUrl) {
+// revokeUrl 为该元素 src 的 objectURL（播放结束/出错时回收）。多条播放路径共用。
+// opts.manageMic：是否由本函数挂起/恢复麦克风（单段播放=true；逐句队列由队列在首尾统一管，传 false）。
+// opts.onComplete：播放正常/出错收尾时的回调（队列用它推进下一段）；不传则走默认收尾（恢复麦克风）。
+function startTTSAudio(audioEl, revokeUrl, opts = {}) {
+  const { manageMic = true, onComplete = null } = opts;
   ttsAudioEl = audioEl;
   audioEl.volume = 1.0; // ensure full volume (avoid residual duck state from previous play)
   attachJarvisFx(audioEl, activeTTSVoiceId); // 仅当该音色开启了机器人音效才叠加；否则原生播放
   // Suspend cloud ASR but keep the mic hardware open for interruption detection
-  window.bailongmaVoice?.suspendForTTS?.();
+  if (manageMic) window.bailongmaVoice?.suspendForTTS?.();
   // 结束/出错收尾。注意：被新一轮播放替换掉的旧元素，其 onerror 可能在 pause/revoke 后迟到触发；
   // 此时全局已指向新元素，必须用 ttsAudioEl===audioEl 守卫，否则会误杀新播放的流读取器和状态。
   const finish = () => {
@@ -1656,21 +1728,24 @@ function startTTSAudio(audioEl, revokeUrl) {
     if (ttsAudioEl !== audioEl) return; // 已不是当前播放对象：仅回收 URL，不动全局
     if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
     ttsAudioEl = null;
+    if (onComplete) { onComplete(); return; } // 队列段：交回队列推进，麦克风/收尾由队列统一管
     ttsCurrentText = '';
-    window.bailongmaVoice?.resumeAfterMedia();
+    if (manageMic) window.bailongmaVoice?.resumeAfterMedia();
   };
   audioEl.onended = finish;
   audioEl.onerror = finish;
   audioEl.play().catch(() => {
-    if (ttsAudioEl === audioEl) window.bailongmaVoice?.resumeAfterMedia();
+    if (ttsAudioEl !== audioEl) return;
+    if (onComplete) { ttsAudioEl = null; onComplete(); return; }
+    if (manageMic) window.bailongmaVoice?.resumeAfterMedia();
   });
 }
 
 // 流式播放：把 /tts/stream 的分块响应喂进 MediaSource，首包到达即出声。
-function playTTSViaMediaSource(resp) {
+function playTTSViaMediaSource(resp, opts = {}) {
   const mediaSource = new MediaSource();
   const url = URL.createObjectURL(mediaSource);
-  startTTSAudio(new Audio(url), url); // play() 会在缓冲到首包后自动开始
+  startTTSAudio(new Audio(url), url, opts); // play() 会在缓冲到首包后自动开始
   mediaSource.addEventListener('sourceopen', () => {
     let sb;
     try { sb = mediaSource.addSourceBuffer('audio/mpeg'); }
@@ -1699,6 +1774,7 @@ function playTTSViaMediaSource(resp) {
 }
 
 async function playTTSReply(text) {
+  ttsStreamingMode = false; // 单段整段播放：stopTTS 走原有进度估算分支
   ttsCurrentText = text;
   ttsInterruptedRemaining = '';
   ttsInterruptionApplied = false;
@@ -1729,6 +1805,152 @@ async function playTTSReply(text) {
     ttsCurrentText = '';
     window.bailongmaVoice?.resumeAfterMedia();
   }
+}
+
+// ── 流式回复文本工具 ───────────────────────────────────────────────────────────
+// 协议标记（[RECALL:…]/[SET_TASK:…]/[CLEAR_TASK]/[UPDATE_PERSONA:…]）剥离。与后端 markers.js 等价；
+// 流式场景额外把"末尾尚未闭合的标记起始"整段藏起，避免半截标记被显示或念出来（等 ] 到了再放出）。
+const MARKER_STRIP_RE = /\[(?:RECALL:[\s\S]*?|SET_TASK:[\s\S]*?|CLEAR_TASK|UPDATE_PERSONA:[\s\S]*?)\]/g;
+function cleanStreamText(raw) {
+  let s = String(raw || '').replace(MARKER_STRIP_RE, '');
+  const lastOpen = s.lastIndexOf('[');
+  if (lastOpen >= 0 && s.indexOf(']', lastOpen) === -1) {
+    // 仅当 '[' 后看起来是协议标记关键字（全大写/下划线，可带 ":..."）才藏；不误伤 [链接](url) 等普通括号
+    if (/^\[[A-Z_]*(:[\s\S]*)?$/.test(s.slice(lastOpen))) s = s.slice(0, lastOpen);
+  }
+  return s;
+}
+
+// markdown → 朗读用纯文本（与后端 autoSpeakForVoiceReply 的剥离一致）
+function toPlainSpeech(md) {
+  return String(md || '').trim()
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`(.+?)`/g, '$1')
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+    .replace(/!\[[^\]]*\]\([^\)]+\)/g, '')
+    .replace(/\n+/g, ' ')
+    .trim();
+}
+
+// ── 逐句流式 TTS 队列 ──────────────────────────────────────────────────────────
+function beginStreamingTTS() {
+  // 停掉上一段仍在进行的单段播放 / 流读取
+  if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
+  if (ttsAudioEl) { try { ttsAudioEl.pause(); URL.revokeObjectURL(ttsAudioEl.src); } catch {} ttsAudioEl = null; }
+  ttsStreamingMode = true;
+  sttsActive = true;
+  sttsConsumed = 0; sttsBuf = ''; sttsQueue = []; sttsPlaying = false;
+  sttsSpoken = ''; sttsCurSeg = ''; sttsStreamDone = false; sttsMicSuspended = false;
+  ttsCurrentText = '';
+}
+
+// 喂入到目前为止的全部原始正文，内部只取新增的干净尾巴做切句
+function feedStreamingTTS(rawFull) {
+  if (!sttsActive) return;
+  const cleaned = cleanStreamText(rawFull);
+  if (cleaned.length <= sttsConsumed) return;
+  sttsBuf += cleaned.slice(sttsConsumed);
+  sttsConsumed = cleaned.length;
+  extractSttsSentences({});
+}
+
+function extractSttsSentences({ flushPartial = false, markDone = false } = {}) {
+  let lastIdx = 0, m;
+  STTS_SENTENCE_RE.lastIndex = 0;
+  while ((m = STTS_SENTENCE_RE.exec(sttsBuf)) !== null) {
+    const s = m[0].trim();
+    lastIdx = STTS_SENTENCE_RE.lastIndex;
+    if (s && sttsHasReadable(s)) sttsQueue.push(s);
+  }
+  sttsBuf = sttsBuf.slice(lastIdx);
+  if (flushPartial) {
+    const tail = sttsBuf.trim();
+    sttsBuf = '';
+    if (tail && sttsHasReadable(tail)) sttsQueue.push(tail);
+  }
+  if (markDone) sttsStreamDone = true;
+  pumpSttsQueue();
+}
+
+async function pumpSttsQueue() {
+  if (!sttsActive || sttsPlaying) return;
+  const seg = sttsQueue.shift();
+  if (!seg) {
+    if (sttsStreamDone) endStreamingTTS(); // 正文已尽且队列放完 → 收尾
+    return;
+  }
+  sttsPlaying = true;
+  sttsCurSeg = seg;
+  // 麦克风只在首段挂起一次（后续段之间保持挂起，避免反复重置 bargein 缓冲/预热计时）
+  if (!sttsMicSuspended) { sttsMicSuspended = true; window.bailongmaVoice?.suspendForTTS?.(); }
+  const onComplete = () => {
+    sttsSpoken += seg;
+    sttsCurSeg = '';
+    sttsPlaying = false;
+    pumpSttsQueue();
+  };
+  try {
+    const resp = await fetch(`${API}/tts/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: seg }),
+    });
+    if (!sttsActive) return; // 期间被打断/收尾
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    if (ttsCanStream() && resp.body) {
+      playTTSViaMediaSource(resp, { manageMic: false, onComplete });
+    } else {
+      const blob = await resp.blob();
+      if (!sttsActive) return;
+      const url = URL.createObjectURL(blob);
+      startTTSAudio(new Audio(url), url, { manageMic: false, onComplete });
+    }
+  } catch {
+    onComplete(); // 本句合成失败：跳过，继续下一句，绝不卡住队列
+  }
+}
+
+// 正文段落结束（stream_end text）：把残句也凑成一段送出，但不结束会话（可能还有后续正文段）
+function flushStreamingTTSBuf() {
+  if (sttsActive) extractSttsSentences({ flushPartial: true });
+}
+
+// message 定稿：flush 残句并标记正文已尽，队列放完即收尾
+function finalizeStreamingTTS() {
+  if (sttsActive) extractSttsSentences({ flushPartial: true, markDone: true });
+}
+
+function endStreamingTTS() {
+  sttsActive = false;
+  ttsStreamingMode = false;
+  if (sttsMicSuspended) { sttsMicSuspended = false; window.bailongmaVoice?.resumeAfterMedia(); }
+  sttsQueue = []; sttsBuf = ''; sttsCurSeg = ''; sttsSpoken = ''; sttsPlaying = false;
+}
+
+// 打断（barge-in）：停当前句、清队列，算出"已说到哪"标 ✋，并把剩余文本留给 resumeTTSIfNoSpeech 续播。
+// 麦克风的恢复由 voice-panel 在调用 stopTTS 后自己 resumeVoiceInputFromMedia(true) 负责（与单段路径一致），
+// 这里只置 sttsMicSuspended=false 防止重复恢复。
+function stopStreamingTTS() {
+  let curSpoken = '', curRemain = '';
+  if (ttsAudioEl && sttsCurSeg) {
+    const r = calcRemainingText(sttsCurSeg, ttsAudioEl.currentTime, ttsAudioEl.duration);
+    curSpoken = sttsCurSeg.slice(0, r.spokenUpTo);
+    curRemain = r.remaining || sttsCurSeg; // duration 未加载(NaN) → 整句视为未说
+  }
+  const spokenPlain = sttsSpoken + curSpoken;
+  const remainingPlain = [curRemain, sttsQueue.join(''), sttsBuf].filter(Boolean).join('').trim();
+  const fullPlain = (spokenPlain + remainingPlain) || (lastJarvisContent || '');
+  ttsCurrentText = fullPlain;                       // 让 ✋/续播的文本计算有一致的全文基准
+  ttsInterruptedRemaining = remainingPlain || fullPlain;
+  applyTTSInterruption(spokenPlain.length);
+  if (ttsAudioEl) { try { ttsAudioEl.pause(); URL.revokeObjectURL(ttsAudioEl.src); } catch {} }
+  if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
+  ttsAudioEl = null;
+  sttsActive = false; ttsStreamingMode = false;
+  sttsQueue = []; sttsBuf = ''; sttsCurSeg = ''; sttsSpoken = ''; sttsPlaying = false;
+  sttsMicSuspended = false; // 麦克风恢复交给 voice-panel 的 resumeVoiceInputFromMedia(true)
 }
 
 resetViewBtn.addEventListener("click", resetZoom);

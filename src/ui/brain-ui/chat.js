@@ -30,6 +30,7 @@ export function initChat({
   let closeTimer = null;
   let hasPendingJarvisMessage = false;
   let pendingMessageDismissed = false;
+  let liveEl = null;  // 正在流式输出的 jarvis 气泡（边收 token 边重渲染），message 事件到达后定稿
   let audioCtx = null;
   let audioUnlocked = false;
   let warmupTimer = null;
@@ -468,6 +469,55 @@ export function initChat({
     setTimeout(() => last.remove(), 300)
   }
 
+  // ── 流式回复气泡 ───────────────────────────────────────────────
+  // 后端 LLM 边生成边通过 stream_chunk 推 token；这里先建一个空的 jarvis 气泡，
+  // 随 token 到达不断重渲染，等权威的 message 事件到达再 finalize 成最终干净全文。
+  // 该气泡始终是最后一个 .msg-jarvis，所以打断 ✋（updateLastJarvisMsg）照常作用其上。
+  function beginLiveJarvisMsg({ alert = true } = {}) {
+    if (liveEl) finalizeLiveJarvisMsg(null);  // 兜底：上一轮孤儿气泡先定稿
+    const div = document.createElement("div");
+    div.className = "msg msg-jarvis msg-live";
+    const labelSpan = document.createElement("span");
+    labelSpan.className = "msg-label";
+    labelSpan.textContent = getAgentName();
+    div.appendChild(labelSpan);
+    div.appendChild(createMarkdownBody(""));
+    chatMessages.appendChild(div);
+    while (chatMessages.children.length > maxHistory) {
+      chatMessages.removeChild(chatMessages.firstChild);
+    }
+    liveEl = div;
+    hasPendingJarvisMessage = true;
+    pendingMessageDismissed = false;
+    if (alert) playJarvisAlert();
+    openChat();
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  function updateLiveJarvisMsg(text) {
+    if (!liveEl) return;
+    const children = Array.from(liveEl.children);
+    for (let i = 1; i < children.length; i++) children[i].remove();
+    liveEl.appendChild(createMarkdownBody(text));
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+  }
+
+  // text 为字符串则替换为权威全文；为 null 仅去掉 live 标记（保留已流出的内容）
+  function finalizeLiveJarvisMsg(text) {
+    if (!liveEl) return false;
+    if (typeof text === "string") {
+      const children = Array.from(liveEl.children);
+      for (let i = 1; i < children.length; i++) children[i].remove();
+      liveEl.appendChild(createMarkdownBody(text));
+    }
+    liveEl.classList.remove("msg-live");
+    liveEl = null;
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+    return true;
+  }
+
+  function hasLiveJarvisMsg() { return !!liveEl; }
+
   function updateLastJarvisMsg(newText) {
     const msgs = chatMessages.querySelectorAll('.msg-jarvis');
     if (!msgs.length) return;
@@ -483,6 +533,10 @@ export function initChat({
     addMsg,
     deleteLastUserMsg,
     updateLastJarvisMsg,
+    beginLiveJarvisMsg,
+    updateLiveJarvisMsg,
+    finalizeLiveJarvisMsg,
+    hasLiveJarvisMsg,
     applyActivationWarmupLock,
     isComposerLocked: () => inputLocked,
     isTyping,
