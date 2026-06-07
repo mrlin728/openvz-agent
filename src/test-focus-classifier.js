@@ -282,12 +282,12 @@ function stubClassifier(returnValue, capture) {
 // ========== describeStack 直接测：渲染快照 ==========
 {
   const { describeStack } = classifierInternal
-  assert(describeStack([]) === '[空栈]', 'describeStack: empty → 空栈')
+  assert(describeStack([]) === '[empty stack]', 'describeStack: empty → [empty stack]')
   const s = describeStack([
     makeFrame(['a', 'b']),
     makeFrame(['c']),
   ])
-  assert(s.includes('栈底') && s.includes('栈顶') && s.includes('a, b') && s.includes('c'),
+  assert(s.includes('bottom') && s.includes('top') && s.includes('a, b') && s.includes('c'),
     `describeStack: contains positions and topics (got ${s})`)
 }
 

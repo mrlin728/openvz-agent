@@ -40,8 +40,12 @@ const CORE_TOOLS = [
   'ui_show', 'ui_update', 'ui_hide', 'ui_register', 'ui_patch',
 ]
 
-const TASK_CTRL_FULL    = ['set_task', 'complete_task', 'update_task_step']
+const TASK_CTRL_FULL    = ['set_task', 'complete_task', 'update_task_step', 'review_work']
 const TASK_CTRL_OPENER  = ['set_task']  // 没任务时只暴露 set_task
+
+// 成果审视：有任务时随 TASK_CTRL_FULL 常驻（"完成任务前找第二双眼睛"的主场景）；
+// 无任务的临时成果，靠下面这组触发词 / find_tool 主动拉进来。
+const REVIEW_TOOLS      = ['review_work']
 
 const WEB_TOOLS         = ['web_search', 'fetch_url', 'browser_read']
 const FILESYSTEM_TOOLS  = ['read_file', 'write_file', 'delete_file', 'list_dir', 'make_dir']
@@ -182,6 +186,12 @@ const VIDEO_GEN_TRIGGERS = [
   'generate video', 'text to video', 'image to video', 'make a video', 'create a video',
 ]
 
+const REVIEW_TRIGGERS = [
+  '检查成果', '检查一下成果', '审视', '复查', '核对', '把关', '验收', '自检',
+  '检查工作', '检查我做的', '再检查', '复核', '查验',
+  'review', 'double-check', 'double check', 'verify the work', 'check my work', 'sanity check',
+]
+
 // 触发词 → 工具组的单一数据源。selectTools（按轮注入）和 find_tool（模型主动搜工具）
 // 共用它，避免两处各维护一份中文关键词。注：CORE / task / memory / 多模态 mmCaps gate 等
 // 特殊注入逻辑仍在 selectTools 里，这里只收录"纯关键词触发的专业组"，正好是 find_tool 要搜的范围。
@@ -202,6 +212,7 @@ export const TOOL_GROUPS = [
   { triggers: MUSIC_GEN_TRIGGERS,    tools: [MM_GEN_TOOLS.music] },
   { triggers: IMAGE_GEN_TRIGGERS,    tools: [MM_GEN_TOOLS.image] },
   { triggers: VIDEO_GEN_TRIGGERS,    tools: ['generate_video'] },
+  { triggers: REVIEW_TRIGGERS,       tools: REVIEW_TOOLS },
 ]
 
 // 通用辅助：消息正文里是否含有给定触发词之一（lower-case 包含）。
@@ -300,6 +311,10 @@ export function selectTools(ctx = {}) {
   }
   if (hits(body, ADMIN_TRIGGERS)) {
     for (const t of ADMIN_TOOLS) out.add(t)
+  }
+  // 成果审视：有任务时已随 TASK_CTRL_FULL 注入；这里覆盖"无任务但用户明确要求检查/验收成果"的临时场景。
+  if (hits(body, REVIEW_TRIGGERS)) {
+    for (const t of REVIEW_TOOLS) out.add(t)
   }
   // 注：TICK 路径不主动注入 memory 搜索之外的 search_memory（已在上面处理）。
   // TICK 时按需求注入：core + web + memory + reminders + prefetch + ticker + hotspot

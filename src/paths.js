@@ -46,6 +46,9 @@ export const paths = {
   sandboxLyricsDir:   ensureDir(path.join(USER_DIR, 'sandbox', 'lyrics')),
   sandboxAppsDir:         ensureDir(path.join(USER_DIR, 'sandbox', 'apps')),
   sandboxInstalledToolsDir: ensureDir(path.join(USER_DIR, 'sandbox', 'installed_tools')),
+  sandboxSkillsDir:   ensureDir(path.join(USER_DIR, 'sandbox', 'skills')),
+  skillsDir:          ensureDir(path.join(USER_DIR, 'skills')),
+  bundledSkillsDir:   path.join(RESOURCES_DIR, 'skills'),
   musicDir:           ensureDir(path.join(USER_DIR, 'music')),
 
   indexHtml: path.join(RESOURCES_DIR, 'index.html'),
@@ -55,6 +58,7 @@ export const paths = {
   websiteHtml: path.join(RESOURCES_DIR, 'website.html'),
   systemPromptHtml: path.join(RESOURCES_DIR, 'systemPrompt.html'),
   activationHtml: path.join(RESOURCES_DIR, 'activation.html'),
+  turnTraceHtml: path.join(RESOURCES_DIR, 'turn-trace.html'),
   brainUiAssetRoot: path.join(RESOURCES_DIR, 'src', 'ui', 'brain-ui'),
 }
 

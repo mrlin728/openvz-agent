@@ -84,6 +84,13 @@ const GATEABLE = [
     enforce: false,
   },
   {
+    field: 'userProfile',
+    section: 'user-profile',
+    toText: (v) => v ? `${v.summary || ''} ${(v.roles || []).map(r => `${r.label || ''} ${(r.evidence || []).join(' ')}`).join(' ')}`.trim() : '',
+    empty: null,
+    enforce: false,
+  },
+  {
     field: 'memories',
     section: 'memories',
     toText: (v) => (typeof v === 'string' ? v : ''),

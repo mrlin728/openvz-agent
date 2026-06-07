@@ -25,6 +25,7 @@ import { createCloudASRSession } from './voice/cloud-asr.js'
 import { getHotspots, setHotspotPanelState, getHotspotPanelState } from './hotspots.js'
 import { getPersonCard, setPersonCardPanelState, getPersonCardPanelState } from './person-cards.js'
 import { setDocPanelState, getDocPanelState, DOC_TOPICS } from './docs.js'
+import { getTraces, getTrace, clearTraces, getTraceStatus } from './runtime/turn-trace.js'
 
 export { emitEvent }
 
@@ -36,6 +37,7 @@ const BRAIN_UI_PATH      = paths.brainUiHtml
 const WEBSITE_PATH       = paths.websiteHtml
 const SYSTEM_PROMPT_PATH = paths.systemPromptHtml
 const ACTIVATION_PATH    = paths.activationHtml
+const TURN_TRACE_PATH    = paths.turnTraceHtml
 const BRAIN_UI_ASSET_ROOT = paths.brainUiAssetRoot
 const D3_VENDOR_PATH     = path.join(paths.resourcesDir, 'node_modules', 'd3', 'dist', 'd3.min.js')
 const SANDBOX_PATH       = paths.sandboxDir
@@ -371,6 +373,41 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         recall: getRecallAuditStats({ sinceIso }) || {},
         extract: getExtractAuditStats({ sinceIso }) || {},
       })
+      return
+    }
+
+    // GET /turn-trace, /turn-trace.html — 回合上下文取证页（逐回合回放每轮 messages[] 与思考）
+    if (req.method === 'GET' && (url.pathname === '/turn-trace' || url.pathname === '/turn-trace.html')) {
+      try {
+        const html = fs.readFileSync(TURN_TRACE_PATH, 'utf-8')
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' })
+        res.end(html)
+      } catch {
+        res.writeHead(404)
+        res.end('turn-trace.html not found')
+      }
+      return
+    }
+
+    // GET /admin/traces?limit=80 — 最近 turn 摘要列表
+    if (req.method === 'GET' && url.pathname === '/admin/traces') {
+      const limit = Math.min(parseInt(url.searchParams.get('limit') || '80'), 80)
+      jsonResponse(res, 200, { ok: true, status: getTraceStatus(), traces: getTraces(limit) })
+      return
+    }
+
+    // GET /admin/traces/:id — 单个 turn 完整记录（每轮 offset + 模型输出 + 最终 messages 快照）
+    if (req.method === 'GET' && url.pathname.startsWith('/admin/traces/')) {
+      const id = decodeURIComponent(url.pathname.slice('/admin/traces/'.length))
+      const trace = getTrace(id)
+      if (!trace) return jsonResponse(res, 404, { ok: false, error: 'trace not found' })
+      jsonResponse(res, 200, { ok: true, trace })
+      return
+    }
+
+    // POST /admin/traces-clear — 清空所有追踪记录（含落盘文件）
+    if (req.method === 'POST' && url.pathname === '/admin/traces-clear') {
+      jsonResponse(res, 200, clearTraces())
       return
     }
 

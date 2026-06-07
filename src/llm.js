@@ -6,6 +6,7 @@ import { recordUsage, shouldThrottle } from './quota.js'
 import { insertActionLog } from './db.js'
 import { isTerminalInternalToolRound } from './runtime/tool-protocol.js'
 import { stripMarkers } from './runtime/markers.js'
+import { beginTurn } from './runtime/turn-trace.js'
 
 // find_tool 命中后，把它返回的 loaded 工具 schema 原地追加进本轮 toolSchemas。
 // 已在列表里的跳过；schema 取不到的跳过。数组原地 mutate —— 调用方传的是 callLLM 的 toolSchemas
@@ -407,6 +408,13 @@ const TOOL_LOOP_LIMITS = {
   maxSameFailures: 2,
   loopWindowSize: 8,
   loopUniqueThreshold: 2,
+  // 不确定回退（层 3，对应论文 ReAct→CoT-SC 的"在限定步数内没给出答案就退回推理"）：
+  // 不是失败计数触发，而是"做了很多步还没给用户结果"这个非收敛信号触发。模型可能每步都
+  // 成功却方向全错（论文实证 ReAct 推理错误率反而高于 CoT）——失败熔断永远抓不到这种。
+  // 跨过这个步数还没投递，就软插一次"退一步重审计划/验证假设/如实汇报"的检查点（一 turn 一次）。
+  // 阈值要避开健康任务：实测一个健康的 6 步 set_task 任务约用 14-16 次调用（含 update_task_step
+  // 等记账），所以设 18——既不误伤正常多步任务，又在 maxTotalCalls(30) 硬上限前留出抓"真不收敛"的余量。
+  uncertaintyCheckpointCalls: 18,
 }
 
 const HIGH_RISK_TOOLS = new Set([
@@ -570,11 +578,19 @@ function recordToolLoopOutcome(state, name, fingerprint, result) {
   }
 }
 
-function buildToolLoopStopNudge(reason, lastToolResult) {
+export function buildToolLoopStopNudge(reason, lastToolResult) {
   const lastSummary = lastToolResult
     ? `${lastToolResult.name}(${formatToolArgPreview(lastToolResult.args || {})}) -> ${String(lastToolResult.result || '').slice(0, 300)}`
     : 'No successful tool result is available.'
-  return `Tool loop safety stop: ${reason}.\nLast tool result:\n${lastSummary}\n\nDo not keep retrying the same tool action. If enough information is available, call send_message and explain the outcome. If the task needs user confirmation or a different input, call send_message and ask clearly.`
+  return `Tool loop safety stop: ${reason}.\nLast tool result:\n${lastSummary}\n\nStop repeating this action — and step back: the problem may be the plan, not just this one call. Do NOT retry the same approach. Choose one, in this order:\n1. Switch to a materially different approach — a different tool, a different angle, or different input.\n2. If you are unsure your assumption even holds, verify it with one read-only tool before acting again.\n3. If you set a task with set_task, re-read current_task and adjust the steps to match reality.\n4. If you are genuinely blocked, deliver your reply now (send_message on a social channel, or plain text on a local turn) and tell the user what you tried, what failed, and what you need — clearly, do not end silently.`
+}
+
+// 不确定回退的软检查点（层 3）：步数跨过阈值仍未投递时，一 turn 注入一次。
+// 与 buildToolLoopStopNudge 的区别：后者是"反复失败/死循环"硬触发后才发，这条是在还没失败、
+// 但"做了很多步没收敛"时就提前发——抓的是论文里"看似成功却方向错"的不确定态。措辞是引导反思
+// （在 <think> 里诚实自问是否在收敛），不是命令停手。
+export function buildUncertaintyCheckpointNudge(totalCalls) {
+  return `You have run ${totalCalls} tool calls this turn and still have not delivered a result to the user. Pause for one beat — this many steps without converging is itself a signal. The issue may not be the current action; it may be the plan.\n\nIn <think>, ask yourself honestly: am I actually converging on the goal, or am I unsure and pushing forward anyway? Then pick one:\n- If the plan is off, re-read the goal (and current_task if you set one) and re-plan instead of adding more steps.\n- If you are not sure a previous step actually worked, verify it with one read-only tool rather than stacking more actions on an unverified assumption.\n- If you are genuinely stuck, tell the user what you have done, what is blocking you, and what you need — do not keep silently grinding.\nThis is a one-time internal checkpoint; do not narrate it to the user, just course-correct.`
 }
 
 function requiresToolForRequest(text = '') {
@@ -700,6 +716,20 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
     return { content: '（配额接近上限，等待窗口滚动）', toolResult: null, aborted: false, delivered: false }
   }
 
+  // 回合上下文追踪：把本 turn 每一轮模型看到的 messages[] 与思考/输出原样记下，供 /turn-trace
+  // 后台逐回合回放（专为排查"agent 把自己的话和用户的话搞混"这类生成层问题）。永不影响主流程。
+  const trace = beginTurn({
+    label: toolContext?.currentChannel || (silentSignal ? 'silent' : (mustReply ? 'turn' : 'background')),
+    channel: toolContext?.currentChannel,
+    fromId: toolContext?.currentExternalPartyId || toolContext?.currentTargetId,
+    targetId: toolContext?.currentTargetId,
+    userMessage: toolContext?.currentUserMessage || (typeof message === 'string' ? message : ''),
+    silentSignal,
+    localReply,
+    mustReply,
+    tools,
+  })
+
   let allContent = ''
   let lastToolResult = null
   let sawToolCall = false
@@ -716,6 +746,8 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   let fakeToolNudgeUsed = false
   let emptyReplyNudgeUsed = false
   let falseMemoryNudgeUsed = false
+  // 层 3：本 turn 是否已发过"不确定回退"软检查点（一 turn 一次，见 buildUncertaintyCheckpointNudge）。
+  let uncertaintyNudgeUsed = false
   // 跟踪本次 callLLM 调用中实际调过的工具名，用于检测"声称做了 X 但没真的调 X"的 false-claim。
   const calledTools = new Set()
   const toolLoopState = createToolLoopState()
@@ -735,8 +767,13 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   let mediaPlayedKind = null   // 'music' | 'video'，决定用哪个表情
   let mediaEmojiSent = false   // 本 turn 已用表情代替过一次播放确认（一个 turn 只发一个表情）
 
+  try {
   for (let round = 0; round < TOOL_LOOP_LIMITS.maxRounds; round++) {
     throwIfAborted(signal)
+
+    // 本轮开始时 messages 的长度 = 本轮模型看到的上下文边界。messages 在一个 turn 内严格
+    // append-only，所以前端用 final messages.slice(0, inputOffset) 即可精确还原"本轮看到了什么"。
+    const roundInputOffset = messages.length
 
     const { content, reasoningContent, toolCalls, aborted } = await streamOnceWithRetry({
       messages,
@@ -749,6 +786,8 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       onRetry,
       onStream,  // 所有轮次均流式推送，让 UI 实时反映工具链执行过程中的模型输出
     })
+
+    trace.recordRound({ round, inputOffset: roundInputOffset, content, reasoningContent, toolCalls, aborted })
 
     // 跨轮累积 content 时的去重保护：如果新段已经是 allContent 末尾的字面重复，
     // 跳过追加，避免 [Round N: "X"] + [Round N+1: "X"] 拼成 "X\nX"。
@@ -976,16 +1015,25 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           // 耗时工具即时回应：用户消息触发了一个会让人干等的工具（下载/搜索/生成/跑命令）时，
           // 本 turn 第一次就先替模型"应一声"。系统直接投递，不依赖模型在工具链中途主动开口
           // （实测它不会）。一个 turn 只发一次；模型已先回过话（delivered）则跳过，不重复。
-          if (!ackSent && !delivered && mustReply && !silentSignal
+          //
+          // 本地渠道（localReply）的去重承重墙：本地/语音轮的回复是"流式纯文本"，不走 send_message，
+          // 因此整个工具循环里 delivered 恒为 false（真正投递发生在文末兜底）。如果模型在调耗时工具前
+          // 已经流出过可见正文（allContent 非空，用户已经在气泡里看到了），再补一次 ack 就会和模型自己
+          // 那句话撞车——尤其 ack 文案本就模仿自然口吻（exec_command 的 ack 恰好就是"我跑一下～"），
+          // 撞出两条一模一样的消息。所以本地渠道下"已流出可见正文"等价于 delivered，同样跳过 ack。
+          const localAlreadySpoke = localReply && !!allContent.trim()
+          if (!ackSent && !delivered && !localAlreadySpoke && mustReply && !silentSignal
               && toolContext?.currentTargetId && isSlowAckTool(tc.name, normalizedArgs)) {
             ackSent = true
             try {
-              await executeTool(
-                'send_message',
-                { target_id: toolContext.currentTargetId, content: slowAckText(tc.name, normalizedArgs) },
-                { ...toolContext, signal, source: 'ack' },
-              )
+              const ackArgs = { target_id: toolContext.currentTargetId, content: slowAckText(tc.name, normalizedArgs) }
+              const ackResult = await executeTool('send_message', ackArgs, { ...toolContext, signal, source: 'ack' })
               delivered = true
+              // ack 也要回调 onToolCall：语音自动 TTS 只挂在 onToolCall 里（index.js），ack 走直投通道
+              // 会绕过它——结果 ack 只在 UI 显示成文字、却不被念出来（语音轮用户听不到"我查一下…"）。
+              // 镜像协议兜底的做法（见文末 __fallback 分支）：补一次带 __ack 标记的 onToolCall 触发 TTS，
+              // 标记供遥测分类，executeTool 收到的是干净的 ackArgs。
+              if (onToolCall) onToolCall('send_message', { ...ackArgs, __ack: true }, ackResult)
             } catch { /* ack 投递失败不影响主流程 */ }
           }
           // 真正开始执行前通知 UI —— 让用户知道当前停留在哪一步的工具上
@@ -1165,10 +1213,21 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           content: 'Message sent. Default action: end the round now — to end, just stop: emit no further tool call and no text.\n\nDo NOT send a second message just to add a closing pleasantry ("有需要随时叫我", "希望对你有帮助", "祝你...好"), a follow-up check ("还有什么需要吗", "明白了吗"), or to restate what you already said. Those are pure noise — the user sees them as filler and the conversation degrades.\n\nAbove all, do NOT narrate your own decision to stop. Lines like "已经和用户打过招呼了，不需要再发第二条" / "安静等待" / "I\'ll stay quiet now" are INTERNAL REASONING, not messages — they belong in your thinking and must never be sent through send_message or written as a reply. If you have decided not to reply, the correct way to express that is to send nothing at all.\n\nOnly call send_message again if you have genuinely NEW substantive information the user does not yet know — e.g., a tool result that came back after your reply and materially changes the answer, or a different recipient that also needs to hear from you.',
         })
       } else if (mustReply) {
-        messages.push({
-          role: 'user',
-          content: `Tool results have returned. Continue completing the user request based on the available results. If the information is sufficient, ${deliverInstruction}. For files, directories, commands, or network requests, state only facts verified by tool results, such as ok/verified/path/bytes/exit_code/status. Do not claim completion of any action without tool evidence. If a tool failed or the data is insufficient, explain the limitation and next suggested step; do not end silently.`,
-        })
+        // 层 3：步数跨过阈值仍未投递 → 先插一次"不确定回退"软检查点，引导退一步重审计划，
+        // 而不是继续往前撞。一 turn 只发一次；之后回到普通"继续"nudge。
+        if (toolLoopState.totalCalls >= TOOL_LOOP_LIMITS.uncertaintyCheckpointCalls && !uncertaintyNudgeUsed) {
+          uncertaintyNudgeUsed = true
+          console.log(`[不确定回退] 已执行 ${toolLoopState.totalCalls} 次工具仍未投递，注入重审检查点`)
+          messages.push({
+            role: 'user',
+            content: buildUncertaintyCheckpointNudge(toolLoopState.totalCalls),
+          })
+        } else {
+          messages.push({
+            role: 'user',
+            content: `Tool results have returned. Continue completing the user request based on the available results. If the information is sufficient, ${deliverInstruction}. For files, directories, commands, or network requests, state only facts verified by tool results, such as ok/verified/path/bytes/exit_code/status. Do not claim completion of any action without tool evidence. If a tool failed or the data is insufficient, explain the limitation and next suggested step; do not end silently.`,
+          })
+        }
       }
     }
     if (terminalInternalRound) break
@@ -1219,5 +1278,10 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
     }
   }
 
+  trace.end({ messages, delivered, aborted })
   return { content: allContent, toolResult: lastToolResult, aborted, delivered }
+  } finally {
+    // 异常 / abort / 任何提前退出路径的兜底收尾（end 内部幂等，正常路径已 end 过则无副作用）。
+    trace.end({ messages, delivered, aborted: signal?.aborted })
+  }
 }

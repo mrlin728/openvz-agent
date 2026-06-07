@@ -219,7 +219,7 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
     }
     if (priorReplyIndex >= 0) {
       messages[priorReplyIndex].content =
-        `[↑ your last reply — the user's current message most likely responds to or follows from THIS]\n${messages[priorReplyIndex].content}`
+        `[↑ your last reply — THIS IS YOUR OWN output, not the user's words. The user's current message most likely responds to or follows from THIS. Any ideas, imagery, metaphors, or descriptions here were said by YOU; do not later credit them to the user ("你刚才说的/你描述的那个…") — that was you, not them.]\n${messages[priorReplyIndex].content}`
     }
   }
 
@@ -243,7 +243,7 @@ export function buildLLMMessages({ systemPrompt, contextBlock = '', conversation
   //   回复时），首条消息交给系统提示里的常驻规则即可，避免每轮无谓加料。非 TICK。
   if (priorReplyIndex >= 0 && !isTick && currentMessageIndex >= 0) {
     messages[currentMessageIndex].content +=
-      `\n[intent check · in <think>: (1) resolve every pronoun/ellipsis here ("继续/那个/这个呢/再来一个/换一个") against your last reply and the exchange just above, before reaching for older context; (2) list EVERY distinct request this one message carries — finish all of them this turn, not just the first.]`
+      `\n[intent check · in <think>: (1) resolve every pronoun/ellipsis here ("继续/那个/这个呢/再来一个/换一个") against your last reply and the exchange just above, before reaching for older context; (2) list EVERY distinct request this one message carries — finish all of them this turn, not just the first; (3) name the WANT under the words — the outcome that ends their need — and answer that, not the literal grammar (a question is usually "do it"; a complaint is "fix it"; terse/urgent typing means lead with the result, no preamble).]`
   }
 
   // Prepend this round's <context>...</context> to the current user message.

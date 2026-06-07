@@ -23,6 +23,7 @@ import { execDowngradeMemory, execMergeMemories, execProbeMemory, execRecallMemo
 import { execManageReminder } from './tools/reminders.js'
 import { execGenerateImage, execGenerateLyrics, execGenerateMusic, execGenerateVideo, execMediaMode, execMusic, execSpeak } from './tools/media.js'
 import { execManageRule } from './tools/rules.js'
+import { runWorkReview } from '../review/reviewer.js'
 export { calculateNextDueAt } from './tools/reminders.js'
 export { autoSpeakForVoiceReply } from './tools/media.js'
 export { persistAppState } from './tools/ui.js'
@@ -156,6 +157,10 @@ async function executeToolUnchecked(name, args, context = {}) {
         return execCompleteTask(args, context)
       case 'update_task_step':
         return execUpdateTaskStep(args, context)
+      case 'review_work':
+        return await execReviewWork(args, context)
+      case 'review_verdict':
+        return execReviewVerdict(args)
       case 'recall_memory':
         return await execRecallMemory(args, context)
       case 'install_tool':
@@ -629,8 +634,9 @@ function execSetTask({ description, steps = [] }, context) {
   if (!Array.isArray(steps) || steps.length === 0) return '错误：steps 不能为空，请提供具体执行步骤'
   if (!context?.onSetTask) return '错误：任务管理回调未注册'
   const cleanSteps = steps.map(s => String(s).trim()).filter(Boolean)
+  if (cleanSteps.length === 0) return '错误：steps 不能全为空，请提供具体执行步骤'
   context.onSetTask(description.trim(), cleanSteps)
-  return `任务已开启：${description}\n步骤（${cleanSteps.length} 个）：\n${cleanSteps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`
+  return `任务已开启：${description}\n步骤（${cleanSteps.length} 个）：\n${cleanSteps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}\n\n计划已记录。现在开始第 1 步「${cleanSteps[0]}」的 执行→观察→判断 微循环；每步一出结果就调 update_task_step 落状态，note 写一句关键结论。`
 }
 
 function execCompleteTask({ summary = '' }, context) {
@@ -648,7 +654,76 @@ function execUpdateTaskStep({ step_index, status, note = '' }, context) {
   const result = context.onUpdateTaskStep(idx, status, String(note || '').trim())
   if (result?.error) return `错误：${result.error}`
   const statusLabel = { done: '完成 ✓', failed: '失败 ✗', skipped: '跳过 —' }[status]
-  return `步骤 ${idx + 1} 已标记为${statusLabel}${note ? '：' + note : ''}`
+  const lines = [`步骤 ${idx + 1} 已标记为${statusLabel}${note ? '：' + note : ''}`]
+  if (result?.progress) lines.push(`进度：${result.progress}`)
+  // 引导下一个 ReAct 微循环：按状态把模型推向"收尾验证 / 换法重试 / 进入下一步"。
+  // 这是 prompt 之外的第二道引导——不拦截、不扣工具，只用返回值给方向（符合不加硬性限制）。
+  if (result?.allTerminal) {
+    lines.push(result.anyFailed
+      ? '所有步骤已到终态，但有步骤失败/跳过——任务已自动收尾。先核对失败步骤是否影响总目标，再如实向用户汇报结果与缺口，不要谎称全部完成。'
+      : '所有步骤完成，任务已自动收尾。收尾前确认每步证据都成立，然后用一句话向用户汇报最终结果。')
+  } else if (status === 'failed') {
+    lines.push(result?.nextStep
+      ? `这一步失败了：不要重试同样的做法——换工具或换思路再试一次；若是缺信息，在 note 里写清缺什么并直接问用户。处理完这步后，下一步是「${result.nextStep}」。`
+      : '这一步失败了：不要重试同样的做法——换工具或换思路再试一次；若是缺信息，在 note 里写清缺什么并直接问用户。')
+  } else if (result?.nextStep) {
+    lines.push(`继续下一步（第 ${result.nextIndex + 1} 步）：「${result.nextStep}」——进入它自己的 执行→观察→判断 微循环。`)
+  }
+  return lines.join('\n')
+}
+
+// review_verdict 只在审视分身那次独立 callLLM 里被调，结论的真正捕获走 reviewer.js 的 onToolCall。
+// 这里只给一个无副作用的确认返回值，让审视分身那轮工具循环正常收尾。
+function execReviewVerdict(args = {}) {
+  return toolJson({ ok: true, received: true, pass: args?.pass !== false })
+}
+
+// review_work：主 Agent 把成果交给审视分身复查。
+// goal/claim 由主 Agent 给；turnToolLog/taskState 由 runtime 从本轮证据注入（主 Agent 够不到、
+// 改不了——这是审视独立性的承重墙）。结论以软引导形式作为工具返回值丢回，不拦截、不扣工具、
+// 不挡 complete_task（第一原则：不加硬性限制）。
+async function execReviewWork({ goal, claim, artifacts = [] }, context = {}) {
+  if (!goal || !String(goal).trim()) return toolJson({ ok: false, error: 'goal 不能为空：请写清楚这件事原本要达成什么' })
+  if (!claim || !String(claim).trim()) return toolJson({ ok: false, error: 'claim 不能为空：请写清楚你认为自己做成了什么' })
+
+  const turnToolLog = Array.isArray(context.turnToolLog) ? context.turnToolLog : []
+  const taskState = typeof context.getTaskState === 'function' ? context.getTaskState() : null
+  // 触发本轮的用户原话——runtime 注入的 ground truth，主 Agent 改不了。给审视分身对照"它写的 goal
+  // 是不是把用户诉求裁窄/跑偏了"。多步任务里这里可能是 TICK，无妨：审视分身另有 taskState 作锚点。
+  const triggeringMessage = String(context.currentUserMessage || '')
+  const traceId = `rv${Date.now().toString(36).slice(-5)}`
+
+  // 调试：主 Agent 这一侧——它确实调起了 review_work，且 runtime 取到了多少证据。
+  // 若这条没出现，说明模型压根没调审视；若 turn_calls=0，说明证据注入承重墙没接上（排查 index.js turnToolLog）。
+  console.log(`[审视分身#${traceId}] ◆ 主Agent调起 review_work | 注入证据：${turnToolLog.length} 条工具日志 / ${taskState?.task ? '有' : '无'}任务计划 / ${triggeringMessage ? '有' : '无'}用户原话`)
+
+  const verdict = await runWorkReview({
+    goal: String(goal),
+    claim: String(claim),
+    artifacts: Array.isArray(artifacts) ? artifacts : [],
+    turnToolLog,
+    taskState,
+    triggeringMessage,
+    traceId,
+    signal: context.signal,
+  })
+
+  const guidance = verdict.pass
+    ? '审视通过。这是独立的第二双眼睛核对过的结果——可以收尾/交付了。'
+    : '审视发现了问题（见 issues）。这是第二双眼睛的意见，不是命令：先核实属实的项并修掉 blocker/major，修完可以再调一次 review_work 让它复查，或直接收尾；若你不认同某条，向用户说明理由后照常推进，不要默默忽略也不要被它卡死。'
+
+  console.log(`[审视分身#${traceId}] ◆ 回传主Agent | pass=${verdict.pass} | issues=${verdict.issues.length}${verdict.inconclusive ? ' | inconclusive(兜底放行)' : ''}`)
+
+  return toolJson({
+    ok: true,
+    trace_id: traceId,
+    pass: verdict.pass,
+    issues: verdict.issues,
+    summary: verdict.summary,
+    inconclusive: verdict.inconclusive || undefined,
+    evidence_seen: { tool_calls: turnToolLog.length, has_task_plan: !!(taskState && taskState.task), saw_user_message: !!triggeringMessage },
+    guidance,
+  })
 }
 
 function execFocusBanner({ action, task = '', current_step = '', tasks = [] }) {

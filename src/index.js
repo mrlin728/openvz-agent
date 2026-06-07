@@ -35,11 +35,13 @@ import { collectLocalResources } from './local-resources-scanner.js'
 import { collectGeoWeather, getGeoWeatherBlock } from './geo-weather.js'
 import { collectTrending, getTrendingBlock } from './trending.js'
 import { collectAgents, buildAgentContextBlock, buildDelegationAskDirections } from './agents/registry.js'
+import { refreshSkills, selectSkillsForMessage, formatSkillsForContext } from './skills/registry.js'
 import { tryAutoConfigureKey } from './key-auto-config.js'
 import { PRIMARY_USER_ID, formatPresenceForPrompt, normalizeChannel, isExternalChannel } from './identity.js'
 import { truncateToolResultForUI } from './runtime/tool-result-preview.js'
 import { buildLLMMessages } from './runtime/messages.js'
 import { parseMarkers } from './runtime/markers.js'
+import { refreshUserProfile } from './profile/infer.js'
 
 // On first launch, copy sandbox seed files from the resource directory to the user data directory (Electron install)
 seedSandboxOnce()
@@ -87,6 +89,10 @@ await collectAgents()
 // Load persisted installed tools
 await loadInstalledTools()
 
+// Load Agent Skills metadata. Full SKILL.md bodies are injected only when a turn matches.
+const startupSkills = refreshSkills()
+console.log(`[skills] Loaded ${startupSkills.length} Agent Skill(s)`)
+
 // AbortController for the current LLM call (used to interrupt the main loop)
 let currentAbortController = null
 let currentExecution = null
@@ -114,6 +120,7 @@ if (getMemoryCount() === 0) {
   await import('../scripts/seed-memories.js')
 }
 const birthTime = getOrInitBirthTime()
+refreshUserProfile(PRIMARY_USER_ID)
 
 // Awakening phase: first 10 heartbeat ticks after initial activation run at a fixed 10s cadence
 const AWAKENING_CONFIG_KEY = 'awakening_ticks_remaining'
@@ -218,6 +225,9 @@ const TASK_IDLE_TICK_LIMIT = 5  // auto-clear task after N consecutive task tick
 configureRecognizerScheduler({
   onResult: (memories) => {
     emitEvent('memories_written', { count: memories?.length || 0, memories: memories || [] })
+    if (Array.isArray(memories) && memories.length > 0) {
+      refreshUserProfile(PRIMARY_USER_ID)
+    }
   },
 })
 
@@ -453,6 +463,10 @@ function buildToolContextForProcess(msg, injection) {
     // 自我感知信号：传给工具执行层（如 upsert_memory 守门），让"镜像污染"在写入长期记忆前就被拦截
     selfPerception: injection.selfPerception || null,
 
+    // 审视分身（review_work）取证用：当前任务目标 + 每步状态。让审视分身能拿到主 Agent 自己的
+    // 计划做对照，看"声称完成"与每步证据是否一致。只读快照，不可被主 Agent 改写。
+    getTaskState: () => ({ task: state.task, steps: state.taskSteps }),
+
     onSetTask: (description, steps) => {
       state.task = description
       state.lastTaskRefreshTick = -10
@@ -487,13 +501,27 @@ function buildToolContextForProcess(msg, injection) {
       if (!state.taskSteps[idx]) return { error: `Step ${idx + 1} does not exist (${state.taskSteps.length} total)` }
       state.taskSteps[idx] = { ...state.taskSteps[idx], status, note }
       setConfig('current_task_steps', JSON.stringify(state.taskSteps))
+      const total = state.taskSteps.length
       const done = state.taskSteps.filter(s => s.status === 'done').length
-      emitEvent('task_step_updated', { index: idx, status, note, progress: `${done}/${state.taskSteps.length}` })
+      emitEvent('task_step_updated', { index: idx, status, note, progress: `${done}/${total}` })
       // Option C: auto-clear task when all steps reach a terminal state
       const terminal = ['done', 'failed', 'skipped']
-      const allTerminal = state.taskSteps.length > 0 && state.taskSteps.every(s => terminal.includes(s.status))
+      const allTerminal = total > 0 && state.taskSteps.every(s => terminal.includes(s.status))
+      // 在 autoCompleteTask 清空 taskSteps 之前先算好"下一步/是否有失败"，回传给 executor，
+      // 让 update_task_step 的返回串把模型推进下一个 执行→观察→判断 微循环（ReAct 驱动）。
+      const nextIndex = state.taskSteps.findIndex(s => s.status === 'pending')
+      const nextStep = nextIndex >= 0 ? state.taskSteps[nextIndex].text : null
+      const anyFailed = state.taskSteps.some(s => s.status === 'failed')
       if (allTerminal) autoCompleteTask('all steps complete')
-      return {}
+      return {
+        total,
+        done,
+        progress: `${done}/${total}`,
+        allTerminal,
+        nextIndex: nextIndex >= 0 ? nextIndex : null,
+        nextStep,
+        anyFailed,
+      }
     },
 
     startupSelfCheck: state.startupSelfCheck,
@@ -955,6 +983,7 @@ async function runTurn(input, label, msg = null) {
       personMemory: injection.personMemory
         ? { content: injection.personMemory.content, detail: injection.personMemory.detail || '' }
         : null,
+      userProfile: injection.userProfile || null,
       fastUserPath,
     })
 
@@ -970,6 +999,22 @@ async function runTurn(input, label, msg = null) {
     const entities = getKnownEntities()
     const hasActiveTask = !!state.task
     const extraContextJoined = [presenceText, runtimeInjection.contextText, prefetchText, injection.uiSignalSummary, formatActiveUICards(injection.activeUICards), formatAIVideoPanel(getAIVideoPanelState())].filter(Boolean).join('\n\n')
+    const skillSelection = selectSkillsForMessage(msg?.content || input || '')
+    const agentSkillsText = formatSkillsForContext(skillSelection)
+    if (skillSelection.active.length > 0 || skillSelection.catalogRequested) {
+      emitEvent('agent_skills_selected', {
+        active: skillSelection.active.map(s => ({
+          id: s.id,
+          name: s.name,
+          description: s.description,
+          source: s.source,
+          relativeDir: s.relativeDir,
+          score: s.score,
+        })),
+        catalogRequested: skillSelection.catalogRequested,
+        total: skillSelection.catalog.length,
+      })
+    }
 
     // system 只留稳定硬底线（agent_name / persona）—— 让 DeepSeek prefix cache
     // 真正命中。currentTime / existenceDesc / systemEnv / security 改走 <runtime> 段（每轮变化）。
@@ -983,6 +1028,7 @@ async function runTurn(input, label, msg = null) {
     const systemPrompt = buildSystemPrompt({
       agentName,
       persona,
+      birthTime,
       userMessage: msg?.content || input || '',
       currentChannel: msg ? normalizeChannel(msg.channel || '') : '',
       hasWechatHistory: false,
@@ -998,6 +1044,7 @@ async function runTurn(input, label, msg = null) {
       directions: directionsText,
       constraints: injection.constraints || [],
       personMemory: injection.personMemory || null,
+      userProfile: injection.userProfile || null,
       thoughtStack: state.thoughtStack,
       entities,
       hasActiveTask,
@@ -1006,6 +1053,7 @@ async function runTurn(input, label, msg = null) {
       extraContext: extraContextJoined,
       awakeningTicks: getAwakeningTicks(),
       focusStack: state.focusStack || [],
+      agentSkills: agentSkillsText,
       // Runtime info：从 system 迁来的每轮变化字段，集中放 <context><runtime>
       currentTime: nowTimestamp(),
       existenceDesc: describeExistence(birthTime),
@@ -1115,6 +1163,10 @@ async function runTurn(input, label, msg = null) {
 
     // 3. Call Jarvis LLM (can be interrupted by a new message)
     const toolContext = buildToolContextForProcess(msg, injection)
+    // 审视分身取证：把本轮正在累积的工具日志数组引用挂进 toolContext。execReviewWork 在循环中途
+    // 被调时读它，即可拿到"主 Agent 到此为止实际做了什么"的真实证据（数组按引用传递，调用时已填充）。
+    // 这是审视独立性的承重墙——主 Agent 无法在 review_work 参数里粉饰或省略它做过的事。
+    toolContext.turnToolLog = toolCallLog
     const voiceTurn = isVoiceChannel(msg?.channel)
     // localReply：本地渠道（语音 / TUI，非社交）下纯文本即回复，模型无需调 send_message——
     // runtime 协议兜底会替它真正投递（含语音 TTS）。社交渠道（微信/Discord/飞书/企微）才必须
@@ -1164,13 +1216,17 @@ async function runTurn(input, label, msg = null) {
         // callLLM 的协议兜底会用 __fallback 标记它代为投递的那次 send_message，
         // 让下方遥测能区分"模型自己发的"与"runtime 兜底发的"。该标记不进 UI 事件。
         const isFallbackDelivery = !!(args && args.__fallback)
-        const cleanArgs = isFallbackDelivery ? { ...args } : args
+        // __ack：耗时工具的即时回应（"我查一下…"）由 llm.js 直投后补调本回调，仅为触发语音 TTS
+        // （TTS 只挂在这里）。标记需剥离，避免泄进 tool_call 事件 / toolCallLog。
+        const isAckDelivery = !!(args && args.__ack)
+        const cleanArgs = (isFallbackDelivery || isAckDelivery) ? { ...args } : args
         if (isFallbackDelivery) delete cleanArgs.__fallback
+        if (isAckDelivery) delete cleanArgs.__ack
         // 截断策略：保证 JSON 仍可解析，否则前端格式化器会回退展示原始 JSON 文本。
         // 优先压缩 stdout/stderr/content/snippet 等长字段，再整体 stringify，而非粗暴 slice。
         const resultForEvent = truncateToolResultForUI(parsed, resultText)
         emitEvent('tool_call', { name, args: cleanArgs, result: resultForEvent, ok })
-        toolCallLog.push({ name, args: cleanArgs, result: resultText.slice(0, 500), ok, fallback: isFallbackDelivery })
+        toolCallLog.push({ name, args: cleanArgs, result: resultText.slice(0, 500), ok, fallback: isFallbackDelivery, ack: isAckDelivery })
         // 注：send_message 的 conversations 写入已由 executor.js 内统一处理（带 channel + external_party_id）
         // 这里仅处理语音输入的 TTS 自动回放
         // 语音渠道才自动播报。本轮若流出过正文（sawTextStream），说明前端已边出边逐句流式合成，

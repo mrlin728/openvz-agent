@@ -17,26 +17,26 @@ const CLASSIFIER_TIMEOUT_MS = 800
 const CLASSIFIER_MAX_TOKENS = 120
 const CLASSIFIER_TEMPERATURE = 0.2
 
-const SYSTEM_PROMPT = `焦点分类器。保守判 kept，不轻易 push。
-重叠度：高=对象同→kept；中=同域不同子任务→pushed；低=异域→pushed/leaf。
-kept：栈顶重叠高且细化/追问/承诺/确认。
-pushed：与所有帧重叠低且持续性新任务。
-returned：与非栈顶旧帧重叠高且明确回指（depth=该帧索引，栈顶=length-1）。
-leaf：无承接且一次性短问/闲聊（不动栈）。
-例 A [前端 React]+"写个 Hook"→kept
-例 B [DB 查询]+"现在网速咋样"→leaf
-例 C [配置→部署→监控]+"回头看最初配置"→returned d=0
-topic 写 2-3 个语义词非 ngram。只输 JSON。`
+const SYSTEM_PROMPT = `Focus classifier. Be conservative: prefer "kept", do not push lightly.
+Overlap: high = same object → kept; medium = same domain, different subtask → pushed; low = different domain → pushed/leaf.
+kept: high overlap with the top frame, plus a refinement / follow-up / commitment / confirmation.
+pushed: low overlap with ALL frames, plus a new sustained task.
+returned: high overlap with a NON-top older frame and an explicit back-reference (depth = that frame's index; top = length-1).
+leaf: no continuation, a one-off short question / small talk (does not move the stack).
+Example A [frontend React] + "write a Hook" → kept
+Example B [DB query] + "how's the network speed now" → leaf
+Example C [config → deploy → monitor] + "let's look back at the original config" → returned d=0
+For topic, write 2-3 semantic words, not n-grams. Output JSON only.`
 
 // 把当前栈渲染成简短字符串：[栈底"a, b" → "c, d" → 栈顶"e, f"]
 function describeStack(stack) {
-  if (!Array.isArray(stack) || stack.length === 0) return '[空栈]'
+  if (!Array.isArray(stack) || stack.length === 0) return '[empty stack]'
   const parts = stack.map((f, i) => {
     const topic = Array.isArray(f?.topic) ? f.topic.join(', ') : String(f?.topic || '')
     const conclusions = Array.isArray(f?.conclusions) && f.conclusions.length > 0
-      ? `（结论: ${f.conclusions[f.conclusions.length - 1]}）`
+      ? `(conclusion: ${f.conclusions[f.conclusions.length - 1]})`
       : ''
-    const tag = i === 0 ? '栈底' : (i === stack.length - 1 ? '栈顶' : `第${i}层`)
+    const tag = i === 0 ? 'bottom' : (i === stack.length - 1 ? 'top' : `level ${i}`)
     return `${tag}"${topic}"${conclusions}`
   })
   return '[' + parts.join(' → ') + ']'
@@ -46,16 +46,16 @@ function describeStack(stack) {
 function buildUserPrompt({ newMessage, v0Event, v0Topic, currentStack }) {
   const v0TopicStr = Array.isArray(v0Topic) ? v0Topic.join(', ') : String(v0Topic || '')
   const stackStr = describeStack(currentStack)
-  const lengthHint = currentStack?.length ? `栈深=${currentStack.length}，栈顶索引=${currentStack.length - 1}` : '栈深=0'
+  const lengthHint = currentStack?.length ? `stack depth=${currentStack.length}, top index=${currentStack.length - 1}` : 'stack depth=0'
   // newMessage 截断到 400 字，省 token 也减少打架风险
   const msg = String(newMessage || '').slice(0, 400)
   return [
-    `v0 判定 = ${v0Event}，候选 topic = [${v0TopicStr}]`,
-    `当前栈（${lengthHint}） = ${stackStr}`,
-    `新消息 = "${msg}"`,
+    `v0 verdict = ${v0Event}, candidate topic = [${v0TopicStr}]`,
+    `Current stack (${lengthHint}) = ${stackStr}`,
+    `New message = "${msg}"`,
     '',
-    '请输出 JSON：{"action": "kept|pushed|returned|leaf", "topic_refined": ["词1","词2","词3"], "returns_to_depth": 0}',
-    '（returns_to_depth 仅 returned 时有值；其他动作填 -1 或省略）',
+    'Output JSON: {"action": "kept|pushed|returned|leaf", "topic_refined": ["word1","word2","word3"], "returns_to_depth": 0}',
+    '(returns_to_depth only has a value for "returned"; for other actions use -1 or omit it)',
   ].join('\n')
 }
 

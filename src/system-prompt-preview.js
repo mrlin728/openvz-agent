@@ -44,6 +44,7 @@ export async function buildHeartbeatSystemPromptPreview({
   const systemPromptStable = buildSystemPrompt({
     agentName,
     persona,
+    birthTime,
   })
 
   const contextBlock = buildContextBlock({
@@ -52,6 +53,7 @@ export async function buildHeartbeatSystemPromptPreview({
     directions: directionsText,
     constraints: injection.constraints || [],
     personMemory: injection.personMemory || null,
+    userProfile: injection.userProfile || null,
     thoughtStack: workingState.thoughtStack || [],
     entities,
     hasActiveTask: !!workingState.task,
@@ -79,6 +81,7 @@ export async function buildHeartbeatSystemPromptPreview({
       constraints: injection.constraints || [],
       conversationWindow: injection.conversationWindow || [],
       personMemory: injection.personMemory || null,
+      userProfile: injection.userProfile || null,
       actionLog: injection.actionLog || [],
       lastToolResult: injection.lastToolResult || null,
       memories: injection.memories || [],

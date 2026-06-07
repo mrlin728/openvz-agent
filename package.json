@@ -1,7 +1,7 @@
 {
   "name": "bailongma",
   "productName": "Bailongma",
-  "version": "2.1.325",
+  "version": "2.1.343",
   "description": "A continuously running digital consciousness framework",
   "type": "module",
   "main": "electron/main.cjs",
@@ -18,8 +18,10 @@
     "publish": "electron-builder --win --publish always",
     "postinstall": "electron-builder install-app-deps",
     "test:rule-context": "electron ./src/test-rule-context.js",
+    "test:complex-task": "electron ./src/test-complex-task.js",
     "test:relevance": "electron ./src/test-relevance-selection.js",
     "test:section-gate": "node ./src/test-section-gate.js",
+    "test:agent-skills": "node ./src/test-agent-skills.js",
     "test:config-upgrade": "node ./src/test-config-upgrade.js",
     "probe:config-upgrade": "node ./scripts/probe-config-upgrade.mjs",
     "smoke:tools": "node scripts/smoke-tools.mjs",
@@ -53,6 +55,7 @@
     "files": [
       "electron/**/*",
       "src/**/*",
+      "skills/**/*",
       "scripts/seed-memories.js",
       "index.html",
       "dashboard.html",
@@ -62,6 +65,7 @@
       "systemPrompt.html",
       "activation.html",
       "focus-banner.html",
+      "turn-trace.html",
       "build/icon.ico",
       "sandbox/**/*",
       "music/**/*",
@@ -114,4 +118,3 @@
     ]
   }
 }
-

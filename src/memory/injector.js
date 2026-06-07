@@ -10,6 +10,7 @@ import {
   getUnconsumedUISignals,
   markUISignalsConsumed,
   getConfig,
+  getUserProfile,
   insertRecallAudit,
   searchMemories,
 } from '../db.js'
@@ -63,15 +64,18 @@ export async function runInjector({ message, state, hint = '' }) {
   const constraints = getActiveConstraints()
 
   let personMemory = null
+  let userProfile = null
   let conversationWindow = []
   let senderMemories = []
 
   if (senderId) {
     personMemory = getPersonMemory(senderId)
+    userProfile = getUserProfile(senderId)
     conversationWindow = getRecentConversation(senderId, 20, 24)
     senderMemories = getMemoriesByEntity(senderId, 10)
   } else if (message && /^TICK\s/i.test(message.trim())) {
     personMemory = getPersonMemory(PRIMARY_USER_ID)
+    userProfile = getUserProfile(PRIMARY_USER_ID)
     conversationWindow = getRecentConversationTimeline(40, L2_CONTEXT_HOURS)
     senderMemories = getMemoriesByEntity(PRIMARY_USER_ID, 10)
   }
@@ -244,6 +248,7 @@ export async function runInjector({ message, state, hint = '' }) {
     recallMemories,
     conversationWindow,
     personMemory,
+    userProfile,
     directions,
     constraints,
     thought: null,

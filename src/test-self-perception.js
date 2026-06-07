@@ -52,7 +52,7 @@ console.log('\n>>> 场景 2：user 逐字复读 jarvis 上一句')
   })
   assert(result !== null, '逐字复读：触发感知')
   assert(result.mirror.score >= 0.6 || result.mirror.exact, '逐字复读：mirror 分数 >= 0.6 或 exact 命中')
-  assert(/复述|复读|相似度|回灌/.test(result.perceptionText), '逐字复读：感知文本提到复述/相似度')
+  assert(/verbatim|similarity|fed straight back/.test(result.perceptionText), '逐字复读：感知文本提到复述/相似度')
 }
 
 // ============================ 场景 3：风格模仿（agent 内独白）============================
@@ -91,7 +91,7 @@ console.log('\n>>> 场景 4：连续多轮 user 复读 jarvis')
   })
   assert(result !== null, '循环退化：触发感知')
   assert(result.loop >= 2, `循环退化：loop 深度 >= 2（实际 ${result.loop}）`)
-  assert(/逐字回环|连续.*轮|循环/.test(result.perceptionText), '循环退化：感知文本指出循环')
+  assert(/verbatim loop|rounds straight|parrot/.test(result.perceptionText), '循环退化：感知文本指出循环')
 }
 
 // ============================ 场景 5：空 / 边界 ============================
@@ -115,8 +115,8 @@ console.log('\n>>> 场景 6：感知文本告诉 LLM 这是感知不是命令')
     currentMsg: { content: '已经遵命保持安静了。不再多言。', fromId: 'ID:000001' },
   })
   assert(result !== null, '触发感知')
-  assert(/感知|不是.*指令|纳入/.test(result.perceptionText), '文本明确说"这是感知，不是指令"')
-  assert(/反问|挑明|退回|长期记忆/.test(result.perceptionText), '文本提到该如何利用这种感知（反问 / 不写入长期记忆）')
+  assert(/perception|not a command|Fold it/.test(result.perceptionText), '文本明确说"这是感知，不是指令"')
+  assert(/asking back|naming it|stepping back|long-term memory/.test(result.perceptionText), '文本提到该如何利用这种感知（反问 / 不写入长期记忆）')
 }
 
 // ============================ 场景 7：渲染到 contextBlock ============================
@@ -175,7 +175,7 @@ console.log('\n>>> 场景 8：mirror.exact 或 loop>=3 时切到边界态')
     currentMsg: { content: '请告诉我你需要什么。', fromId: 'ID:000001' },
   })
   assert(r1?.boundaryState === 'mirror', `逐字复述 → boundaryState=mirror（实际 ${r1?.boundaryState}）`)
-  assert(/挑明|反问|退回/.test(r1?.boundaryDirective || ''), 'mirror 边界态指示包含挑明/反问/退回选项')
+  assert(/name it directly|ask back|step back/.test(r1?.boundaryDirective || ''), 'mirror 边界态指示包含挑明/反问/退回选项')
 
   // 3 轮循环：触发 loop 边界态（非逐字但相似度 >=0.6 持续）
   const window2 = [
@@ -271,7 +271,7 @@ console.log('\n>>> 场景 10：self-snapshot 风格指纹 + 身份锚')
   const snap = computeSelfSnapshot({ conversationWindow: window, actionLog, agentName: '小白龙' })
   assert(snap !== null, '有 jarvis 历史时返回 snapshot')
   assert(snap.snapshotText.includes('小白龙'), 'snapshot 文本以 agent_name 起头')
-  assert(snap.snapshotText.includes('身份锚'), 'snapshot 包含身份锚')
+  assert(snap.snapshotText.includes('Identity anchor'), 'snapshot 包含身份锚')
   assert(snap.snapshotText.includes('action_log') || snap.snapshotText.includes('send_message'),
     'snapshot 提到用 action_log/send_message 验真')
   assert(snap.style && snap.style.avgLen > 0, 'snapshot 计算了平均句长')

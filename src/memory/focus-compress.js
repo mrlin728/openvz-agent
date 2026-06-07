@@ -11,20 +11,33 @@
 // 测试策略：拆成 pure data 准备函数（buildCompressionInput） + LLM 调用包装
 // （compressPoppedFrame）。pure data 函数零依赖，可在不连 db / llm 的环境下测。
 
-const MAX_PROMPT_INPUT_CHARS = 5000
-const MAX_TIMELINE_LIMIT = 40
+const COMPRESSION_HISTORY_ROUNDS = 30
+const MAX_TIMELINE_LIMIT = COMPRESSION_HISTORY_ROUNDS * 2
+const MAX_PROMPT_INPUT_CHARS = 20000
 const MAX_ACTIONLOG_LIMIT = 50
 const MAX_LOOKBACK_HOURS = 24
 const COMPRESSION_MAX_TOKENS = 150
 const COMPRESSION_TEMPERATURE = 0.2
+const MAX_CONVERSATION_LINE_CHARS = 260
 
-const COMPRESSION_PROMPT = `你是专注帧压缩器。把以下对话片段和工具调用日志压缩成 1-2 句话的结论。
-要求：
-- 用第一人称叙述（"我..."）
-- 捕捉用户在这段专注里得到了什么、做了什么决策、留下了什么实质性产物
-- 不要复述原话，不要列条目，不要写"用户问了什么我回答了什么"这种流水账
-- 直接给结论本身，不加任何前缀或解释
-- 用中文`
+const COMPRESSION_PROMPT = `You are the focus-frame compressor. Compress the following conversation excerpt and tool-call log into a 1-2 sentence conclusion.
+Requirements:
+- Narrate in the first person ("我..."), where "我" is *you, the assistant* — never the user.
+- The excerpt lines are labeled "<sender> -> <receiver>". What the user sent are the user's words, proposals and feelings; what you sent are yours. Attribute correctly: never absorb the user's statements, suggestions, or emotions as your own thought or decision. If a choice or proposal came from the user, say so explicitly (e.g. "用户提议…，我…").
+- Capture what the user got out of this focus, what decisions were made (and by whom), and what concrete artifacts were left behind.
+- Do not restate the original wording, do not list bullet points, do not write a play-by-play of "the user asked X and I answered Y".
+- Give the conclusion itself directly, with no prefix or explanation.
+- Write in Chinese.`
+
+function formatCompressionParty(id) {
+  if (!id) return '?'
+  return id === 'jarvis' ? 'You' : id
+}
+
+function recentConversationRows(conversations = []) {
+  if (!Array.isArray(conversations)) return []
+  return conversations.slice(-MAX_TIMELINE_LIMIT)
+}
 
 // 估算 lookback 小时数：从帧的 startedAt 到现在，cap 在 MAX_LOOKBACK_HOURS。
 function estimateLookbackHours(startedAt) {
@@ -62,14 +75,15 @@ export function buildCompressionInput(poppedFrame, { conversations = [], actionL
     lines.push(`[Frame started at] ${poppedFrame.startedAt}`)
   }
 
-  if (conversations.length > 0) {
+  const visibleConversations = recentConversationRows(conversations)
+  if (visibleConversations.length > 0) {
     lines.push('')
-    lines.push('[Conversation during this focus]')
-    for (const c of conversations) {
-      const from = c.from_id || c.from || c.sender || '?'
-      const to = c.to_id || c.to || c.target || '?'
+    lines.push(`[Conversation during this focus: last ${COMPRESSION_HISTORY_ROUNDS} rounds]`)
+    for (const c of visibleConversations) {
+      const from = formatCompressionParty(c.from_id || c.from || c.sender)
+      const to = formatCompressionParty(c.to_id || c.to || c.target)
       const ts = c.timestamp || ''
-      const content = String(c.content || c.message || '').replace(/\s+/g, ' ').slice(0, 400)
+      const content = String(c.content || c.message || '').replace(/\s+/g, ' ').slice(0, MAX_CONVERSATION_LINE_CHARS)
       if (!content) continue
       lines.push(`- [${ts}] ${from} -> ${to}: ${content}`)
     }
@@ -237,4 +251,10 @@ export async function compressPoppedFrame(poppedFrame, currentTopFrame, { sessio
 }
 
 // 仅供测试：暴露内部清理函数
-export const __internal = { cleanConclusion, estimateLookbackHours, filterSince }
+export const __internal = {
+  cleanConclusion,
+  estimateLookbackHours,
+  filterSince,
+  formatCompressionParty,
+  recentConversationRows,
+}

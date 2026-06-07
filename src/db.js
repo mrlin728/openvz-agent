@@ -188,6 +188,20 @@ function initSchema() {
       last_seen   TEXT    NOT NULL,
       created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
     );
+
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      user_id                  TEXT PRIMARY KEY,
+      summary                  TEXT NOT NULL DEFAULT '',
+      roles_json               TEXT NOT NULL DEFAULT '[]',
+      domains_json             TEXT NOT NULL DEFAULT '[]',
+      expertise_json           TEXT NOT NULL DEFAULT '[]',
+      projects_json            TEXT NOT NULL DEFAULT '[]',
+      preferences_json         TEXT NOT NULL DEFAULT '[]',
+      communication_style_json TEXT NOT NULL DEFAULT '[]',
+      evidence_json            TEXT NOT NULL DEFAULT '[]',
+      confidence               REAL NOT NULL DEFAULT 0,
+      updated_at               TEXT NOT NULL
+    );
   `)
 
   // 迁移：memories 表添加 embedding BLOB 列（向量语义召回用，与 FTS5 双路融合）。
@@ -1550,6 +1564,82 @@ export function getMemoriesByEntity(entityId, limit = 10) {
 // 动态上下文记忆池 3.5：默认 WHERE focus_absorbed=0，把已被压缩回填吸收的子帧对话隐去
 //   （主线深化时的「剔除残留噪声」）。absorbed != deleted——对话物理仍在表里，
 //   传 includeAbsorbed=true 即可拿全量（admin / 调试 / focus-compress 自身的回看）。
+function safeJsonString(value, fallback = []) {
+  try {
+    return JSON.stringify(value ?? fallback)
+  } catch {
+    return JSON.stringify(fallback)
+  }
+}
+
+export function getUserProfile(userId) {
+  const db = getDB()
+  const normalizedId = normalizeMemoryEntity(userId)
+  const row = db.prepare(`SELECT * FROM user_profiles WHERE user_id = ?`).get(normalizedId)
+  if (!row) return null
+  const parse = (raw, fallback = []) => {
+    try {
+      const parsed = JSON.parse(raw || '')
+      return Array.isArray(parsed) ? parsed : fallback
+    } catch {
+      return fallback
+    }
+  }
+  return {
+    user_id: row.user_id,
+    summary: row.summary || '',
+    roles: parse(row.roles_json),
+    domains: parse(row.domains_json),
+    expertise: parse(row.expertise_json),
+    projects: parse(row.projects_json),
+    preferences: parse(row.preferences_json),
+    communication_style: parse(row.communication_style_json),
+    evidence: parse(row.evidence_json),
+    confidence: Number(row.confidence || 0),
+    updated_at: row.updated_at,
+  }
+}
+
+export function upsertUserProfile(profile = {}) {
+  const db = getDB()
+  if (!profile.user_id) throw new Error('upsertUserProfile requires user_id')
+  const payload = {
+    user_id: normalizeMemoryEntity(profile.user_id),
+    summary: profile.summary || '',
+    roles_json: safeJsonString(profile.roles),
+    domains_json: safeJsonString(profile.domains),
+    expertise_json: safeJsonString(profile.expertise),
+    projects_json: safeJsonString(profile.projects),
+    preferences_json: safeJsonString(profile.preferences),
+    communication_style_json: safeJsonString(profile.communication_style),
+    evidence_json: safeJsonString(profile.evidence),
+    confidence: Math.max(0, Math.min(1, Number(profile.confidence || 0))),
+    updated_at: profile.updated_at || new Date().toISOString(),
+  }
+  db.prepare(`
+    INSERT INTO user_profiles (
+      user_id, summary, roles_json, domains_json, expertise_json, projects_json,
+      preferences_json, communication_style_json, evidence_json, confidence, updated_at
+    )
+    VALUES (
+      @user_id, @summary, @roles_json, @domains_json, @expertise_json, @projects_json,
+      @preferences_json, @communication_style_json, @evidence_json, @confidence, @updated_at
+    )
+    ON CONFLICT(user_id) DO UPDATE SET
+      summary = excluded.summary,
+      roles_json = excluded.roles_json,
+      domains_json = excluded.domains_json,
+      expertise_json = excluded.expertise_json,
+      projects_json = excluded.projects_json,
+      preferences_json = excluded.preferences_json,
+      communication_style_json = excluded.communication_style_json,
+      evidence_json = excluded.evidence_json,
+      confidence = excluded.confidence,
+      updated_at = excluded.updated_at
+  `).run(payload)
+  return getUserProfile(payload.user_id)
+}
+
 export function getRecentConversation(entityId, limit = 20, maxHours = 24, { includeAbsorbed = false } = {}) {
   const db = getDB()
   const normalizedId = normalizeConversationPartyId(entityId)
@@ -1682,7 +1772,7 @@ export function getRecentActionLogs(limit = 50, { includeHousekeeping = false, i
   }
   return db.prepare(`
     SELECT * FROM action_logs
-    WHERE source IS NULL OR source NOT IN ('recognizer', 'consolidator')
+    WHERE source IS NULL OR source NOT IN ('recognizer', 'consolidator', 'reviewer')
     ORDER BY id DESC LIMIT ?
   `).all(limit).reverse()
 }

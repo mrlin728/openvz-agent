@@ -233,6 +233,15 @@ export function __setInstalledSoftwareForTest(apps = []) {
   }
 }
 
+export function getInstalledSoftwareSnapshot() {
+  if (!_cached) return { apps: [], platform: process.platform, scanned_at: null }
+  return {
+    platform: _cached.platform || process.platform,
+    scanned_at: _cached.scanned_at || null,
+    apps: Array.isArray(_cached.apps) ? _cached.apps.slice() : [],
+  }
+}
+
 function isNetworkApp(app) {
   return NETWORK_APP_PATTERNS.some(pattern => pattern.test(app.name))
 }

@@ -289,6 +289,8 @@ function makeFrame(topic, { startedAtTick = 1, lastSeenTick = 1, hitCount = 1 } 
   assert(!ctxEmpty.includes('<focus'), 'empty stack: no <focus>')
 
   // 两帧栈 → <focus> + <focus-history>
+  // 历史帧有结论时：以结论为主，不再把不可靠的 n-gram topic 当标题展示，
+  // 也不再用「unfinished / walked away」这种暗示「回去续上」的措辞。
   const ctx2 = buildContextBlock({
     focusStack: [
       { ...makeFrame(['mainline', 'goal']), conclusions: ['Decided to keep design A'] },
@@ -299,8 +301,32 @@ function makeFrame(topic, { startedAtTick = 1, lastSeenTick = 1, hitCount = 1 } 
   assert(ctx2.includes('<focus '), 'two-frame stack: <focus> emitted for top')
   assert(ctx2.includes('topic="subtopic, detail"'), 'two-frame stack: <focus> shows TOP topic')
   assert(ctx2.includes('<focus-history>'), 'two-frame stack: <focus-history> emitted')
-  assert(ctx2.includes('mainline, goal'), 'two-frame stack: history mentions older frame topic')
   assert(ctx2.includes('Decided to keep design A'), 'two-frame stack: history shows last conclusion')
+  assert(!ctx2.includes('mainline, goal'), 'two-frame stack: conclusion frames do NOT show raw n-gram topic as a title')
+  assert(!/walked away|unfinished background/.test(ctx2), 'two-frame stack: no "walked away / unfinished" framing')
+  assert(ctx2.includes('NOT tasks to resume'), 'two-frame stack: framed as background context, not a todo')
+
+  // 历史帧无结论时：退回展示关键词，并明确标注「还没成形」。
+  const ctxNoConcl = buildContextBlock({
+    focusStack: [
+      makeFrame(['half', 'baked', 'idea']),
+      makeFrame(['active', 'top']),
+    ],
+    focusTickCounter: 5,
+  })
+  assert(ctxNoConcl.includes('still forming'), 'no-conclusion history: marked as still forming')
+  assert(ctxNoConcl.includes('half / baked / idea'), 'no-conclusion history: shows keywords fallback')
+
+  // 完全相同的历史结论去重，避免复读同一情绪（同一对话被切成多帧时的近重复）。
+  const ctxDup = buildContextBlock({
+    focusStack: [
+      { ...makeFrame(['a', 'b']), conclusions: ['同一个结论'] },
+      { ...makeFrame(['c', 'd']), conclusions: ['同一个结论'] },
+      makeFrame(['active', 'top']),
+    ],
+    focusTickCounter: 5,
+  })
+  assert((ctxDup.match(/同一个结论/g) || []).length === 1, 'duplicate history conclusions are deduped')
 
   // 栈顶有 conclusions → 出现在 <focus> 段末尾
   const topWithConclusions = makeFrame(['top', 'with', 'sub'])
@@ -383,7 +409,24 @@ function makeFrame(topic, { startedAtTick = 1, lastSeenTick = 1, hitCount = 1 } 
   })
   assert(input.includes('prompt, caching'), 'buildCompressionInput includes topic')
   assert(input.includes('how does prefix cache work'), 'buildCompressionInput includes conversation content')
+  assert(input.includes('ID:000001 -> You'), 'buildCompressionInput labels messages to Jarvis as addressed to You')
+  assert(input.includes('You -> ID:000001'), 'buildCompressionInput labels Jarvis messages as from You')
+  assert(!input.includes('jarvis ->'), 'buildCompressionInput does not expose raw jarvis sender label')
+  assert(input.includes('[Conversation during this focus: last 30 rounds]'), 'buildCompressionInput declares 30-round focus history')
   assert(input.includes('fetch_url'), 'buildCompressionInput includes tool name')
+
+  const longHistory = Array.from({ length: 70 }, (_, i) => ({
+    from_id: i % 2 === 0 ? 'ID:000001' : 'jarvis',
+    to_id: i % 2 === 0 ? 'jarvis' : 'ID:000001',
+    timestamp: `2026-05-19T10:${String(i).padStart(2, '0')}:00Z`,
+    content: `history-${String(i).padStart(2, '0')}`,
+  }))
+  const longInput = buildCompressionInput(popped, { conversations: longHistory })
+  assert(!longInput.includes('history-09'), 'buildCompressionInput drops rows older than the latest 30 rounds')
+  assert(longInput.includes('history-10'), 'buildCompressionInput keeps the first row inside the latest 30 rounds')
+  assert(longInput.includes('history-69'), 'buildCompressionInput keeps the newest row inside the latest 30 rounds')
+  assert((longInput.match(/history-\d\d/g) || []).length === 60,
+    'buildCompressionInput keeps exactly 60 messages for 30 conversation rounds')
 
   // empty case
   const emptyInput = buildCompressionInput(popped, { conversations: [], actionLogs: [] })

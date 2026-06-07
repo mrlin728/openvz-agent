@@ -148,13 +148,13 @@ export function buildAgentContextBlock() {
     const invoke = a.invoke_type === 'cli'
       ? `exec_command("${a.invoke_cmd} ...")`
       : `fetch_url("${a.invoke_cmd}/...")`
-    return `- **${a.name}** (${a.id})：${a.description}。调用：${invoke}`
+    return `- **${a.name}** (${a.id}): ${a.description}. Invoke: ${invoke}`
   })
 
-  return `## 可协作的 AI 小伙伴
-你已获得指挥权，遇到复杂任务时可通过 delegate_to_agent 工具调用以下 Agent：
+  return `## AI Collaborators You Can Work With
+You have been granted command authority. For complex tasks, you may invoke the following agents through the delegate_to_agent tool:
 ${lines.join('\n')}
-调用前先向用户说明你打算让谁做什么，得到确认后再执行。`
+Before invoking, tell the user what you intend to have whom do, and proceed only after confirmation.`
 }
 
 // ── 生成"首次发现 Agent，需要询问用户"的方向指令文本 ─────────────────────
@@ -165,7 +165,7 @@ export function buildDelegationAskDirections() {
   if (!available.length) {
     // 无 agent 时也立即 mark：避免每个 idle tick 都注入这段无目的的扫描结果。
     markDelegationAsked()
-    return `【系统扫描结果】启动时已扫描本地环境，未发现其他 AI 智能体（Claude Code、Codex、Hermes、OpenClaw 均未检测到）。你无需向用户提及本次扫描。`
+    return `[System scan result] On startup the local environment was scanned; no other AI agents were found (none of Claude Code, Codex, Hermes, OpenClaw detected). You do not need to mention this scan to the user.`
   }
 
   // 关键：注入后立即落盘"已问"——语义是"我们把这条 directions 给过模型了"，
@@ -174,12 +174,12 @@ export function buildDelegationAskDirections() {
   markDelegationAsked()
 
   const names = available.map(a => a.name).join('、')
-  return `【新发现 · 仅本次启动注入一次】系统启动时检测到你的电脑上安装了以下 AI 工具：${names}。
-这些工具可以作为你的小伙伴协助处理复杂任务（比如代码开发、自动化流程等）。
-请用 send_message 自然地问用户一次：你能指挥这些小伙伴工作吗？
-[硬约束] 只问这一次。本轮发出之后无论用户是否回复，都不要在后续 tick 中重复发问或催促；这段 directions 不会再注入，重复发是骚扰。
-等用户回复后：
-- 如果用户同意（说"可以"、"好的"、"行"等）→ 调用 grant_agent_delegation 工具落盘权限
-- 如果用户拒绝 → 调用 grant_agent_delegation 工具传入 allowed=false 落盘
-- 如果用户长时间不回复 → 保持安静，不要追问；等用户主动开口时再视情况自然带入。`
+  return `[New discovery · injected only once this startup] On startup the following AI tools were detected on your computer: ${names}.
+These tools can act as your collaborators to help with complex tasks (e.g. code development, automation workflows).
+Use send_message to ask the user once, naturally: can you direct these collaborators to work for you?
+[Hard constraint] Ask only once. After sending this round, regardless of whether the user replies, do not ask again or nag in later ticks; this directions block will not be injected again, and repeating it is harassment.
+After the user replies:
+- If the user agrees (says "可以" / "好的" / "行", etc.) → call the grant_agent_delegation tool to persist the permission.
+- If the user declines → call grant_agent_delegation with allowed=false to persist it.
+- If the user does not reply for a long time → stay quiet, do not press; weave it in naturally later when the user brings it up themselves.`
 }

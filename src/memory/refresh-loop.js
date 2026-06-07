@@ -3,22 +3,22 @@ import { searchAdditionalMemories, formatMemoriesForPrompt } from './injector.js
 
 const WEB_KEYWORDS = /最新|实时|今天|昨天|明天|news|price|股价|天气|汇率|价格/i
 
-const ROUND3_SEARCH_PROMPT = `你是信息检索助手。根据收到的检索请求，直接调用工具搜索，返回原始结果，不要解释或总结。`
+const ROUND3_SEARCH_PROMPT = `You are an information-retrieval assistant. Based on the retrieval request you receive, call tools to search directly and return the raw results. Do not explain or summarize.`
 
 function buildEvalPrompt(formattedMemories, query, { round = 1, prevMissing = [] } = {}) {
   const memSnippet = formattedMemories.slice(0, 1500)
   const roundHint = round === 1
-    ? `这是第1轮评估，基于当前已有的记忆片段作出判断。`
-    : `这是第${round}轮评估。第${round - 1}轮识别的信息缺口是：${prevMissing.map(m => `"${m}"`).join('、') || '（无）'}。\n本轮追加注入了针对上述缺口专门检索的记忆片段，请定向利用这些新记忆重新评估。`
-  return `你是一个记忆评估助手。${roundHint}根据提供的记忆片段，评估对以下问题的了解程度，输出 JSON。
+    ? `This is evaluation round 1, judging from the memory fragments currently available.`
+    : `This is evaluation round ${round}. The information gaps identified in round ${round - 1} were: ${prevMissing.map(m => `"${m}"`).join(', ') || '(none)'}.\nThis round has injected additional memory fragments retrieved specifically for those gaps; use these new memories to re-evaluate in a targeted way.`
+  return `You are a memory-evaluation assistant. ${roundHint} Based on the provided memory fragments, evaluate how well the following question can be answered, and output JSON.
 
-已有记忆：
+Existing memories:
 ${memSnippet}
 
-问题：${query}
+Question: ${query}
 
-只输出以下格式的 JSON，不要其他内容：
-{"confidence":"low"|"medium"|"high","missing":["缺少的信息1","缺少的信息2"]}`
+Output only JSON in the following format, nothing else:
+{"confidence":"low"|"medium"|"high","missing":["missing info 1","missing info 2"]}`
 }
 
 function parseEvalResult(content) {
