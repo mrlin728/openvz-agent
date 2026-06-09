@@ -76,10 +76,14 @@ function formatContent(text) {
     .replace(/>/g, '&gt;')
     // URL 转链接
     .replace(/(https?:\/\/[^\s\)]+)/g, '<a href="$1" target="_blank" rel="noopener" class="dp-link">$1</a>')
-    // ■ 粗体行
+    // ■ 分组标题
     .replace(/^■ (.+)$/gm, '<div class="dp-bullet">■ $1</div>')
     // → 箭头项
     .replace(/^→ (.+)$/gm, '<div class="dp-arrow-item">→ $1</div>')
+    // · 子项（允许前导缩进，如工具清单），缩进一级
+    .replace(/^\s*· (.+)$/gm, '<div class="dp-subitem"><span class="dp-subitem-mark">·</span> $1</div>')
+    // - 子项（允许前导缩进，如架构说明），缩进一级
+    .replace(/^[ \t]*- (.+)$/gm, '<div class="dp-subitem"><span class="dp-subitem-mark">–</span> $1</div>')
     // 数字列表
     .replace(/^(\d+)\. (.+)$/gm, '<div class="dp-list-item"><span class="dp-list-num">$1.</span> $2</div>')
     // ① ② 等圆圈数字
@@ -492,22 +496,68 @@ async function renderInlineConfig(topicId) {
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 
+// Tab 分组：把"配置类"（需要动手填 Key）与"关于白龙马"（讲解型自知识）分开，
+// 顺序即展示顺序。topic 不存在于 /docs 时自动跳过，无需手动同步。
+const TAB_GROUPS = [
+  { label: '配置', topics: ['model_config', 'voice_asr', 'voice_tts', 'voice_config', 'wechat_config'] },
+  { label: '关于白龙马', topics: ['self_architecture', 'ui_design'] },
+]
+
+// Tab 上的短标签（文档 title 太长，pill 放不下）；缺省回退到 title。
+const TAB_SHORT_LABELS = {
+  model_config: '模型',
+  voice_asr: '语音识别',
+  voice_tts: '语音合成',
+  voice_config: '语音配置',
+  wechat_config: '微信',
+  self_architecture: '架构机制',
+  ui_design: '界面设计',
+}
+
+// 从 /docs 拉取主题列表，按分组渲染 Tab 并绑定点击。组间插一条细分隔。
+async function renderTabs() {
+  const tabsEl = $('dp-tabs')
+  if (!tabsEl) return
+
+  let topics = []
+  try {
+    const res = await fetch(apiUrl('/docs'))
+    if (res.ok) topics = (await res.json()).topics || []
+  } catch (err) {
+    console.warn('[DocPanel] 获取主题列表失败:', err.message)
+  }
+  const byId = Object.fromEntries(topics.map(t => [t.id, t]))
+
+  const parts = []
+  for (const group of TAB_GROUPS) {
+    const present = group.topics.filter(id => byId[id])
+    if (!present.length) continue
+    if (parts.length) parts.push('<span class="dp-tab-divider" aria-hidden="true"></span>')
+    for (const id of present) {
+      const icon = byId[id].icon || ''
+      const label = TAB_SHORT_LABELS[id] || byId[id].title
+      const active = id === currentTopicId ? ' dp-tab-active' : ''
+      parts.push(`<button class="dp-tab${active}" data-topic="${id}" type="button" title="${byId[id].title}">${icon} ${label}</button>`)
+    }
+  }
+  tabsEl.innerHTML = parts.join('')
+
+  tabsEl.querySelectorAll('.dp-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const topic = btn.dataset.topic
+      if (topic) {
+        loadTopic(topic)
+        reportDocPanelState(true, topic, 'tab_switch')
+      }
+    })
+  })
+}
+
 export async function initDocPanel() {
   // 绑定关闭按钮
   const closeBtn = $('dp-close-btn')
   if (closeBtn) closeBtn.addEventListener('click', () => setDocPanelMode(false, { source: 'user_close' }))
 
-  // 绑定 Tab 切换
-  const tabs = $('dp-tabs')
-  if (tabs) {
-    tabs.querySelectorAll('.dp-tab').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const topic = btn.dataset.topic
-        if (topic) {
-          loadTopic(topic)
-          reportDocPanelState(true, topic, 'tab_switch')
-        }
-      })
-    })
-  }
+  // 数据化渲染 Tab（分组 + 自动包含新主题）
+  await renderTabs()
 }

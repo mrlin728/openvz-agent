@@ -409,7 +409,11 @@ function setupAutoUpdater() {
   })
 
   if (!IS_DEV) {
-    autoUpdater.checkForUpdates().catch(() => {})
+    autoUpdater.checkForUpdates().catch(err => {
+      // 不要静默吞掉更新检查失败。GitHub 在国内经常超时/不可达，若整段吞掉，
+      // 用户会卡在「永远没有更新」且无任何痕迹。这里至少落到日志，便于排查。
+      console.warn('[updater] initial check failed', err?.message || err)
+    })
   }
 }
 

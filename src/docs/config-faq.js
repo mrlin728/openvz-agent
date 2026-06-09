@@ -1,4 +1,10 @@
 // 模型配置 & 微信/社交平台配置文档
+// 模型总览一节由 auto-catalog.js 从 config.js 的 PROVIDER_CONFIG 自动生成，杜绝随版本漂移。
+
+import { buildModelCatalogText } from './auto-catalog.js'
+
+// 模块加载时生成一次模型清单文本（纯数据派生，无副作用）。
+const MODEL_CATALOG_TEXT = buildModelCatalogText()
 
 export const CONFIG_TOPICS = {
   model_config: {
@@ -10,18 +16,11 @@ export const CONFIG_TOPICS = {
     sections: [
       {
         title: '支持的服务商总览',
-        content: `当前支持以下 LLM 服务商（配置入口：⚙ → 模型设置）：
+        content: `当前支持以下 LLM 服务商：
 
-■ DeepSeek — deepseek-v4-pro（默认）、deepseek-v4-flash
-■ MiniMax — MiniMax-M2.7、MiniMax-M1（同时提供 TTS）
-■ 通义千问（Qwen）— qwen-turbo、qwen-plus
-■ Moonshot（月之暗面）— moonshot-v1-8k、moonshot-v1-32k
-■ 智谱 AI（Zhipu）— glm-4-flash、glm-4-plus
-■ OpenAI — gpt-4o-mini、gpt-4o
-■ 小米 MiMo — mimo-v2.5（默认）、mimo-v2.5-pro、mimo-v2-flash
-■ 自定义端点 — 兼容 OpenAI 格式的任意服务
+${MODEL_CATALOG_TEXT}
 
-只需填入 API Key，系统会自动识别服务商（Auto 模式）。`,
+MiniMax 一个 Key 同时供 LLM 与 TTS 两用。`,
       },
       {
         title: 'DeepSeek 配置（首选推荐）',

@@ -68,6 +68,17 @@ Function BailongmaValidateInstallDir
     MessageBox MB_ICONSTOP|MB_OK "The selected Bailongma install folder already contains non-Bailongma content:$\r$\n$\r$\n$INSTDIR\$R3$\r$\n$\r$\nTo protect your files and other software, choose an empty folder or a folder used only by Bailongma."
     Abort
   ${endIf}
+
+  ; Refuse a doomed install when the target drive is nearly full. The payload is
+  ; ~330 MB and the installer re-extracts it once during repair, so require a
+  ; safe margin instead of failing half-way through copying files. ${DriveSpace}
+  ; reports free space in MB for the install drive's root.
+  ${GetRoot} "$INSTDIR" $R4
+  ${DriveSpace} "$R4\" "/D=F /S=M" $R5
+  ${if} $R5 < 600
+    MessageBox MB_ICONSTOP|MB_OK "目标磁盘可用空间不足，无法安全安装白龙马。$\r$\n$\r$\n所在磁盘：$R4$\r$\n当前可用：$R5 MB$\r$\n至少需要：600 MB$\r$\n$\r$\n请清理磁盘空间，或将白龙马安装到其他磁盘后重试。"
+    Abort
+  ${endIf}
 FunctionEnd
 
 Function BailongmaInstallDirSafetyPageCreate
@@ -112,8 +123,12 @@ Function BailongmaValidateInstalledPayload
   FileClose $R1
 
   ; A partially copied Electron executable can still have a valid PE header.
-  ; This threshold catches that class of broken install for the current build.
-  IntCmp $R3 150000000 bailongmaPayloadValid bailongmaPayloadMissing bailongmaPayloadValid
+  ; Use a conservative lower bound (50 MB) that any complete Bailongma.exe far
+  ; exceeds (~180 MB today), so gross truncation is caught without tying the
+  ; check to a specific Electron version's exact size, which changes on every
+  ; Electron bump. A tight threshold near the real size silently rejects valid
+  ; installs after an Electron downgrade/optimization.
+  IntCmp $R3 52428800 bailongmaPayloadValid bailongmaPayloadMissing bailongmaPayloadValid
 
   bailongmaPayloadValid:
     Return
@@ -132,8 +147,11 @@ Function BailongmaRepairAndValidateInstalledPayload
   File /oname=$PLUGINSDIR\7za.exe "${PROJECT_DIR}\node_modules\7zip-bin\win\x64\7za.exe"
 
   !ifdef APP_64
-    IfFileExists "$PLUGINSDIR\app-64.7z" 0 +3
-    ExecWait '"$PLUGINSDIR\7za.exe" x -y -aoa "-o$INSTDIR" "$PLUGINSDIR\app-64.7z"' $R0
+    IfFileExists "$PLUGINSDIR\app-64.7z" 0 +4
+    ; nsExec runs 7za.exe with a hidden window, so no console window flashes
+    ; during install. ExecWait would spawn a visible console window each time.
+    nsExec::ExecToLog '"$PLUGINSDIR\7za.exe" x -y -aoa "-o$INSTDIR" "$PLUGINSDIR\app-64.7z"'
+    Pop $R0
     Goto bailongmaPackageExtracted
   !endif
 

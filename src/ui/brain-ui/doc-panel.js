@@ -11,13 +11,8 @@ export const createDocPanel = () => `
       </div>
     </div>
     <div class="dp-header-right">
-      <div class="dp-tabs" id="dp-tabs">
-        <button class="dp-tab" data-topic="model_config" type="button">🤖 模型</button>
-        <button class="dp-tab" data-topic="voice_asr" type="button">🎤 语音识别</button>
-        <button class="dp-tab" data-topic="voice_tts" type="button">🔊 语音合成</button>
-        <button class="dp-tab" data-topic="voice_config" type="button">⚙️ 语音配置</button>
-        <button class="dp-tab" data-topic="wechat_config" type="button">💬 微信</button>
-      </div>
+      <!-- Tab 由 doc.js 的 renderTabs() 从 /docs 数据化生成并按意图分组 -->
+      <div class="dp-tabs" id="dp-tabs"></div>
       <button class="dp-close-btn" id="dp-close-btn" type="button" title="关闭文档面板">×</button>
     </div>
   </div>

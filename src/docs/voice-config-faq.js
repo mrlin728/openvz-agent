@@ -8,7 +8,7 @@ export const DOC_TOPICS = {
     title: '语音识别（ASR）配置指南',
     subtitle: 'Automatic Speech Recognition',
     icon: '🎤',
-    summary: '语音识别将麦克风输入实时转为文字。首选推荐阿里云百炼 Paraformer（https://bailian.console.aliyun.com/）。也支持腾讯云、科大讯飞和本地 Whisper。配置入口：点击左上角 ⚙ → 语音设置。',
+    summary: '语音识别将麦克风输入实时转为文字。首选推荐阿里云百炼 Paraformer（https://bailian.console.aliyun.com/）。也支持腾讯云、科大讯飞、火山引擎和本地 Whisper。配置入口：点击左上角 ⚙ → 语音设置。',
     sections: [
       {
         title: '为什么语音识别没有内容？',
@@ -274,6 +274,9 @@ ASR 测试：
 → xunfeiAppId — 讯飞 AppID
 → xunfeiApiKey — 讯飞 APIKey
 → xunfeiApiSecret — 讯飞 APISecret
+→ volcAsrApiKey / volcAsrAppKey / volcAsrAccessKey / volcAsrResourceId — 火山引擎 ASR（需在火山控制台开通流式语音识别后获取）
+
+切换识别服务商：voiceProvider 字段（aliyun（默认）/ tencent / xunfei / volc / 本地 Whisper）
 
 TTS 配置字段（POST /settings/tts）：
 → ttsProvider — 服务商（doubao/minimax/openai/elevenlabs/volcano）
