@@ -380,12 +380,24 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
     if (!text) return false;
     const seg = (msg.seg === undefined || msg.seg === null) ? null : msg.seg;
     if (msg.is_final) {
-      const last = committed[committed.length - 1];
-      // 与上一句同 seg（或文本完全相同）→ 视为同一句的重复/修正帧，替换而非追加
-      if (last && ((seg !== null && last.seg === seg) || last.text === text)) {
-        last.text = text;
+      // 按 seg 在【整个 committed】里查找同一句并替换——这是关键：火山 result_type=full 每帧都
+      // 重发从头到现在的全部 utterances(v0…vN)，若只比对最后一条，下一帧的 v0 ≠ 末条 vN 就会把
+      // 整段 v0…vN 整批再追加一遍 → 重复多次。全表按 seg 查找则就地替换、committed 稳定为一份。
+      // seg 为空（讯飞等）时回退到原「与最后一条文本相同即替换」。对阿里云(seg 唯一)行为不变。
+      let idx = -1;
+      if (seg !== null) {
+        idx = committed.findIndex(s => s.seg === seg);
+      } else {
+        const last = committed[committed.length - 1];
+        if (last && last.text === text) idx = committed.length - 1;
+      }
+      let changed;
+      if (idx >= 0) {
+        changed = committed[idx].text !== text;
+        committed[idx].text = text;
       } else {
         committed.push({ seg, text });
+        changed = true;
       }
       accumulatedText = committedText();
       lastTranscriptText = accumulatedText;
@@ -393,7 +405,8 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
       // 只更新语音面板的 transcript 显示，不再往聊天输入框(msg-input)写草稿——
       // 语音完全不过输入框，最终由 sendRecognizedVoiceText 直接发送文本。
       if (transcript) transcript.textContent = accumulatedText;
-      return true;
+      // 仅在内容真正变化时才算「新 final」：避免火山每帧重发同一批 utterances 触发绿灯狂闪/重复处理
+      return changed;
     }
     // interim：仅用于实时显示，不写入 committed。但记下来供重连兜底提级（commitPendingInterim）
     pendingInterim = text;
