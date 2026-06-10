@@ -165,15 +165,24 @@ export function getOpenCommitments(state) {
 }
 
 // 最近的开放承诺（指代性问询的解析锚点）。channel 给了就优先同渠道。
+// 同毫秒创建的承诺按数组序（即创建序）后者胜——commitments 是 push 进来的，数组序可信。
 export function latestOpenCommitment(state, { channel = '' } = {}) {
   const open = getOpenCommitments(state)
   if (open.length === 0) return null
-  const sorted = [...open].sort((a, b) => Date.parse(b.createdAt || 0) - Date.parse(a.createdAt || 0))
-  if (channel) {
-    const sameChannel = sorted.find(c => c.channel === channel)
-    if (sameChannel) return sameChannel
+  const newestOf = (list) => {
+    let best = null
+    let bestTs = -Infinity
+    for (const c of list) {
+      const ts = Date.parse(c.createdAt || 0) || 0
+      if (ts >= bestTs) { best = c; bestTs = ts }
+    }
+    return best
   }
-  return sorted[0]
+  if (channel) {
+    const sameChannel = open.filter(c => c.channel === channel)
+    if (sameChannel.length > 0) return newestOf(sameChannel)
+  }
+  return newestOf(open)
 }
 
 // ── 承诺生命周期（行动者写入路径之一：set_task / clear_task 钩子调这里） ──────

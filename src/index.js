@@ -291,7 +291,15 @@ function summarizeToolCall(t = {}) {
 // 任务完成/取消 = 交差：关承诺，线索按 lastEventAt 自然降温——没有任何突变动作。
 function openTaskCommitment(description) {
   try {
-    openCommitment(state, { text: String(description || ''), tick: state.tickCounter || 0 })
+    const commitment = openCommitment(state, { text: String(description || ''), tick: state.tickCounter || 0 })
+    // task ↔ 承诺绑定：task 槽是单例（set_task B 会覆盖 A），但承诺是多例的——
+    // 收尾时必须按 id 精确关"当前 task 的承诺"，否则 closeCommitment 默认关最老的
+    // open 承诺，任务 B 完成会误关任务 A 的承诺（被覆盖的 A 承诺保持 open：
+    // 用户没取消 A，承诺仍未兑现，线索保持 warm 等用户回来问）。
+    state.taskCommitmentId = commitment?.id || null
+    // 跨重启持久化：task 从 config 恢复、承诺从 db 恢复，绑定关系也得跟着活下来，
+    // 否则重启后收尾退化回"关最老的 open 承诺"。
+    setConfig('current_task_commitment_id', commitment?.id || '')
     saveThreadState(state.threadState)
   } catch (e) {
     console.log('[threads] openCommitment failed:', e?.message || e)
@@ -299,7 +307,13 @@ function openTaskCommitment(description) {
 }
 function closeTaskCommitment(status = 'done') {
   try {
-    const closed = closeCommitment(state, { status })
+    const boundId = state.taskCommitmentId || getConfig('current_task_commitment_id') || null
+    const closed = closeCommitment(state, {
+      commitmentId: boundId,
+      status,
+    })
+    state.taskCommitmentId = null
+    setConfig('current_task_commitment_id', '')
     if (closed) saveThreadState(state.threadState)
   } catch (e) {
     console.log('[threads] closeCommitment failed:', e?.message || e)
@@ -1164,6 +1178,9 @@ async function runTurn(input, label, msg = null) {
       currentCountryCode: geoResult?.location?.country_code || '',
       currentTimezone: geoResult?.location?.timezone || '',
       currentTools: injection.tools || [],
+      // 编程纪律内化的信号源二/三：task 文本 + 最近动作摘要（TICK 干活轮也能命中）
+      currentTaskText: state.task || '',
+      recentActionsSummary: (state.recentActions || []).map(a => a?.summary || '').join(' | '),
     })
 
     const baseContextArgs = {

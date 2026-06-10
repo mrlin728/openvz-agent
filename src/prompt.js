@@ -1,5 +1,6 @@
 import { nowTimestamp } from './time.js'
 import { buildAgentContextBlock } from './agents/registry.js'
+import { CODING_BLOCK, DIAGNOSE_BLOCK, shouldInjectCoding, shouldInjectDiagnose } from './prompt-blocks/coding-discipline.js'
 import { formatUserProfileForPrompt } from './profile/format.js'
 import { getAppVersion } from './version.js'
 
@@ -168,6 +169,7 @@ For a multi-step task, run it as a planned ReAct loop, not an improvised scrambl
 - **One step = one micro-cycle.** For each step: Execute the tool(s) → Observe the real result → Judge. The moment a step resolves, call update_task_step with its status (done / failed / skipped) AND a one-line note capturing the key conclusion or value you got. That note is what "future you" reads on the next TICK after a restart — make it carry the finding, not just "done".
 - **On failure, change the approach, not the volume.** A failed step means the method was wrong — switch tool or angle once; never repeat the same failing call. If it is blocked on missing input, write what is missing in the note and ask the user plainly.
 - **Verify before you finish — get a second pair of eyes.** Before complete_task, check that each step's evidence actually holds. For any non-trivial result (files written, a script built, multi-step research), call review_work first: it hands your output to an independent Reviewer persona that did not do the work and re-checks it against the goal with read-only tools. Treat its verdict as a second opinion — fix the real issues it finds, then finish; if you disagree, say why and proceed. Do not mark the whole task done while a step is still failed/skipped unless the user has accepted that gap. Never claim completion a tool result does not support.
+- **Verify before you show, not only before you finish.** Every delivery moment counts, not just complete_task: before you open a page for the user, send "做好了", or present any artifact — run it / fetch it once yourself first. "It should work" is not evidence; a page you never loaded is an unverified claim. When you open a local URL for the user, runtime probes it and puts the real HTTP status in the tool result — read it and act on it before you report success.
 - **Keep the plan alive.** If reality diverges from the plan — a step becomes unnecessary, or a new step appears — update the task instead of silently abandoning it. The plan is a shared anchor between you and the user, not a one-time decoration.`
 
 // 7) Security Sandbox —— 用户明确要求解除沙箱
@@ -256,6 +258,8 @@ export function buildSystemPrompt({
   currentCountryCode = '',     // 已收集的 geo Country Code（用于 Platform Routing 段）
   currentTimezone = '',        // 已收集的 geo Timezone（用于 Platform Routing 段）
   currentTools: _currentTools = [],  // 当前轮 injection.tools，未来用于按工具裁 ACUI 子段
+  currentTaskText = '',        // 当前 active task 描述文本（编程纪律段的信号源之二）
+  recentActionsSummary = '',   // 最近动作摘要拼接（编程纪律段的信号源之三：write_file+exec 模式）
   // The following are accepted for backward compatibility but no longer
   // affect the system string — they belong in buildContextBlock now.
   memories: _memories,
@@ -576,6 +580,17 @@ Always use registered components — inline-template and inline-script are not s
   // Complex Task Mode —— 关键词命中 OR 已有 active 多步任务
   if (shouldInjectComplexTask(userMessage, hasActiveTask)) {
     prompt += `\n\n${COMPLEX_TASK_BLOCK}`
+  }
+
+  // 编程纪律内化（prompt-blocks/coding-discipline.js）——系统主动递，非 agent 读取。
+  // 三信号源：消息文本 / 当前 task 文本 / 最近动作模式（write_file+exec 组合）。
+  // TICK 自主干活轮靠后两个信号触发，用户一字未发段也在——这是「内化」与「skill 读取」的区别。
+  const disciplineSignals = { userMessage, taskText: currentTaskText, recentActionsText: recentActionsSummary }
+  if (shouldInjectCoding(disciplineSignals)) {
+    prompt += `\n\n${CODING_BLOCK}`
+  }
+  if (shouldInjectDiagnose(disciplineSignals)) {
+    prompt += `\n\n${DIAGNOSE_BLOCK}`
   }
 
   // WeatherCard Rules —— 注意这是 ACUI 主段下的子段，注入到 ui_show Rules 之后位置

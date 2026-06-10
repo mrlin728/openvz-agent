@@ -212,7 +212,60 @@ export function getCommandFailureHint(command = '', stderr = '', stdout = '') {
   return null
 }
 
+// ── 交付探针（2026-06-10）────────────────────────────────────────────────────
+// 实测失败模式（霍曼动画连续两次）：模型「起服务 → Start-Process 打开浏览器 → 汇报做好了」
+// 全程零验证，用户打开就是 404。prompt 软提示在交付时刻会被无视。
+// 修法符合第一原则（不拦截、不扣工具，只改返回值）：模型把 localhost 页面打开给用户的
+// 那一刻，runtime 顺手 GET 一次，把真实状态码作为观察证据写进工具返回值——
+// 模型当场看到 404 自然会修，不需要任何强制。
+const USER_FACING_URL_RE = /(?:start-process|^start\s|\bstart\s|chrome|msedge|firefox|explorer(?:\.exe)?)[^|;&]*?["']?(https?:\/\/(?:localhost|127\.0\.0\.1)[^\s"')]*)/i
+
+function extractUserFacingLocalUrl(command) {
+  const cmd = String(command || '')
+  // 本身就是验证动作的命令不探（避免重复 GET 与误导）
+  if (/curl|wget|invoke-webrequest|invoke-restmethod/i.test(cmd)) return null
+  const m = cmd.match(USER_FACING_URL_RE)
+  return m ? m[1] : null
+}
+
+async function probeLocalUrl(url, timeoutMs = 3000) {
+  try {
+    const controller = new AbortController()
+    const t = setTimeout(() => controller.abort(), timeoutMs)
+    const res = await fetch(url, { signal: controller.signal, redirect: 'follow' })
+    clearTimeout(t)
+    let preview = ''
+    try { preview = (await res.text()).replace(/\s+/g, ' ').slice(0, 160) } catch {}
+    return { url, status: res.status, ok: res.ok, body_preview: preview }
+  } catch (e) {
+    return { url, status: 0, ok: false, error: e?.name === 'AbortError' ? 'timeout' : (e?.message || 'connection failed') }
+  }
+}
+
+// 仅供测试
+export const __probeInternal = { extractUserFacingLocalUrl, probeLocalUrl }
+
 export async function execCommand(args, context = {}) {
+  const result = await execCommandImpl(args, context)
+  try {
+    const probeUrl = extractUserFacingLocalUrl(String(args.command || args.cmd || ''))
+    if (!probeUrl) return result
+    const probe = await probeLocalUrl(probeUrl)
+    console.log(`[exec_command] 交付探针 GET ${probe.url} → ${probe.status || probe.error}`)
+    const obj = JSON.parse(result)
+    obj.runtime_url_check = probe
+    if (!probe.ok) {
+      obj.hint = `⚠ 你刚把这个页面打开给用户看，但 runtime 实测它异常（${probe.status ? `HTTP ${probe.status}，正文：${probe.body_preview || '(空)'}` : probe.error}）。用户现在看到的是坏页面。先修复，再用 fetch_url 亲自确认正常，然后才向用户说做好了。`
+    } else {
+      obj.hint = `${obj.hint ? obj.hint + ' ' : ''}runtime 已替你 GET 过该页面：HTTP ${probe.status}。注意这只证明入口可达，页面内部 JS 是否报错仍需你自己确认（fetch_url 看正文 / browser_read）。`
+    }
+    return JSON.stringify(obj, null, 2)
+  } catch {
+    return result
+  }
+}
+
+async function execCommandImpl(args, context = {}) {
   throwIfAborted(context.signal)
   const command = String(args.command || args.cmd || '').trim()
   if (!command) return toolJson({ ok: false, tool: 'exec_command', error: 'missing command' })

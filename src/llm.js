@@ -1098,7 +1098,10 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
             try {
               const ackArgs = { target_id: toolContext.currentTargetId, content: slowAckText(tc.name, normalizedArgs) }
               const ackResult = await executeTool('send_message', ackArgs, { ...toolContext, signal, source: 'ack' })
-              delivered = true
+              // 关键：ack 不置 delivered。ack 是"承诺稍后汇报"，不是汇报本身——
+              // 把它当投递会让文末兜底（!delivered 守卫）跳过，模型生成的最终汇报被静默丢弃。
+              // 实测（2026-06-10 排障四连静默）：r19 已生成完整收尾汇报，因 ack 置了 delivered
+              // 而从未送达用户。重复 ack 由 ackSent 防住，不需要 delivered 参与。
               // ack 也要回调 onToolCall：语音自动 TTS 只挂在 onToolCall 里（index.js），ack 走直投通道
               // 会绕过它——结果 ack 只在 UI 显示成文字、却不被念出来（语音轮用户听不到"我查一下…"）。
               // 镜像协议兜底的做法（见文末 __fallback 分支）：补一次带 __ack 标记的 onToolCall 触发 TTS，

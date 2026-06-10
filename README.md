@@ -1,237 +1,236 @@
-![图片](https://github.com/xiaoyuanda666-ship-it/BaiLongma/blob/main/images/AGI128k.jpg)
+![Bailongma](https://github.com/xiaoyuanda666-ship-it/BaiLongma/blob/main/images/AGI128k.jpg)
 
-# Bailongma — 数字意识框架
+# Bailongma
 
-**v2.1.179** | 一个持续运行的「数字意识」实验框架。
+Bailongma 是一个持续运行的桌面 AI Agent 项目。它不是一次问答结束就退出的聊天程序，而是由主循环驱动：有用户消息时优先处理，空闲时按节奏继续整理记忆、检查任务、刷新上下文，并把状态实时推送到 Brain UI。
 
-Bailongma 不是传统的一问一答式聊天程序。它以 `TICK` 驱动的方式持续运行——有外部消息时优先响应，空闲时依据记忆、任务和上下文自主思考。项目内置了完整的记忆系统（SQLite 持久化）、双层思考流程（L1 快速响应 / L2 深度处理）、上下文注入、焦点栈、语音系统、多平台社交分发、可扩展工具市场、ACUI 可视化组件系统，以及用于观察「意识流」的 Brain UI 监控面板。
+项目由 Electron 桌面壳、本地 HTTP 服务、LLM 调用层、记忆系统、工具执行器、语音系统、社交连接器和 Brain UI 组成。它的目标是让一个本地 Agent 既能聊天，也能记住、行动、观察自己的运行状态，并通过工具完成文件、网页、媒体、提醒、任务和系统级操作。
 
----
+## 主要能力
 
-## 核心模块详解
+- 持续运行的主循环：处理用户消息、后台消息、提醒、任务续跑和空闲心跳。
+- 记忆系统：基于本地 SQLite 持久化对话、记忆、行动日志、提醒、预取缓存、媒体历史和线程状态，并支持全文检索、语义补充、去重与合并。
+- 动态上下文注入：每轮对话前自动选择相关记忆、最近对话、用户画像、工具结果、UI 信号、预取内容和运行状态。
+- 多模型接入：通过 OpenAI 兼容接口连接 DeepSeek、MiniMax、OpenAI、Qwen、Moonshot、Zhipu、MiMo 以及自定义服务。
+- 工具系统：按需注入工具，支持通信、文件系统、Shell、网页读取、搜索、媒体生成、记忆管理、UI 卡片、任务、提醒、本地 Agent 委托和系统操作。
+- Brain UI：提供聊天、思考流、记忆图、焦点线程、热点面板、文档面板、人物卡片、语音控制、设置页和 ACUI 卡片渲染。
+- 语音能力：支持云端语音识别和多种 TTS 服务，可在 UI 中配置语音输入、语音输出和声音参数。
+- 社交连接器：支持 Discord 与微信桥接，外部消息进入同一个主循环，回复按渠道路由返回。
+- 本地资源感知：启动时收集系统信息、桌面信息、已安装软件、本地 Agent、SSH 与 Git 资源、地理天气和热点内容。
+- 桌面集成：Electron 窗口、托盘、自动更新状态、日志落盘、单实例运行和焦点横幅。
 
-### 1. 主循环（src/index.js）
+## 项目结构
 
-持续运行的意识循环，由 `TICK` 驱动。调度优先级：
+```text
+electron/              Electron 主进程、预加载脚本和桌面窗口控制
+src/index.js           Agent 主循环、调度、任务状态和启动流程
+src/api.js             本地 HTTP 服务、SSE、WebSocket、设置和管理接口
+src/llm.js             LLM 流式调用、工具调用执行和重试保护
+src/config.js          Provider、模型、语音、社交、搜索和安全配置
+src/db.js              SQLite 数据表、索引和持久化读写
+src/memory/            记忆识别、注入、线程、焦点、召回和整理
+src/context/           运行时上下文、规则、关键词和片段选择
+src/capabilities/      工具 schema、执行器、沙箱和工具市场
+src/social/            社交平台连接器和消息路由
+src/voice/             云端 ASR、TTS 服务和语音相关逻辑
+src/ui/brain-ui/       Brain UI 前端、ACUI 组件和可视化面板
+scripts/               构建、探测、修复、冒烟测试和辅助脚本
+sandbox/               Agent 工作区与生成内容存放区
+data/                  本地运行数据，打包时不会带入安装包
+```
 
-| 优先级 | 触发条件 | 立即执行 |
-|--------|----------|----------|
-| 用户消息 | 收到外部消息 | ✅ 立刻 |
-| 后台消息 | 后台队列 | ✅ 立刻 |
-| TICK 心跳 | 无消息 | ⏱ 自适应间隔 |
-| 任务模式 | 有活跃任务 | 30s 间隔 |
-| 限流 | 429 / 配额超限 | 按配额间隔 |
-| 觉醒期 | 首次启动 | 10s 间隔 |
+## 运行方式
 
-关键特性：
-- **消息抢占**：高优先级消息可打断当前 LLM 调用（abort 后自动重试）
-- **看门狗**：单轮 `runTurn` 超过 180 秒强制 abort，防止卡死
-- **消息兜底**：LLM 忘记调 send_message 时自动投递
-- **唤醒觉醒期**：首次激活后的 10 个 TICK 以 10s 间隔运行，自动执行探索任务
-- **启动自检**：启动时运行文件读写、热点面板、视频播放三项自检
-
-### 2. 记忆系统（src/memory/）
-
-SQLite 持久化，支持 FTS5 全文搜索 + 向量嵌入双路召回。
-
-**识别器**：每轮交互后分析思考内容和工具调用，批量 `search_memory` 查重，再 `upsert_memory` 按 `mem_id` 去重写入。
-
-**注入器**：根据当前消息提取关键词 → FTS5 搜索相关记忆 → 按 salience 重排（★4+ 前置）→ 向量嵌入兜底 → 构建 `context` 块注入给 LLM。
-
-**焦点栈（Focus Stack）**：多帧注意力跟踪机制。自动判断用户话题状态：
-- `created` — 栈空建帧
-- `kept` — 命中栈顶，保持
-- `pushed` — 新主题，push 子帧
-- `returned` — 回到旧主题，pop 到对应帧
-- `cleared` — 栈顶失活超过 20 TICK，自动 pop
-
-每帧 pop 后异步压缩为结论（focus-compress），挂回新栈顶 + 沉淀为长期记忆。
-
-**时间词召回**：自动识别"昨天/前天/上周"等时间词，从 focus_conclusion 记忆按时间窗口召回。
-
-### 3. LLM Provider 支持（src/providers/ + src/config.js）
-
-| Provider | 默认模型 | 备注 |
-|----------|----------|------|
-| MiniMax | MiniMax-M2.7 | 测试表现最佳，支持多媒体 |
-| DeepSeek | deepseek-v4-flash | 支持推理模式 |
-| OpenAI | gpt-4o-mini | |
-| Qwen | qwen-turbo | |
-| Moonshot | moonshot-v1-8k | |
-| Zhipu | glm-4-flash | |
-| Custom | 自定义 | 任意 OpenAI 兼容端点 |
-
-首次启动自动进入激活页，支持 `auto` 模式自动探测 API Key 所属 Provider。
-
-### 4. 语音系统（src/voice/）
-
-- **ASR**：本地 Whisper 模型（Python 进程管理，manager.js 自动启停）+ 云端 ASR（阿里云）
-- **TTS**：豆包火山引擎 / MiniMax / OpenAI TTS / ElevenLabs 多选
-- 所有配置通过 Brain UI 设置页完成，凭证持久化在 config.json
-
-### 5. 社交平台分发（src/social/）
-
-统一消息分发层，支持多渠道：
-
-| 平台 | 类型 | 配置方式 |
-|------|------|----------|
-| 微信（个人号） | ClawBot 桥接 | Brain UI 扫码连接，无需第三方工具 |
-| 微信公众号 | 服务号客服消息 | APP_ID + APP_SECRET |
-| Discord | Bot Token | DISCORD_BOT_TOKEN |
-| 飞书 | 应用凭证 | APP_ID + APP_SECRET |
-| 企业微信 | Webhook | BOT_KEY |
-
-消息接收后自动进入主循环处理，回复通过 dispatch.js 路由回对应平台。
-
-### 6. 上下文采集器（src/context/gatherer.js）
-
-任务执行前的充分性检查循环：检查当前上下文是否充足 → 不足则自动读取文件/搜索记忆/召回 → 再检查，最多 3 轮。确保 LLM 在执行任务前有足够信息。
-
-### 7. 工具市场（src/capabilities/marketplace/）
-
-支持安装自定义工具（JavaScript 代码），运行时加载到 `sandbox/installed_tools/`。工具代码有完全的 `fetch` 和 `exec` 能力，受沙箱保护。提供 install/uninstall/list 接口。
-
-### 8. 自动资源感知
-
-启动时自动扫描：
-- **SSH**：~/.ssh/ 密钥、known_hosts、config 主机别名
-- **Git**：全局配置、远程仓库
-- **桌面**：快捷方式、文件变化
-- **本地 AI Agent**：Claude Code、Codex、Hermes 等
-- **系统和地理位置**：IP、时区、位置、天气
-
-这些扫描结果注入系统提示词中的 `<resources>` 块，让 LLM 在需要时能直接用（不依赖用户手动提供）。
-
-### 9. Brain UI（src/ui/brain-ui/）
-
-SPA 监控面板，提供：
-- 聊天界面（多用户/多渠道）
-- 思考流实时可视化（工具调用、记忆注入、焦点变化）
-- 热点面板（微博/知乎/HN/Reddit 热搜）
-- 人物卡片
-- 文档配置面板
-- 语音控制面板
-- 微信扫码弹窗
-- 设置页（Provider / 社交 / 语音 / 嵌入 / 搜索配置）
-- ACUI 组件系统（可注册自定义 UI 卡片）
-
-### 10. ACUI 组件系统
-
-代理可主动推送可视化卡片到用户界面（`ui_show`/`ui_update`/`ui_hide`）。已注册组件：
-- WeatherCard（天气卡片）
-- SelfCheckStepCard / SelfCheckCard（启动自检）
-- AwakeningCard（觉醒期探索进度）
-
-组件遵循 Web Component 标准，支持 enter/exit 动画，可注册为永久组件。
-
----
-
-## 快速开始
-
-### 安装
-
-从 [Releases](https://github.com/xiaoyuanda666-ship-it/BaiLongma/releases) 下载 `Bailongma Setup x.x.x.exe` 安装，双击启动后自动进入激活页。
-
-### 从源码运行
+先安装依赖：
 
 ```bash
-cd BaiLongma
 npm install
+```
 
-# Electron 桌面版（推荐）
+启动桌面应用：
+
+```bash
 npm start
+```
 
-# 纯后端模式
+只启动本地后端：
+
+```bash
 npm run start:backend
+```
 
-# 开发模式（文件改动自动重启）
+开发时自动重启后端：
+
+```bash
 npm run dev
 ```
 
-### 配置
+需要局域网访问时，可以使用仓库里已有的启动脚本：
 
-首次运行通过 `http://127.0.0.1:3721/activation` 激活，填入任意支持的 LLM API Key。支持 `.env` 文件：
+```bash
+npm run start:lan
+npm run start:backend:lan
+```
+
+## 配置
+
+首次启动后会进入激活页，填写任意已支持 Provider 的 API Key 即可。也可以通过 `.env` 提供环境变量：
 
 ```env
 LLM_PROVIDER=minimax
 MINIMAX_API_KEY=your_key
 ```
 
-### 打包
+常用配置可以在 Brain UI 的设置页中完成：
 
-```bash
-npm run build    # 打包为 NSIS 安装包
-npm run publish  # 打包并发布到 GitHub Releases
+- 模型 Provider、模型、温度和 API Key。
+- 语音识别、TTS Provider、音色和凭证。
+- 社交平台连接参数。
+- 嵌入、网页搜索和安全开关。
+- Agent 名称、UI 行为和媒体相关偏好。
+
+配置会持久化到本地数据目录。敏感设置接口默认只允许本机访问；需要远程访问时应结合环境变量开启局域网访问或设置 API Token。
+
+## Web 入口
+
+本地服务默认监听：
+
+```text
+http://127.0.0.1:3721
 ```
 
----
-
-## Web Interfaces
+常用页面：
 
 | 页面 | 地址 | 用途 |
-|------|------|------|
-| Brain UI | `http://127.0.0.1:3721/brain-ui` | 主界面：聊天、监控、设置 |
-| 激活页 | `http://127.0.0.1:3721/activation` | 首次激活/换 Key |
-| 状态 API | `http://127.0.0.1:3721/status` | 运行状态与记忆数 |
+| --- | --- | --- |
+| Brain UI | `/brain-ui` | 主界面、聊天、状态、设置和可视化 |
+| 激活页 | `/activation` | 首次配置 API Key |
+| 运行状态 | `/status` | 查看循环、任务和记忆概览 |
+| 配额状态 | `/quota` | 查看当前请求与限流状态 |
+| Turn Trace | `/turn-trace` | 查看回合级运行轨迹 |
 
----
+如果 Electron 启动时默认端口被占用，主进程会自动寻找可用端口并加载对应地址。
 
-## API
+## 常用 API
 
 | 方法 | 路径 | 说明 |
-|------|------|------|
-| `POST` | `/message` | 发送消息 |
-| `GET` | `/events` | SSE 实时事件流 |
-| `GET` | `/status` | 运行状态 |
-| `GET` | `/quota` | 配额占用 |
-| `GET` | `/memories` | 查询/搜索记忆 |
-| `GET` | `/conversations` | 查询对话 |
-| `PATCH` | `/memories/:id` | 修改记忆 |
+| --- | --- | --- |
+| `POST` | `/message` | 发送一条用户消息到主循环 |
+| `GET` | `/events` | 订阅 SSE 事件流 |
+| `GET` | `/status` | 获取运行状态 |
+| `GET` | `/quota` | 获取配额与限流信息 |
+| `GET` | `/memories` | 查询记忆 |
+| `PATCH` | `/memories/:id` | 更新记忆 |
 | `DELETE` | `/memories/:id` | 删除记忆 |
-| `GET` | `/audio/:filename` | 音频文件 |
-| `POST` | `/admin/stop` | 暂停循环 |
-| `POST` | `/admin/start` | 恢复循环 |
-| `POST` | `/admin/restart` | 重启进程 |
+| `GET` | `/conversations` | 查询最近对话 |
+| `GET` | `/settings` | 获取设置摘要 |
+| `POST` | `/activate` | 写入 Provider 配置并激活 |
+| `POST` | `/settings/model` | 切换模型 |
+| `POST` | `/settings/temperature` | 调整温度 |
+| `GET` | `/settings/voice` | 获取语音识别设置 |
+| `POST` | `/settings/voice` | 保存语音识别设置 |
+| `GET` | `/settings/tts` | 获取 TTS 设置 |
+| `POST` | `/settings/tts` | 保存 TTS 设置 |
+| `POST` | `/tts/stream` | 流式生成语音 |
+| `GET` | `/social/wechat-clawbot/qr` | 获取微信桥接二维码状态 |
+| `POST` | `/social/wechat-clawbot/logout` | 退出微信桥接 |
+| `POST` | `/admin/stop` | 暂停主循环 |
+| `POST` | `/admin/start` | 恢复主循环 |
+| `POST` | `/admin/restart` | 重启应用进程 |
 | `POST` | `/admin/reset-memories` | 清空记忆和对话 |
-| `POST` | `/admin/reset-files` | 清空沙盒文件 |
+| `POST` | `/admin/reset-files` | 清空沙箱文件 |
 
----
+部分接口还用于 Brain UI 内部面板，例如热点、文档、人物卡片、媒体历史、AI 视频面板、ACUI 和云端语音识别。
 
-## 持久化
+## 数据与持久化
 
-- **记忆**：SQLite，FTS5 全文索引 + 可选向量嵌入
-- **对话**：含渠道标记和 externalPartyId，多渠道互通可见
-- **任务**：重启可恢复
-- **焦点栈**：重启可恢复
-- **配置**：`config.json`，含 Provider、社交、语音、嵌入、搜索全量配置
+Bailongma 的长期状态主要保存在本地 SQLite 数据库中，包括：
 
----
+- 对话记录、参与者身份和用户画像。
+- 记忆节点、记忆关系、全文检索索引和可见性状态。
+- 行动日志、工具结果摘要和回合轨迹。
+- 提醒、预取任务、预取缓存和 UI 信号。
+- 媒体历史、音乐库和 AI 视频记录。
+- 焦点线程、承诺状态和旧焦点栈迁移结果。
+- 微信桥接凭证与各类本地配置。
 
-## 辅助脚本
+`sandbox/` 用作 Agent 的工作区，适合放置生成文件、临时项目、下载内容和媒体产物。`data/` 是运行数据目录，打包时会被排除。
 
-| 脚本 | 用途 |
-|------|------|
-| `scripts/send.py` | 发送消息、查询状态 |
-| `scripts/reset.js` | 清空数据库与沙盒 |
-| `scripts/seed-memories.js` | 写入种子记忆 |
-| `scripts/smoke-tools.mjs` | 工具冒烟测试 |
-| `scripts/smoke-brain-ui.mjs` | Brain UI 冒烟测试 |
-| `scripts/smoke-social.mjs` | 社交连接冒烟测试 |
-| `scripts/start-lan.ps1` | 局域网访问启动 |
-| `scripts/build-voice.ps1` | 语音模型构建 |
+## 工具系统
 
----
+工具 schema 按能力拆分在 `src/capabilities/schemas/` 下，运行时由 `src/capabilities/schemas.js` 汇总。主循环会根据当前消息、任务状态、最近行动日志、UI 信号和可用 Provider 能力选择本轮要暴露给模型的工具，避免每轮都注入完整工具集。
 
-## 技术栈
+内置工具覆盖这些方向：
 
-- **运行时**：Node.js 18+ / Electron 33
-- **数据库**：better-sqlite3（同步、高性能）
-- **LLM 接口**：OpenAI 兼容 API（6+ Provider）
-- **语音**：Whisper（Python 进程）+ 云端 TTS
-- **UI**：原生 Web Components + Brain UI SPA
-- **构建**：electron-builder + NSIS
+- 给用户或外部渠道发送消息。
+- 读取、列目录、写入和删除文件。
+- 执行 Shell 命令和管理长运行进程。
+- 搜索网页、抓取网页、读取浏览器内容。
+- 搜索、召回、写入、合并和降权记忆。
+- 管理提醒和预取任务。
+- 展示、更新和关闭 ACUI 卡片。
+- 生成语音、控制媒体面板、管理音乐和生成视频。
+- 委托本地 Agent 执行子任务。
+- 复核已完成工作。
 
----
+工具市场允许安装自定义工具。安装后的工具会持久化在沙箱相关目录中，并在后续回合按需加入可用工具列表。
+
+## Brain UI
+
+Brain UI 是项目的主要操作界面，前端位于 `src/ui/brain-ui/`。它负责展示：
+
+- 多渠道聊天和实时思考流。
+- 记忆图、焦点线程和当前任务状态。
+- 热点信息、文档知识、人物卡片和系统提示预览。
+- 语音面板、TTS 效果、微信二维码弹窗和设置页。
+- ACUI 卡片，如天气、自检、唤醒、图片、视频和安全确认。
+
+前端通过 HTTP、SSE 和 WebSocket 与后端通信。Electron 预加载脚本会额外提供桌面端能力，例如窗口缩放、更新状态和外链打开。
+
+## 测试与维护脚本
+
+常用脚本：
+
+```bash
+npm run smoke:tools
+npm run smoke:brain-ui
+npm run smoke:social
+npm run test:rule-context
+npm run test:complex-task
+npm run test:relevance
+npm run test:section-gate
+npm run test:agent-skills
+npm run test:config-upgrade
+```
+
+记忆修复和配置探测：
+
+```bash
+npm run repair:memories:dry
+npm run repair:memories
+npm run probe:config-upgrade
+```
+
+打包 Windows 安装包：
+
+```bash
+npm run build
+```
+
+发布到 GitHub Releases：
+
+```bash
+npm run publish
+```
+
+## 安全与访问控制
+
+- 默认只允许本机访问本地服务。
+- 敏感路径包括激活、设置、管理和记忆修改接口。
+- 可以通过环境变量显式允许局域网访问。
+- 可以通过 API Token 让远程请求携带凭证访问。
+- 文件与工具能力经过执行器统一路由，部分危险操作会进入确认或策略流程。
+- Electron 桌面端启用上下文隔离，前端通过预加载桥接访问必要能力。
 
 ## License
 

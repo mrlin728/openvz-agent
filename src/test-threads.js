@@ -136,6 +136,23 @@ console.log('— Bug2 衍生：冷前台不被短消息续命 —')
   assert(stale.hitCount === 1, '冷前台 hitCount 未被刷新')
 }
 
+console.log('— 并发承诺：按 id 精确关闭 + 路由 —')
+{
+  const state = makeState()
+  const ta = addThread(state, ['任务A', '编程', '动画'])
+  const tb = addThread(state, ['任务B', '调研', '报告'], { foreground: true })
+  const ca = openCommitment(state, { text: '做完动画项目', threadId: ta.id })
+  const cb = openCommitment(state, { text: '写完调研报告', threadId: tb.id })
+  // 单任务槽位场景：任务 B 完成，必须只关 B 的承诺（不带 id 的旧行为会误关最老的 A）
+  const closed = closeCommitment(state, { commitmentId: cb.id, status: 'done' })
+  assert(closed === cb, '按 id 关闭命中 B')
+  assert(ca.status === 'open', 'A 的承诺不被误关（单任务槽位下的旧 bug）')
+  assert(latestOpenCommitment(state) === ca, '此后指代性问询路由回 A（唯一开放承诺）')
+  // 两个都开着时：latestOpenCommitment 取最新（"咋样了"默认指最近布置的事）
+  const cb2 = openCommitment(state, { text: '再做一个 B2', threadId: tb.id })
+  assert(latestOpenCommitment(state) === cb2, '多承诺并存时取最新创建的')
+}
+
 console.log('— 合并修正（分类器判 same 后） —')
 {
   const state = makeState()

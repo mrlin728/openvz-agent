@@ -1,6 +1,6 @@
 import crypto from 'crypto'
 import { nowTimestamp } from '../time.js'
-import { normalizeConversationPartyId, upsertPrefetchTask, removePrefetchTask, listPrefetchTasks, insertConversation, setConfig as dbSetConfig, markConversationOpenQuestion, findRecentJarvisDuplicate } from '../db.js'
+import { normalizeConversationPartyId, upsertPrefetchTask, removePrefetchTask, listPrefetchTasks, insertConversation, setConfig as dbSetConfig, markConversationOpenQuestion, findRecentJarvisDuplicate, getRecentActionLogs } from '../db.js'
 import { emitEvent, emitUICommand, hasACUIClient, addActiveUICard, setStickyEvent } from '../events.js'
 import { dispatchSocialMessage } from '../social/dispatch.js'
 import { setCustomInterval as setTickerInterval, getStatus as getTickerStatus } from '../ticker.js'
@@ -639,10 +639,45 @@ function execSetTask({ description, steps = [] }, context) {
   return `任务已开启：${description}\n步骤（${cleanSteps.length} 个）：\n${cleanSteps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}\n\n计划已记录。现在开始第 1 步「${cleanSteps[0]}」的 执行→观察→判断 微循环；每步一出结果就调 update_task_step 落状态，note 写一句关键结论。`
 }
 
+// 收尾软门（2026-06-10）：complete_task 照常执行（不拦截——第一原则），但 runtime 查一眼
+// action_log——任务期间产出过文件/执行过命令、却没有任何验证类动作（fetch_url / browser_read /
+// review_work）时，把这个事实作为证据附在返回值里。实测失败模式：写完文件开个浏览器就汇报
+// 做好了，页面 404 两次都是用户先发现的。
+const VERIFY_TOOL_NAMES = new Set(['fetch_url', 'browser_read', 'review_work'])
+const ARTIFACT_TOOL_NAMES = new Set(['write_file', 'make_dir'])
+
+function unverifiedDeliveryNotice() {
+  try {
+    const logs = getRecentActionLogs(40) || []   // 旧→新
+    let lastArtifactIdx = -1
+    for (let i = logs.length - 1; i >= 0; i--) {
+      const t = logs[i]?.tool || ''
+      const summary = String(logs[i]?.summary || '')
+      if (ARTIFACT_TOOL_NAMES.has(t)) { lastArtifactIdx = i; break }
+      // 起服务也算产出动作
+      if (t === 'exec_command' && /node |npm start|server|serve|python .*http/i.test(summary)) { lastArtifactIdx = i; break }
+    }
+    if (lastArtifactIdx < 0) return ''
+    for (let i = lastArtifactIdx + 1; i < logs.length; i++) {
+      const t = logs[i]?.tool || ''
+      const summary = String(logs[i]?.summary || '')
+      if (VERIFY_TOOL_NAMES.has(t)) return ''
+      if (t === 'exec_command' && /curl|invoke-webrequest|invoke-restmethod|--check|--test/i.test(summary)) return ''
+      if (t === 'read_file') return ''   // 读回产物也算一种核对
+    }
+    return '注意：本任务产出了文件/起了服务，但收尾前没有任何验证动作（fetch_url / browser_read / review_work / 读回产物）。任务已照常收尾——如果你还没亲自确认成果真的能跑，现在就去验证；发现问题立刻修复并如实告知用户，别等用户先发现。'
+  } catch {
+    return ''
+  }
+}
+
 function execCompleteTask({ summary = '' }, context) {
   if (!context?.onCompleteTask) return '错误：任务管理回调未注册'
   context.onCompleteTask(String(summary || '').trim())
-  return `任务已完成${summary ? '：' + summary : ''}`
+  const lines = [`任务已完成${summary ? '：' + summary : ''}`]
+  const notice = unverifiedDeliveryNotice()
+  if (notice) lines.push(notice)
+  return lines.join('\n')
 }
 
 function execUpdateTaskStep({ step_index, status, note = '' }, context) {
