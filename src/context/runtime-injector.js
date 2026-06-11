@@ -1,6 +1,7 @@
 import { gatherContext, formatExtraContext } from './gatherer.js'
 import { buildKeywordRuntimeContext } from './keyword-context.js'
 import { buildHotspotRuntimeContext, buildHotspotPanelStateContext } from '../hotspots.js'
+import { buildWorldcupRuntimeContext, buildWorldcupPanelStateContext } from '../worldcup.js'
 import { buildPersonCardRuntimeContext, buildPersonCardPanelStateContext } from '../person-cards.js'
 import { buildWeatherRuntimeContext, getWeatherCardProps } from '../weather.js'
 import { buildDocRuntimeContext, buildDocPanelStateContext, detectDocTopic } from '../docs.js'
@@ -18,6 +19,8 @@ export async function runRuntimeInjector({
   // 同步派生（无 await，无 IO，直接算）—— 放最前面让后面的 await 期间这些已就绪
   const hotspotStateText = buildHotspotPanelStateContext()
   const hotspotContextText = buildHotspotRuntimeContext(text)
+  const worldcupStateText = buildWorldcupPanelStateContext()
+  const worldcupContextText = buildWorldcupRuntimeContext(text)
   const personCardStateText = buildPersonCardPanelStateContext()
   const personCardContextText = buildPersonCardRuntimeContext(text)
   const detectedDocTopic = detectDocTopic(text)
@@ -57,6 +60,8 @@ export async function runRuntimeInjector({
     keywordContextText,
     hotspotStateText,
     hotspotContextText,
+    worldcupStateText,
+    worldcupContextText,
     personCardStateText,
     personCardContextText,
     weatherContextText,
@@ -69,6 +74,8 @@ export async function runRuntimeInjector({
     keywordContextText,
     hotspotStateText,
     hotspotContextText,
+    worldcupStateText,
+    worldcupContextText,
     personCardStateText,
     personCardContextText,
     weatherContextText,

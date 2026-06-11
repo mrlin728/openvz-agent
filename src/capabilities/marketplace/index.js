@@ -16,7 +16,7 @@ const BUILTIN_NAMES = new Set([
   'make_dir', 'exec_command', 'kill_process', 'list_processes', 'web_search',
   'fetch_url', 'browser_read', 'search_memory', 'probe_memory', 'upsert_memory', 'skip_recognition',
   'speak', 'generate_lyrics', 'generate_music', 'generate_image', 'set_tick_interval',
-  'media_mode', 'hotspot_mode', 'open_doc_panel', 'person_card_mode', 'music',
+  'media_mode', 'hotspot_mode', 'worldcup_mode', 'open_doc_panel', 'person_card_mode', 'music',
   'manage_reminder', 'schedule_reminder', 'manage_prefetch_task', 'ui_show', 'ui_update',
   'manage_rule',
   'ui_hide', 'ui_patch', 'manage_app', 'ui_register', 'focus_banner',

@@ -1,6 +1,23 @@
-// UI / ACUI 类工具 schema：hotspot_mode / open_doc_panel / person_card_mode /
-// ui_show / ui_hide / ui_update / manage_app / ui_patch / ui_register / focus_banner
+// UI / ACUI 类工具 schema：hotspot_mode / worldcup_mode / open_doc_panel /
+// person_card_mode / ui_show / ui_hide / ui_update / manage_app / ui_patch /
+// ui_register / focus_banner
 export const uiSchemas = {
+  worldcup_mode: {
+    type: 'function',
+    function: {
+      name: 'worldcup_mode',
+      description: 'Control the World Cup panel (live scores, schedule and group standings for the FIFA World Cup, data from zhibo8.cc in Beijing time). Open it when the user asks about World Cup matches, scores or schedule and a visual panel helps; close it when asked. status checks current state. While the panel is open, current match data is injected into your context automatically.',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['show', 'open', 'hide', 'close', 'toggle', 'status'], description: 'show/open opens the worldcup panel; hide/close closes it; toggle switches it; status only checks state.' },
+          reason: { type: 'string', description: 'Optional short reason for opening or closing.' },
+        },
+        required: ['action']
+      }
+    }
+  },
+
   hotspot_mode: {
     type: 'function',
     function: {

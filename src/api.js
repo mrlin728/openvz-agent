@@ -17,12 +17,13 @@ import { restartConnector } from './social/index.js'
 // manager.js (Whisper local server) removed
 import { replaceProvider } from './providers/registry.js'
 import { persistAppState } from './capabilities/executor.js'
-import { execGenerateVideo, saveGeneratedVideo, setAIVideoPanelState, getVideoHistory } from './capabilities/tools/media.js'
+import { execGenerateVideo, saveGeneratedVideo, setAIVideoPanelState, getVideoHistory, stripMarkdownForSpeech } from './capabilities/tools/media.js'
 import { MinimaxProvider } from './providers/minimax.js'
 import { handleSocialWebhook, isSocialWebhookPath } from './social/webhooks.js'
 import { getClawbotQR, logoutClawbot } from './social/wechat-clawbot.js'
 import { createCloudASRSession } from './voice/cloud-asr.js'
 import { getHotspots, setHotspotPanelState, getHotspotPanelState } from './hotspots.js'
+import { getWorldcup, setWorldcupPanelState, getWorldcupPanelState } from './worldcup.js'
 import { getPersonCard, setPersonCardPanelState, getPersonCardPanelState } from './person-cards.js'
 import { setDocPanelState, getDocPanelState, DOC_TOPICS } from './docs.js'
 import { getTraces, getTrace, clearTraces, getTraceStatus } from './runtime/turn-trace.js'
@@ -182,6 +183,9 @@ function readJsonBody(req) {
 
 function contentTypeFor(filePath) {
   switch (path.extname(filePath).toLowerCase()) {
+    case '.html':
+    case '.htm':
+      return 'text/html; charset=utf-8'
     case '.js':
       return 'text/javascript; charset=utf-8'
     case '.css':
@@ -484,6 +488,41 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
               ? body.active
               : /^(1|true|yes|open|show)$/i.test(String(body.active || ''))
             const state = setHotspotPanelState({ active, source: body.source || 'brain-ui' })
+            jsonResponse(res, 200, { ok: true, state })
+          })
+          .catch((err) => jsonResponse(res, 400, { ok: false, error: err.message }))
+        return
+      }
+    }
+
+    // GET /worldcup — World Cup schedule/scores/standings (zhibo8, live-aware cache)
+    if (req.method === 'GET' && url.pathname === '/worldcup') {
+      getWorldcup({
+        force: /^(1|true|yes)$/i.test(url.searchParams.get('refresh') || ''),
+        viewed: /^(1|true|yes)$/i.test(url.searchParams.get('viewed') || ''),
+      })
+        .then((worldcup) => jsonResponse(res, 200, worldcup))
+        .catch((err) => jsonResponse(res, 502, {
+          ok: false,
+          error: err.message,
+          matches: [],
+          standings: {},
+        }))
+      return
+    }
+
+    if (url.pathname === '/worldcup-state') {
+      if (req.method === 'GET') {
+        jsonResponse(res, 200, { ok: true, state: getWorldcupPanelState() })
+        return
+      }
+      if (req.method === 'POST') {
+        readJsonBody(req)
+          .then((body) => {
+            const active = typeof body.active === 'boolean'
+              ? body.active
+              : /^(1|true|yes|open|show)$/i.test(String(body.active || ''))
+            const state = setWorldcupPanelState({ active, source: body.source || 'brain-ui' })
             jsonResponse(res, 200, { ok: true, state })
           })
           .catch((err) => jsonResponse(res, 400, { ok: false, error: err.message }))
@@ -1404,8 +1443,9 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       req.on('end', async () => {
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
-          const { text } = body
-          if (!text?.trim()) { jsonResponse(res, 400, { ok: false, error: 'Missing text parameter' }); return }
+          // 统一在合成入口剥 markdown：模型回复带 **加粗** 等记号时，TTS 会把星号念成"星星"
+          const text = stripMarkdownForSpeech(body.text)
+          if (!text) { jsonResponse(res, 400, { ok: false, error: 'Missing text parameter' }); return }
           const creds = getTTSCredentials()
           const audioStream = await streamTTS({
             text: text.slice(0, 800),

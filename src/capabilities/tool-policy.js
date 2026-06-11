@@ -27,6 +27,7 @@ const TOOL_RISK = {
   set_tick_interval: 'medium',
   media_mode: 'low',
   hotspot_mode: 'low',
+  worldcup_mode: 'low',
   open_doc_panel: 'low',
   person_card_mode: 'low',
   music: 'low',

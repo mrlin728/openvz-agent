@@ -1,4 +1,5 @@
 import { createHotspotPanel } from './hotspot-panel.js';
+import { createWorldcupPanel } from './worldcup-panel.js';
 import { createPersonCardPanel } from './person-card-panel.js';
 import { createDocPanel } from './doc-panel.js';
 
@@ -913,6 +914,7 @@ export function createBrainUiMarkup() {
     createMusicPanel(),
     createImagePanel(),
     createHotspotPanel(),
+    createWorldcupPanel(),
     createPersonCardPanel(),
     createDocPanel(),
   ].join("\n\n");

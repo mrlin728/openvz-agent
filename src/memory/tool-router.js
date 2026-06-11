@@ -55,6 +55,9 @@ const REMINDER_TOOLS    = ['manage_reminder']
 const PREFETCH_TOOLS    = ['manage_prefetch_task']
 const TICKER_TOOLS      = ['set_tick_interval']
 const HOTSPOT_TOOLS     = ['hotspot_mode']
+// 世界杯模式打开面板即可（赛况数据由 runtime-injector 注入上下文）；
+// 追问细节（首发名单/射手榜等）要联网，所以 WEB_TOOLS 一并带上
+const WORLDCUP_TOOLS    = ['worldcup_mode', ...WEB_TOOLS]
 const STARTUP_SELF_CHECK_TOOLS = [
   'speak',
   'complete_startup_self_check',
@@ -136,9 +139,16 @@ const HOTSPOT_TRIGGERS = [
   'news', 'hot ', 'top ', '微博热搜', '热议',
 ]
 
+const WORLDCUP_TRIGGERS = [
+  '世界杯', '赛况', '比分', '赛程', '对阵', '积分榜', '小组赛', '淘汰赛',
+  '谁赢', '进球', '几比几', '揭幕战', '球赛', '足球赛',
+  'world cup', 'worldcup', 'fifa',
+]
+
 const PERSON_CARD_TRIGGERS = [
-  '介绍', '是谁', '是个什么人', '是什么人', '百科', '人物', '生平', '简介',
-  'who is', 'tell me about', 'wiki', 'biography', 'background',
+  '谁是', '是谁', '是誰', '是个什么人', '是個什麼人', '是什么人', '是什麼人',
+  '是干嘛的', '是幹嘛的', '人物卡片', '人物卡', 'person card',
+  'who is', 'tell me about', 'biography of', 'profile of',
 ]
 
 const FOCUS_BANNER_TRIGGERS = [
@@ -204,6 +214,7 @@ export const TOOL_GROUPS = [
   { triggers: PREFETCH_TRIGGERS,     tools: PREFETCH_TOOLS },
   { triggers: TICKER_TRIGGERS,       tools: TICKER_TOOLS },
   { triggers: HOTSPOT_TRIGGERS,      tools: HOTSPOT_TOOLS },
+  { triggers: WORLDCUP_TRIGGERS,     tools: WORLDCUP_TOOLS },
   { triggers: PERSON_CARD_TRIGGERS,  tools: PERSON_CARD_TOOLS },
   { triggers: FOCUS_BANNER_TRIGGERS, tools: FOCUS_BANNER_TOOLS },
   { triggers: ADMIN_TRIGGERS,        tools: ADMIN_TOOLS },
@@ -221,6 +232,60 @@ function hits(body, triggers) {
   if (!body) return false
   for (const t of triggers) {
     if (body.includes(t)) return true
+  }
+  return false
+}
+
+const PERSON_CARD_NON_PERSON_SUBJECT_RE = /(?:项目|功能|系统|工具|代码|文件|文档|文章|报告|方案|计划|任务|流程|架构|设计|页面|网站|应用|app|接口|api|正则|问题|bug|卡片|面板|按钮|图片|视频|音乐|游戏|天气|热点|热搜)/i
+const PERSON_CARD_GENERIC_SUBJECT_RE = /^(?:这个人|那个人|这人|那人|这位|那位|某个人|某位|有人|谁|哪位|什么人|人物|人物卡|人物卡片)$/i
+
+function cleanPersonCardCandidate(value = '') {
+  return String(value || '')
+    .trim()
+    .replace(/^["'“”‘’「」『』《》]+|["'“”‘’「」『』《》]+$/g, '')
+    .replace(/[，,。.!！：:；;、]+$/g, '')
+    .replace(/\s*(?:是谁|是誰|是什么人|是什麼人|是个什么人|是個什麼人|是干嘛的|是幹嘛的)$/g, '')
+    .replace(/(?:的)?(?:生平|资料|資料|背景|简介|簡介|履历|履歷|故事|百科|个人资料|個人資料)$/g, '')
+    .trim()
+}
+
+function looksLikePersonCardName(value = '') {
+  const name = cleanPersonCardCandidate(value)
+  if (!name || name.length > 32) return false
+  if (PERSON_CARD_NON_PERSON_SUBJECT_RE.test(name)) return false
+  if (PERSON_CARD_GENERIC_SUBJECT_RE.test(name)) return false
+  if (/[?？]/.test(name)) return false
+  if (/(?:帮我|给我|请|麻烦|写|做|生成|打开|关闭|修|改|看下|看看|一下)/.test(name)) return false
+
+  const compact = name.replace(/\s+/g, '')
+  if (/^[\u4e00-\u9fa5·]{2,8}$/.test(compact)) return true
+
+  const latinName = name.replace(/[·]/g, ' ').replace(/\s+/g, ' ').trim()
+  const latinTokens = latinName.split(' ').filter(Boolean)
+  if (latinTokens.length >= 2 && latinTokens.length <= 4) {
+    return latinTokens.every(token => /^[A-Za-z][A-Za-z.'-]{1,24}$/.test(token))
+  }
+  return false
+}
+
+function hitsPersonCardIntent(messageBody = '') {
+  const raw = String(messageBody || '').trim()
+  if (!raw || /热点|热搜/.test(raw)) return false
+
+  if (/(?:打开|显示|弹出|关闭|隐藏|收起).{0,8}(?:人物卡片|人物卡|person card)|(?:人物卡片|人物卡|person card).{0,8}(?:打开|显示|弹出|关闭|隐藏|收起)/i.test(raw)) {
+    return true
+  }
+
+  const patterns = [
+    /^谁是\s*(.+?)[？?]?$/,
+    /^(.+?)\s*(?:是谁|是誰|是什么人|是什麼人|是个什么人|是個什麼人|是干嘛的|是幹嘛的|为什么火|為什麼火|为什么红|為什麼紅)[？?]?$/,
+    /^(?:介绍一下|介绍下|查一下|了解一下|认识一下)\s*(.+?)[？?]?$/,
+    /^(?:who is|tell me about|biography of|profile of)\s+(.+?)[?.!]?$/i,
+  ]
+
+  for (const pattern of patterns) {
+    const match = raw.match(pattern)
+    if (looksLikePersonCardName(match?.[1])) return true
   }
   return false
 }
@@ -303,7 +368,10 @@ export function selectTools(ctx = {}) {
   if (hits(body, HOTSPOT_TRIGGERS) || isTick) {
     for (const t of HOTSPOT_TOOLS) out.add(t)
   }
-  if (hits(body, PERSON_CARD_TRIGGERS)) {
+  if (hits(body, WORLDCUP_TRIGGERS)) {
+    for (const t of WORLDCUP_TOOLS) out.add(t)
+  }
+  if (hitsPersonCardIntent(messageBody)) {
     for (const t of PERSON_CARD_TOOLS) out.add(t)
   }
   if (hits(body, FOCUS_BANNER_TRIGGERS) || hasTask) {

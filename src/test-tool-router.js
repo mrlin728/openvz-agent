@@ -213,6 +213,28 @@ function hasNone(tools, names) {
   ]), '11) startupSelfCheckActive → full startup self-check tool set injected')
 }
 
+// ====== 11b) Worldcup 触发 ======
+{
+  const tools = selectTools({
+    messageBody: '今天世界杯的赛况怎么样了',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(has(tools, 'worldcup_mode'),
+    `11b) 世界杯赛况 → worldcup_mode injected (got: ${tools.join(',')})`)
+  assert(hasAll(tools, ['web_search', 'fetch_url']),
+    '11b) worldcup 触发同时带上 web 工具（追问细节要联网）')
+}
+{
+  const tools = selectTools({
+    messageBody: '昨晚谁赢了，几比几',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(has(tools, 'worldcup_mode'),
+    `11c) 比分追问 → worldcup_mode injected (got: ${tools.join(',')})`)
+}
+
 // ====== 12) Exec 触发 ======
 {
   const tools = selectTools({
@@ -244,6 +266,33 @@ function hasNone(tools, names) {
   })
   assert(has(tools, 'person_card_mode'),
     `14) person card keyword → person_card_mode injected (got: ${tools.join(',')})`)
+}
+{
+  const tools = selectTools({
+    messageBody: '马云是谁',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(has(tools, 'person_card_mode'),
+    `14b) direct person question → person_card_mode injected (got: ${tools.join(',')})`)
+}
+{
+  const tools = selectTools({
+    messageBody: '帮我写一个项目介绍',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(!has(tools, 'person_card_mode'),
+    `14c) non-person introduction → person_card_mode NOT injected (got: ${tools.join(',')})`)
+}
+{
+  const tools = selectTools({
+    messageBody: '人物卡片有点问题，经常错误触发',
+    isTick: false,
+    senderId: 'ID:000001',
+  })
+  assert(!has(tools, 'person_card_mode'),
+    `14d) talking about the feature itself → person_card_mode NOT injected (got: ${tools.join(',')})`)
 }
 
 // ====== 15) RECALL 路径 ======

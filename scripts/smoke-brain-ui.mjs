@@ -91,6 +91,31 @@ function createServer() {
       return
     }
 
+    if (url.pathname === '/audit/stats') {
+      sendJson(res, {
+        windowHours: Number(url.searchParams.get('hours') || 1),
+        sinceIso: new Date().toISOString(),
+        recall: {},
+        extract: {},
+      })
+      return
+    }
+
+    if (url.pathname === '/docs') {
+      sendJson(res, { ok: true, topics: [] })
+      return
+    }
+
+    if (url.pathname.startsWith('/docs/')) {
+      sendJson(res, { ok: true, doc: { id: url.pathname.slice(6), title: 'Smoke Doc', body: '' } })
+      return
+    }
+
+    if (url.pathname === '/aivideo/history') {
+      sendJson(res, { ok: true, jobs: [] })
+      return
+    }
+
     if (url.pathname === '/settings') {
       sendJson(res, {
         llm: { activated: true, provider: 'deepseek', model: 'smoke', models: [{ id: 'smoke', label: 'Smoke' }] },
@@ -283,6 +308,13 @@ try {
   const leavingSeen = await page.waitForFunction(() => document.querySelector('#person-card-panel')?.classList.contains('pc-leaving'), null, { timeout: 1000 })
   if (!leavingSeen) throw new Error('person card did not use the leaving glitch state')
   await page.waitForFunction(() => !document.body.classList.contains('person-card-mode') && !document.querySelector('#person-card-panel')?.classList.contains('pc-visible'))
+  await page.fill('#msg-input', '帮我写一个项目介绍')
+  await page.click('#send-btn')
+  await page.waitForTimeout(1300)
+  const falsePersonCard = await page.evaluate(() =>
+    document.body.classList.contains('person-card-mode')
+    || document.querySelector('#person-card-panel')?.classList.contains('pc-visible'))
+  if (falsePersonCard) throw new Error('person card opened for a non-person introduction request')
   if (errors.length) throw new Error(`browser errors:\n${errors.join('\n')}`)
 
   console.log('[PASS] brain-ui smoke')

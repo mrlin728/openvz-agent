@@ -62,19 +62,28 @@ export async function execSpeak(args) {
   return `语音已生成：${relPath}`
 }
 
+// markdown → 朗读用纯文本：TTS 引擎会把 * # ` 等符号直接念出来（"星星"），
+// 所有进入合成的文本都要先过这里——/tts/stream 入口统一调用，是剥离的单一权威
+export function stripMarkdownForSpeech(text) {
+  return String(text || '').trim()
+    .replace(/^[ \t]*([-*+]|\d+[.、])\s+/gm, '')
+    .replace(/\*\*\*(.+?)\*\*\*/g, '$1')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/\*(.+?)\*/g, '$1')
+    .replace(/`{1,3}(.+?)`{1,3}/g, '$1')
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/!\[[^\]]*\]\([^\)]+\)/g, '')
+    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
+    .replace(/\*\*/g, '') // 加粗记号被流式切句切成两半时残留的半截
+    .replace(/\n+/g, ' ')
+    .trim()
+}
+
 // 语音消息自动回复 TTS：检测到用户用语音输入时，通知前端播放语音
 // 由 index.js 调用，前端收到 tts_reply 事件后调用 /tts/stream 完成实际合成
 export function autoSpeakForVoiceReply(text) {
   if (!text) return
-  const plain = text.trim()
-    .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/\*(.+?)\*/g, '$1')
-    .replace(/`(.+?)`/g, '$1')
-    .replace(/#{1,6}\s+/g, '')
-    .replace(/\[([^\]]+)\]\([^\)]+\)/g, '$1')
-    .replace(/!\[[^\]]*\]\([^\)]+\)/g, '')
-    .replace(/\n+/g, ' ')
-    .trim()
+  const plain = stripMarkdownForSpeech(text)
   if (!plain) return
   // 纯表情 / 标点（没有任何可读文字）不合成语音：播放确认现在用单个 emoji 代替，
   // 语音模式下不该把它念出来（\p{L}=字母含汉字，\p{N}=数字）。
