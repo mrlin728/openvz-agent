@@ -21,6 +21,7 @@ import { extractKeywords } from './keywords.js'
 import { stripTemporalWords } from './temporal-parser.js'
 import { selectTools } from './tool-router.js'
 import { computeSelfPerception, computeSelfSnapshot } from './self-perception.js'
+import { selectActivePolicies } from './active-policies.js'
 
 // runInjector 内部用到的检索/选择/解析原语（已拆到 ./injector-retrieval.js）
 import {
@@ -46,6 +47,7 @@ export {
   formatAIVideoPanel,
   formatTaskKnowledge,
 } from './injector-format.js'
+export { formatActivePoliciesForPrompt } from './active-policies.js'
 
 const L2_CONTEXT_HOURS = 24 * 7
 
@@ -170,11 +172,20 @@ export async function runInjector({ message, state, hint = '' }) {
   // 「少即是强」：保留 merged 的相关度序，只给高 salience 锚留窄保留道；
   // 不再用 rerankByImportance 按 salience 整体重排（详见 selectContextMemories 注释）。
   const memories = selectContextMemories(merged, { cap: mergeCap, anchorLane: 2 })
+  const actionLog = getRecentActionLogs(10)
+  const activePolicies = focusText
+    ? selectActivePolicies({
+        focusText,
+        messageBody,
+        contextText: conversationText,
+        actionLog,
+        baseMemories: memories,
+      })
+    : []
 
   // —— 按需注入工具（动态上下文记忆池第 4 步）——
   // 之前把 ~35 个工具全量注入，每轮 6-9K token 大头在这。改成按意图分组：
   // tool-router.js 看消息正文 + 上下文标志 + ActionLog 保活 + Fallback 安全网。
-  const actionLog = getRecentActionLogs(10)
   const prefetchedItems = getValidPrefetchCache()
 
   const uiSignals = getUnconsumedUISignals(60_000)
@@ -224,6 +235,7 @@ export async function runInjector({ message, state, hint = '' }) {
     const chosenIds = [
       ...memories.map(m => m.mem_id || m.id),
       ...recallMemories.map(m => m.mem_id || m.id),
+      ...activePolicies.map(m => m.mem_id || m.id),
     ]
     const dist = {}
     for (const m of memories) {
@@ -245,6 +257,7 @@ export async function runInjector({ message, state, hint = '' }) {
 
   return {
     memories,
+    activePolicies,
     recallMemories,
     conversationWindow,
     personMemory,

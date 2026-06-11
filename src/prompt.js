@@ -660,6 +660,7 @@ function humanizeThreadAge(thread, now = Date.now()) {
 
 export function buildContextBlock({
   memories = '',
+  activePolicies = '',
   recallSummary = '',
   temporalRecall = '',
   directions = '',
@@ -770,6 +771,13 @@ export function buildContextBlock({
   if (constraints?.length > 0) {
     const list = constraints.map(c => `- ${c.content}`).join('\n')
     sections.push(`<constraints>\n${list}\n</constraints>`)
+  }
+
+  if (activePolicies) {
+    sections.push(`<active-policies>
+These procedural or constraint memories were activated by the current situation. Treat them as action guidance for this turn: follow applicable procedures, reuse prior failure lessons, and verify the relevant step before replying or using tools.
+${activePolicies}
+</active-policies>`)
   }
 
   // Curiosity profile + person root memory live together since both key off personMemory

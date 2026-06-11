@@ -2,7 +2,7 @@ import { config, getMinimaxKey as _getMinimaxKey, getSecurity } from './config.j
 import { callLLM } from './llm.js'
 import { buildSystemPrompt, buildContextBlock, combinePromptForPreview } from './prompt.js'
 import { enqueueTurnForRecognition, configureRecognizerScheduler } from './memory/recognizer-scheduler.js'
-import { runInjector, formatMemoriesForPrompt, formatTaskKnowledge, formatPrefetchedItems, formatActiveUICards, formatTemporalRecall, formatAIVideoPanel } from './memory/injector.js'
+import { runInjector, formatMemoriesForPrompt, formatActivePoliciesForPrompt, formatTaskKnowledge, formatPrefetchedItems, formatActiveUICards, formatTemporalRecall, formatAIVideoPanel } from './memory/injector.js'
 import {
   ensureThreadState, attributeUserMessage, buildThreadView, getForegroundThread,
   getThreadById, openCommitment, closeCommitment, touchCommitmentThread,
@@ -1056,6 +1056,7 @@ async function runTurn(input, label, msg = null) {
     if (keyConfigFailDir) directions.unshift(keyConfigFailDir)
 
     const memoriesText = formatMemoriesForPrompt(injection.memories, injection.recallMemories)
+    const activePoliciesText = formatActivePoliciesForPrompt(injection.activePolicies)
     const directionsText = directions.join('\n')
     const taskKnowledgeText = formatTaskKnowledge(injection.taskKnowledge)
     const temporalRecallText = formatTemporalRecall(injection.temporalRecall)
@@ -1109,6 +1110,15 @@ async function runTurn(input, label, msg = null) {
         event_type: m.event_type || '',
         content: m.content || '',
         detail: m.detail || '',
+      })),
+      activePolicies: (injection.activePolicies || []).map(m => ({
+        id: m.id,
+        mem_id: m.mem_id || '',
+        event_type: m.event_type || '',
+        content: m.content || '',
+        detail: m.detail || '',
+        score: m._policyScore || 0,
+        reasons: m._policyReasons || [],
       })),
       constraints: (injection.constraints || []).map(m => m.content),
       thought: injection.thought || null,
@@ -1185,6 +1195,7 @@ async function runTurn(input, label, msg = null) {
 
     const baseContextArgs = {
       memories: memoriesText,
+      activePolicies: activePoliciesText,
       temporalRecall: temporalRecallText,
       directions: directionsText,
       constraints: injection.constraints || [],

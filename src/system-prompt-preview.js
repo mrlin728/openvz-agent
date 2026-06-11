@@ -1,5 +1,5 @@
 import { buildSystemPrompt, buildContextBlock, combinePromptForPreview } from './prompt.js'
-import { runInjector, formatMemoriesForPrompt, formatTaskKnowledge, formatTemporalRecall } from './memory/injector.js'
+import { runInjector, formatMemoriesForPrompt, formatActivePoliciesForPrompt, formatTaskKnowledge, formatTemporalRecall } from './memory/injector.js'
 import { runRuntimeInjector } from './context/runtime-injector.js'
 import { getConfig, getKnownEntities, getOrInitBirthTime } from './db.js'
 import { getSecurity } from './config.js'
@@ -25,6 +25,7 @@ export async function buildHeartbeatSystemPromptPreview({
   const injection = await runInjector({ message, state: workingState })
   const directions = [...(injection.directions || [])]
   const memoriesText = formatMemoriesForPrompt(injection.memories, injection.recallMemories)
+  const activePoliciesText = formatActivePoliciesForPrompt(injection.activePolicies)
   const directionsText = directions.join('\n')
   const taskKnowledgeText = formatTaskKnowledge(injection.taskKnowledge)
   const temporalRecallText = formatTemporalRecall(injection.temporalRecall)
@@ -49,6 +50,7 @@ export async function buildHeartbeatSystemPromptPreview({
 
   const contextBlock = buildContextBlock({
     memories: memoriesText,
+    activePolicies: activePoliciesText,
     temporalRecall: temporalRecallText,
     directions: directionsText,
     constraints: injection.constraints || [],
@@ -85,12 +87,14 @@ export async function buildHeartbeatSystemPromptPreview({
       actionLog: injection.actionLog || [],
       lastToolResult: injection.lastToolResult || null,
       memories: injection.memories || [],
+      activePolicies: injection.activePolicies || [],
       recallMemories: injection.recallMemories || [],
       taskKnowledge: injection.taskKnowledge || [],
     },
     stateSnapshot: workingState,
     derived: {
       memoriesText,
+      activePoliciesText,
       temporalRecallText,
       directionsText,
       taskKnowledgeText,

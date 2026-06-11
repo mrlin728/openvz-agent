@@ -51,7 +51,7 @@ export const memorySchemas = {
     type: 'function',
     function: {
       name: 'upsert_memory',
-      description: 'Batch insert or update memory nodes. Deduplicates by mem_id: existing mem_id means PATCH while omitted fields are preserved; new mem_id means INSERT. Use search_memory first to decide mem_id. Naming rules: person_{ID}, object_{slug}, article_{url_hash8}, concept_{snake}, fact_{snake}.',
+      description: 'Batch insert or update memory nodes. Deduplicates by mem_id: existing mem_id means PATCH while omitted fields are preserved; new mem_id means INSERT. Use search_memory first to decide mem_id. Naming rules: person_{ID}, object_{slug}, article_{url_hash8}, concept_{snake}, fact_{snake}, procedure_{domain}_{snake}, constraint_{domain}_{snake}, lesson_{domain}_{snake}. Procedures/constraints/lessons should use type=knowledge with tags such as kind:procedure, kind:constraint, kind:failure_lesson, domain:desktop_control, trigger:screenshot.',
       parameters: {
         type: 'object',
         properties: {
@@ -61,12 +61,12 @@ export const memorySchemas = {
               type: 'object',
               properties: {
                 mem_id:        { type: 'string', description: 'Stable ID following the naming rules.' },
-                type:          { type: 'string', enum: ['fact', 'person', 'object', 'knowledge', 'article'], description: 'Memory type. Required for new memories.' },
+                type:          { type: 'string', enum: ['fact', 'person', 'object', 'knowledge', 'article'], description: 'Memory type. Required for new memories. Reusable procedures, hard constraints, and failure lessons should be stored as type=knowledge plus kind:* tags.' },
                 title:         { type: 'string', description: 'Title. For articles, use the article title. Required for new memories.' },
                 content:       { type: 'string', description: 'Summary, <= 200 Chinese characters. Required for new memories.' },
                 detail:        { type: 'string', description: 'Optional detailed explanation.' },
                 entities:      { type: 'array', items: { type: 'string' }, description: 'Entity IDs this memory is about. For memories about the user, include their sender ID (e.g. "ID:000001"). For memories about other people, include their person ID. This enables entity-based memory retrieval.' },
-                tags:          { type: 'array', items: { type: 'string' }, description: 'Optional tag array.' },
+                tags:          { type: 'array', items: { type: 'string' }, description: 'Optional tag array. For actionable memories use kind:procedure, kind:constraint, or kind:failure_lesson, plus domain:* and trigger:* tags so future turns can activate them as policies.' },
                 parent_mem_id: { type: 'string', description: 'Optional parent node mem_id.' },
                 links:         {
                   type: 'array',
