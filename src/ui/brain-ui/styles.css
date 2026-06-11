@@ -4142,6 +4142,43 @@ body.worldcup-mode .worldcup-panel {
   background: #03040f;
 }
 
+/* ── 世界杯模式：聊天入口缩成右下角小悬浮窗，浮在大屏之上 ──
+   语音面板（球+实时识别文字）被 JS 移入 .console 顶部成一行（见 worldcup.js），
+   未聚焦时输入框显示"按住空格键开始说话"，聚焦/来消息时聊天记录向上展开 */
+body.worldcup-mode .console {
+  left: auto;
+  right: 28px;
+  bottom: 28px;
+  width: 380px;
+  z-index: 300;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5), var(--shadow-inset);
+}
+
+body.worldcup-mode #chat-history.open { max-height: min(420px, calc(100vh - 240px)); }
+body.worldcup-mode #chat-messages    { max-height: min(380px, calc(100vh - 280px)); }
+
+body.worldcup-mode .console > #voice-panel {
+  width: auto;
+  margin: 0;
+  padding: 8px 14px;
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  background: transparent;
+  border-bottom: 1px solid var(--line);
+  animation: none;
+}
+body.worldcup-mode .console > #voice-panel #voice-canvas {
+  width: 40px !important;
+  flex-shrink: 0;
+}
+body.worldcup-mode .console > #voice-panel .voice-transcript {
+  flex: 1;
+  max-width: none;
+  text-align: left;
+  min-height: 0;
+}
+
 .wc-exit-btn {
   position: absolute;
   top: 12px;

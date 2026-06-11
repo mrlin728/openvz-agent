@@ -90,15 +90,22 @@ let feedAutoTimer = null;
 let hotspotRefreshTimer = null;
 let feedIndex     = 0;
 
-// ── 语音球搬家：从 #panel-l1(有 transform)移到 body，让 fixed 定位生效 ────────
+// ── 语音球搬家：从 #panel-l1(有 transform)移走，让 fixed 定位/嵌入布局生效 ────
+// 已被别的模式搬走时先回原位再搬，支持模式间直接交接（热点↔世界杯↔视频）
 
-function moveVoicePanelToBody() {
+function moveVoicePanel(target, { prepend = false } = {}) {
   const vp = document.getElementById('voice-panel');
-  if (!vp || vp.dataset.vpMoved) return;
+  if (!vp || !target || vp.parentElement === target) return;
+  if (vp.dataset.vpMoved) restoreVoicePanel();
   vp._vpParent  = vp.parentElement;
   vp._vpSibling = vp.nextElementSibling;
   vp.dataset.vpMoved = '1';
-  document.body.appendChild(vp);
+  if (prepend && target.firstChild) target.insertBefore(vp, target.firstChild);
+  else target.appendChild(vp);
+}
+
+function moveVoicePanelToBody() {
+  moveVoicePanel(document.body);
 }
 
 function restoreVoicePanel() {
@@ -115,7 +122,7 @@ function restoreVoicePanel() {
   delete vp._vpSibling;
 }
 
-export { moveVoicePanelToBody, restoreVoicePanel };
+export { moveVoicePanel, moveVoicePanelToBody, restoreVoicePanel };
 
 // ── DOM 工具 ──────────────────────────────────────────────────────────────────
 
@@ -372,6 +379,7 @@ export function setHotspotMode(visible, { source = 'brain-ui' } = {}) {
     stopClock();
     stopFeedAuto();
     stopHotspotRefresh();
+    earth?.pause();
     restoreVoicePanel();
   } else {
     // 关闭其他媒体模式（互斥）
@@ -390,10 +398,14 @@ export function setHotspotMode(visible, { source = 'brain-ui' } = {}) {
     refreshHotspots().catch(() => {});
     moveVoicePanelToBody();
 
-    // 触发地球入场动画
-    if (earth) {
-      requestAnimationFrame(() => earth.triggerAppear());
-    }
+    // 懒加载地球（首次打开才创建 WebGL 场景）并恢复渲染 + 入场动画
+    ensureEarth().then((e) => {
+      if (!e) return;
+      // init 异步期间面板可能已被关掉：init 末尾会自行启动渲染循环，这里得补停
+      if (!hotspotActive) { e.pause(); return; }
+      e.resume();
+      requestAnimationFrame(() => e.triggerAppear());
+    });
   }
 }
 
@@ -421,14 +433,33 @@ export async function initHotspot() {
   if (prevBtn) prevBtn.addEventListener('click', () => { stopFeedAuto(); scrollFeedTo(feedIndex - 1); });
   if (nextBtn) nextBtn.addEventListener('click', () => { stopFeedAuto(); scrollFeedTo(feedIndex + 1); });
 
-  // 初始化 Three.js 地球（懒加载）
+  // 地球不在这里初始化：WebGL 场景只在热点模式首次打开时创建（见 ensureEarth），
+  // 避免应用一启动就有一个 60fps 的 3D 渲染循环在隐藏面板里空转烧 GPU。
+
+  // 页面不可见（最小化/切走/收进托盘）时显式停掉地球渲染，回来且面板开着才恢复
+  document.addEventListener('visibilitychange', () => {
+    if (!earth) return;
+    if (document.hidden) earth.pause();
+    else if (hotspotActive) earth.resume();
+  });
+}
+
+// ── 地球懒加载 ───────────────────────────────────────────────────────────────
+
+let earthInitPromise = null;
+
+function ensureEarth() {
+  if (earthInitPromise) return earthInitPromise;
   const canvas = $('hs-earth-canvas');
-  if (canvas) {
-    earth = new HotspotEarth(canvas);
-    try {
-      await earth.init();
-    } catch (err) {
-      console.warn('[HotspotEarth] 初始化失败，可能是网络问题:', err);
-    }
-  }
+  if (!canvas) return Promise.resolve(null);
+  earth = new HotspotEarth(canvas);
+  earthInitPromise = earth.init().then(() => earth).catch((err) => {
+    console.warn('[HotspotEarth] 初始化失败，可能是网络问题:', err);
+    // 初始化失败（多半是 three.js CDN 拉不下来）→ 复位，下次打开面板重试
+    try { earth?.dispose(); } catch {}
+    earth = null;
+    earthInitPromise = null;
+    return null;
+  });
+  return earthInitPromise;
 }

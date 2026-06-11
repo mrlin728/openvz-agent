@@ -132,6 +132,10 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
   let rafId = null;
   let eventFlashCount = 0;
   let doneTimer = null;
+  // 空闲降帧：灰色待机且麦克风关闭时画面近乎静止，60fps 全速投影排序
+  // 4400 个点纯属浪费（笔记本常驻 CPU/GPU 占用的大头之一）→ 降到 18fps
+  const IDLE_FPS = 18;
+  let lastDrawTs = 0;
 
   // ─── 模式注入钩子（由编排层组装，可组合多个模式） ───
   let onFrame = null;        // (vol) 每帧：barge-in 检测 / 活动计时
@@ -153,7 +157,13 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
     }, 2000);
   }
 
-  function drawFrame() {
+  function drawFrame(now) {
+    const ts = now ?? performance.now();
+    if (sk === 'idle' && !micData && ts - lastDrawTs < 1000 / IDLE_FPS) {
+      rafId = requestAnimationFrame(drawFrame);
+      return;
+    }
+    lastDrawTs = ts;
     resizeCanvasToDisplay();
     const cfg = STATE_CFG[sk];
     const s = animState;

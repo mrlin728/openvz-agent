@@ -166,6 +166,8 @@ export class HotspotEarth {
       canvas: this.canvas,
       antialias: true,
       alpha: true,
+      // 引导驱动用核显：装饰性场景不值得唤醒双显卡笔记本的独显
+      powerPreference: 'low-power',
     });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.setSize(w, h, false);
@@ -422,6 +424,19 @@ export class HotspotEarth {
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
     }
+  }
+
+  // 暂停/恢复渲染循环：热点面板隐藏时整个场景不可见，rAF 却不会因元素隐藏
+  // 而停（只有页面级隐藏才节流），不暂停的话 GPU 会一直全速画看不见的地球。
+  pause() {
+    if (this.animFrame) {
+      cancelAnimationFrame(this.animFrame);
+      this.animFrame = null;
+    }
+  }
+
+  resume() {
+    if (!this.animFrame && this.renderer) this._animate();
   }
 
   dispose() {

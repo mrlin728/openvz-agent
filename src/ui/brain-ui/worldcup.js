@@ -3,7 +3,7 @@
 // 这里不做任何数据渲染。
 
 import { apiUrl } from './api-client.js';
-import { setHotspotMode, moveVoicePanelToBody, restoreVoicePanel } from './hotspot.js';
+import { setHotspotMode, moveVoicePanel, restoreVoicePanel } from './hotspot.js';
 
 const FRAME_SRC = apiUrl('/src/ui/brain-ui/worldcup-broadcast-v2.html');
 
@@ -40,9 +40,15 @@ export function setWorldcupMode(visible, { source = 'brain-ui' } = {}) {
       document.body.classList.remove(mode);
     }
     if (frame) frame.src = FRAME_SRC;   // 重新加载即重播出场动画
-    moveVoicePanelToBody();
+    // 语音球+识别文字并入右下角悬浮聊天窗顶部一行（CSS 见 body.worldcup-mode .console）
+    moveVoicePanel(document.getElementById('chat-area'), { prepend: true });
     document.body.classList.add('worldcup-mode');
   } else {
+    // 语音球同步归位：若是热点模式抢开触发的关闭，hotspot 紧接着要把它搬到 body，
+    // 留到 finishClose 延迟归位会把它从热点模式手里拽回左栏（交接 bug）。
+    // 只在球还在自己手里（chat-area）时归位——已被视频等其他模式接管时不抢
+    const vp = document.getElementById('voice-panel');
+    if (vp && vp.parentElement === document.getElementById('chat-area')) restoreVoicePanel();
     // 先让 iframe 播退场动画，再淡出面板并卸载页面
     // （卸载停掉 iframe 内的轮询，避免 viewed 状态被无限续期）
     const frameLoaded = !!(frame && frame.src && !frame.src.includes('about:blank'));
@@ -53,7 +59,6 @@ export function setWorldcupMode(visible, { source = 'brain-ui' } = {}) {
       closeTimer = null;
       if (frame) frame.src = 'about:blank';
       document.body.classList.remove('worldcup-mode');
-      restoreVoicePanel();
     };
     if (frameLoaded) closeTimer = setTimeout(finishClose, EXIT_ANIMATION_MS);
     else finishClose();
