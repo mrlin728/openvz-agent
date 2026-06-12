@@ -74,6 +74,39 @@ process.on('uncaughtException', (err) => {
 })
 console.log(`[main] Bailongma ${app.getVersion()} starting, logs → ${LOG_FILE}`)
 
+// ── GPU 适配器偏好（Windows 多显卡：核显 + 独显笔记本） ──
+// Chromium 默认被 Windows 分配到「省电 GPU」（核显），独显闲置、核显被点阵球/大屏
+// 渲染拉满。Windows 的逐应用显卡偏好存在 HKCU\...\DirectX\UserGpuPreferences
+// （与系统设置→屏幕→显示卡的逐应用选项同源），这里替自己的 exe 写一条：
+//   2=高性能（独显优先，默认）  1=省电（核显）  删除=跟随系统
+// config.json 顶级字段 gpuPreference 可改：'discrete' | 'integrated' | 'system'。
+// 单显卡机器上写 2 无副作用（没有第二块卡可选）。该键在 GPU 进程创建 D3D 设备时
+// 读取——这里在启动最早期同步写入，但首次写入仍可能晚于 GPU 进程拉起，
+// 此时要到下次启动才真正切换适配器。
+function applyGpuPreference() {
+  if (process.platform !== 'win32') return
+  let pref = 'discrete'
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(USER_DIR, 'config.json'), 'utf-8'))
+    if (['discrete', 'integrated', 'system'].includes(cfg?.gpuPreference)) pref = cfg.gpuPreference
+  } catch {}
+  const KEY = 'HKCU\\Software\\Microsoft\\DirectX\\UserGpuPreferences'
+  const { execFileSync } = require('child_process')
+  try {
+    if (pref === 'system') {
+      // 交还系统默认。条目本不存在时 reg 会报错——吞掉即可（结果一样）
+      try { execFileSync('reg.exe', ['delete', KEY, '/v', process.execPath, '/f'], { stdio: 'ignore', windowsHide: true }) } catch {}
+    } else {
+      const value = pref === 'integrated' ? 'GpuPreference=1;' : 'GpuPreference=2;'
+      execFileSync('reg.exe', ['add', KEY, '/v', process.execPath, '/t', 'REG_SZ', '/d', value, '/f'], { stdio: 'ignore', windowsHide: true })
+    }
+    console.log(`[main] GPU 偏好已应用: ${pref}`)
+  } catch (e) {
+    console.warn('[main] 写入 GPU 偏好失败（不影响启动）:', e.message)
+  }
+}
+applyGpuPreference()
+
 let mainWindow = null
 let backendPort = 0
 let tray = null

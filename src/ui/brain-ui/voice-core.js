@@ -30,6 +30,24 @@ function fibSphere(n, radius) {
 const BASE_PTS  = fibSphere(3200, 1.0);
 const BASE_PTS2 = fibSphere(1200, 0.88);
 
+// 小尺寸抽稀：球被媒体模式缩成小坞（世界杯 40px / 热点·视频 56px）时，4400 个点
+// 的投影、排序、逐点绘制大部分是浪费——按 canvas 的 CSS 尺寸隔 N 取 1。
+// Fibonacci 采样本身均匀，等距抽稀后依旧均匀，小尺寸下视觉无差别，成本随点数线性降。
+const PTS_BY_STRIDE = new Map();
+function ptsForStride(stride) {
+  let pts = PTS_BY_STRIDE.get(stride);
+  if (!pts) {
+    pts = stride === 1
+      ? { outer: BASE_PTS, inner: BASE_PTS2 }
+      : {
+          outer: BASE_PTS.filter((_, i) => i % stride === 0),
+          inner: BASE_PTS2.filter((_, i) => i % stride === 0),
+        };
+    PTS_BY_STRIDE.set(stride, pts);
+  }
+  return pts;
+}
+
 // ─── 正弦噪声 ───
 function sn(x, y, z, t) {
   return (
@@ -108,9 +126,13 @@ registerProcessor('pcm-capture', PcmCaptureProcessor);
 export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessage, getLang }) {
   const ctx = canvas.getContext('2d');
   let W = 0, H = 0, cx = 0, cy = 0, scale = 0;
+  // canvas 的 CSS 短边，绘制帧的 resize 顺手写入（节流档位/抽稀档位都按它判）。
+  // 初值取大,首帧按全量画,第一次 resize 后立刻校正。
+  let cssMinSize = Infinity;
 
   function resizeCanvasToDisplay() {
     const rect = canvas.getBoundingClientRect();
+    cssMinSize = Math.min(rect.width, rect.height);
     const dpr = Math.max(1, Math.min(window.devicePixelRatio || 1, 3));
     const nextW = Math.max(1, Math.round(rect.width * dpr));
     const nextH = Math.max(1, Math.round(rect.height * dpr));
@@ -132,10 +154,35 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
   let rafId = null;
   let eventFlashCount = 0;
   let doneTimer = null;
-  // 空闲降帧：灰色待机且麦克风关闭时画面近乎静止，60fps 全速投影排序
-  // 4400 个点纯属浪费（笔记本常驻 CPU/GPU 占用的大头之一）→ 降到 18fps
+  // ── 画面节流（drawFrame 内分析与绘制已解耦：音量分析每帧必跑，降帧只降"画"不降"听"）──
+  // 近乎静止的画面 60fps 全速投影排序 4400 个点纯属浪费（笔记本常驻占用的大头之一）。
+  // 三个条件互相独立（targetDrawFps）：
+  //   ① 灰色待机且麦克风关闭 → 18fps（原有）
+  //   ② 麦克风开着但持续静音（常开聆听/世界杯空格 PTT 待命）→ 18fps
+  //      —— 此前条件只认 ①，麦一开就永远满帧，是世界杯大屏 GPU 拉满的根因
+  //   ③ 球被媒体模式缩成小坞（CSS 短边 ≤100px）→ 上限 30fps，点数同步抽稀 1/4
   const IDLE_FPS = 18;
+  const SMALL_FPS_CAP = 30;
+  const QUIET_AFTER_MS = 2500;  // 静音持续多久进入降帧；任何人声下一帧立即恢复满帧
+  const QUIET_VOL = 0.02;       // 与绘制段"有声→放大振幅"分支同阈值，单一来源
   let lastDrawTs = 0;
+  let lastVoiceTs = 0;          // 最近一次 vol 超过 QUIET_VOL 的时刻（performance.now）
+  let lastVol = 0;              // 分析帧比绘制帧密，绘制段用最近一次分析到的音量
+
+  // 画面节流档位：返回 0 = 不限（跟随显示器刷新率）
+  function targetDrawFps(ts) {
+    let fps = 0;
+    const calm = sk === 'idle' || sk === 'listening';
+    if (sk === 'idle' && !micData) fps = IDLE_FPS;                                   // ①
+    else if (calm && micData && ts - lastVoiceTs > QUIET_AFTER_MS) fps = IDLE_FPS;   // ②
+    if (cssMinSize <= 100) fps = fps ? Math.min(fps, SMALL_FPS_CAP) : SMALL_FPS_CAP; // ③
+    return fps;
+  }
+
+  // 小坞抽稀档位：≤100px 取 1/4（小坞 40/56px），≤160px 取 1/2，大尺寸全量
+  function strideForSize() {
+    return cssMinSize <= 100 ? 4 : cssMinSize <= 160 ? 2 : 1;
+  }
 
   // ─── 模式注入钩子（由编排层组装，可组合多个模式） ───
   let onFrame = null;        // (vol) 每帧：barge-in 检测 / 活动计时
@@ -159,7 +206,39 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
 
   function drawFrame(now) {
     const ts = now ?? performance.now();
-    if (sk === 'idle' && !micData && ts - lastDrawTs < 1000 / IDLE_FPS) {
+
+    // ── 每帧必跑：音量分析 + 状态机推进（一次 analyser 读取，便宜）。
+    //    与下面的画面节流解耦：降帧期间 barge-in 检测、识别看门狗、状态切换零延迟。──
+    if (micData) {
+      micData.analyser.getByteFrequencyData(micData.dataArray);
+      const sum = micData.dataArray.reduce((a, b) => a + b, 0);
+      const vol = (sum / micData.dataArray.length) / 255;
+      lastVol = vol;
+
+      // 模式策略：barge-in 检测 + 活动计时（continuous）。core 只把 vol 抛出去，
+      // 不含任何打断/自动发送逻辑。在视觉块之前调用，保持与原始顺序一致。
+      onFrame?.(vol);
+
+      // 看门狗：记录最近一次人声级音量的时刻（判断「用户是否还在说」）
+      if (vol > WATCHDOG_SPEECH_VOL) lastLoudTs = Date.now();
+
+      if (vol > QUIET_VOL) {
+        lastVoiceTs = ts;
+        // speaking 状态下用户开口 → 视觉反馈但不覆盖状态（等 barge-in 触发后自然切换）
+        if (sk !== 'recognizing' && sk !== 'event' && sk !== 'speaking')
+          setStatus(vol > 0.15 ? 'recognizing' : 'listening');
+        else if (sk === 'speaking' && vol > BARGEIN_THRESHOLD)
+          setStatus('recognizing');
+      } else if (sk !== 'idle' && sk !== 'event' && sk !== 'processing' && sk !== 'done' && sk !== 'speaking') {
+        setStatus('idle');
+      }
+    } else {
+      lastVol = 0;
+    }
+
+    // ── 画面节流 ──
+    const fps = targetDrawFps(ts);
+    if (fps && ts - lastDrawTs < 1000 / fps) {
       rafId = requestAnimationFrame(drawFrame);
       return;
     }
@@ -177,29 +256,10 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
       lerpArr(s.col[2], cfg.b, ls * 1.5),
     ];
 
-    if (micData) {
-      micData.analyser.getByteFrequencyData(micData.dataArray);
-      const sum = micData.dataArray.reduce((a, b) => a + b, 0);
-      const vol = (sum / micData.dataArray.length) / 255;
-
-      // 模式策略：barge-in 检测 + 活动计时（continuous）。core 只把 vol 抛出去，
-      // 不含任何打断/自动发送逻辑。在视觉块之前调用，保持与原始顺序一致。
-      onFrame?.(vol);
-
-      // 看门狗：记录最近一次人声级音量的时刻（判断「用户是否还在说」）
-      if (vol > WATCHDOG_SPEECH_VOL) lastLoudTs = Date.now();
-
-      if (vol > 0.02) {
-        s.amp = lerp(s.amp, 0.08 + vol * 1.2, 0.4);
-        s.spd = lerp(s.spd, 1.0 + vol * 5.0, 0.2);
-        // speaking 状态下用户开口 → 视觉反馈但不覆盖状态（等 barge-in 触发后自然切换）
-        if (sk !== 'recognizing' && sk !== 'event' && sk !== 'speaking')
-          setStatus(vol > 0.15 ? 'recognizing' : 'listening');
-        else if (sk === 'speaking' && vol > BARGEIN_THRESHOLD)
-          setStatus('recognizing');
-      } else if (sk !== 'idle' && sk !== 'event' && sk !== 'processing' && sk !== 'done' && sk !== 'speaking') {
-        setStatus('idle');
-      }
+    // 有声时放大振幅/转速（音量来自上方分析段，可能比本绘制帧新）
+    if (micData && lastVol > QUIET_VOL) {
+      s.amp = lerp(s.amp, 0.08 + lastVol * 1.2, 0.4);
+      s.spd = lerp(s.spd, 1.0 + lastVol * 5.0, 0.2);
     }
 
     // 声音事件闪烁效果自动恢复
@@ -228,9 +288,10 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
       return { sx: cx + rx * scale, sy: cy - ry * scale, z: rz2 };
     };
 
+    const { outer, inner } = ptsForStride(strideForSize());
     const allPts = [
-      ...BASE_PTS.map(p  => ({ ...project(p), inner: false })),
-      ...BASE_PTS2.map(p => ({ ...project(p), inner: true  })),
+      ...outer.map(p => ({ ...project(p), inner: false })),
+      ...inner.map(p => ({ ...project(p), inner: true  })),
     ];
     allPts.sort((a, b) => a.z - b.z);
 
