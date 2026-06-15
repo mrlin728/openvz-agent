@@ -239,7 +239,10 @@ const createSettingsModal = () => `
             </div>
             <div class="settings-row">
               <label class="settings-label" for="settings-llm-key">API Key</label>
-              <input class="settings-input" id="settings-llm-key" type="password" placeholder="自定义端点可留空；其他留空则仅切换模型" autocomplete="new-password">
+              <div class="settings-secret-wrap">
+                <input class="settings-input" id="settings-llm-key" type="password" placeholder="已保存的 Key 会在这里显示" autocomplete="new-password">
+                <button class="settings-secret-toggle" id="settings-llm-key-toggle" type="button" aria-label="显示 API Key" title="显示/隐藏 API Key">👁</button>
+              </div>
             </div>
             <div class="settings-row-action">
               <button class="settings-save-btn" id="settings-save-llm" type="button">保存</button>

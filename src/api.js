@@ -2,6 +2,7 @@
 import fs from 'fs'
 import path from 'path'
 import net from 'net'
+import crypto from 'crypto'
 import { fileURLToPath } from 'url'
 import { WebSocketServer } from 'ws'
 import { pushMessage } from './queue.js'
@@ -11,7 +12,7 @@ import { getQuotaStatus } from './quota.js'
 import { isRunning, stopLoop, startLoop } from './control.js'
 import { buildHeartbeatSystemPromptPreview } from './system-prompt-preview.js'
 import { paths } from './paths.js'
-import { config, activate as activateLLM, getActivationStatus, switchModel, setTemperature, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS, getWebSearchConfig, setWebSearchConfig } from './config.js'
+import { config, activate as activateLLM, prepareActivation as prepareLLMActivation, commitPreparedActivation, getActivationStatus, switchModel, saveLLMSettings, setTemperature, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS, getWebSearchConfig, setWebSearchConfig } from './config.js'
 import { streamTTS, TTS_PROVIDERS, TTS_VOICES } from './voice/tts-providers.js'
 import { restartConnector } from './social/index.js'
 // manager.js (Whisper local server) removed
@@ -147,6 +148,7 @@ function hasAllowedAccess(req, url) {
 
 function isSensitivePath(pathname) {
   return pathname === '/activate'
+    || pathname === '/activate/prepare'
     || pathname === '/settings'
     || pathname.startsWith('/settings/')
     || pathname.startsWith('/admin/')
@@ -210,6 +212,26 @@ function getAgentName() {
   return (getConfig('agent_name') || '').trim() || DEFAULT_AGENT_NAME
 }
 
+function validateAgentName(agentName) {
+  const trimmedName = String(agentName || '').trim()
+  if (!trimmedName) return ''
+  if (trimmedName.length > 32) {
+    throw new Error('AI 名字不能超过 32 个字符')
+  }
+  if (!/^[一-龥A-Za-z0-9 _-]+$/.test(trimmedName)) {
+    throw new Error('AI 名字只允许中文、英文字母、数字、空格、下划线、短横线')
+  }
+  return trimmedName
+}
+
+function publicActivationInfo(info) {
+  return {
+    provider: info.provider,
+    model: info.model,
+    models: info.models,
+  }
+}
+
 function safeJsonParse(value, fallback) {
   if (value === null || value === undefined) return fallback
   try { return JSON.parse(value) } catch { return fallback }
@@ -225,6 +247,28 @@ function stripAssistantHistoryLabels(content) {
 export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = null } = {}) {
   const onActivatedCallback = onActivated
   const host = getApiHost()
+  let pendingActivation = null
+
+  function storePreparedActivation({ apiKey, info }) {
+    pendingActivation = {
+      token: crypto.randomUUID(),
+      apiKey: String(apiKey || '').trim(),
+      info,
+      expiresAt: Date.now() + 10 * 60 * 1000,
+    }
+    return pendingActivation
+  }
+
+  function getPreparedActivation(token, apiKey) {
+    if (!pendingActivation) return null
+    if (pendingActivation.expiresAt <= Date.now()) {
+      pendingActivation = null
+      return null
+    }
+    if (!token || pendingActivation.token !== token) return null
+    if (pendingActivation.apiKey !== String(apiKey || '').trim()) return null
+    return pendingActivation
+  }
 
   // 启动时把 DB 里的当前 agent_name 写进 sticky，
   // 这样后续每个新连上的 SSE 客户端（含 brain-ui 首次加载）能立即拿到正确名字
@@ -881,6 +925,30 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       return
     }
 
+    // POST /activate/prepare — validate and cache activation without entering the app
+    if (req.method === 'POST' && url.pathname === '/activate/prepare') {
+      const chunks = []
+      req.on('data', chunk => chunks.push(chunk))
+      req.on('end', async () => {
+        try {
+          const body = Buffer.concat(chunks).toString('utf-8')
+          const { apiKey, model, provider, baseURL } = JSON.parse(body || '{}')
+          const info = await prepareLLMActivation({ provider, apiKey, model, baseURL })
+          const pending = storePreparedActivation({ apiKey, info })
+          jsonResponse(res, 200, {
+            ok: true,
+            token: pending.token,
+            ...publicActivationInfo(info),
+            agent_name: getAgentName(),
+            expiresAt: pending.expiresAt,
+          })
+        } catch (err) {
+          jsonResponse(res, 400, { ok: false, error: err.message })
+        }
+      })
+      return
+    }
+
     // POST /activate — submit API key to complete activation
     if (req.method === 'POST' && url.pathname === '/activate') {
       const chunks = []
@@ -888,19 +956,15 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       req.on('end', async () => {
         try {
           const body = Buffer.concat(chunks).toString('utf-8')
-          const { apiKey, model, provider, baseURL, agentName } = JSON.parse(body || '{}')
+          const { apiKey, model, provider, baseURL, agentName, preparedToken } = JSON.parse(body || '{}')
 
-          const trimmedName = String(agentName || '').trim()
-          if (trimmedName) {
-            if (trimmedName.length > 32) {
-              return jsonResponse(res, 400, { ok: false, error: 'AI 名字不能超过 32 个字符' })
-            }
-            if (!/^[一-龥A-Za-z0-9 _-]+$/.test(trimmedName)) {
-              return jsonResponse(res, 400, { ok: false, error: 'AI 名字只允许中文、英文字母、数字、空格、下划线、短横线' })
-            }
-          }
+          const trimmedName = validateAgentName(agentName)
 
-          const info = await activateLLM({ provider, apiKey, model, baseURL })
+          const prepared = getPreparedActivation(preparedToken, apiKey)
+          const info = prepared
+            ? commitPreparedActivation(prepared.info)
+            : await activateLLM({ provider, apiKey, model, baseURL })
+          if (prepared) pendingActivation = null
 
           if (trimmedName) {
             try {
@@ -937,6 +1001,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
           baseURL: status.baseURL,
           models: status.models,
           temperature: config.temperature,
+          apiKey: config.apiKey || '',
         },
         providers: getProviderSummaries(),
         minimax: {
@@ -950,10 +1015,12 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     if (req.method === 'POST' && url.pathname === '/settings/model') {
       const chunks = []
       req.on('data', chunk => chunks.push(chunk))
-      req.on('end', () => {
+      req.on('end', async () => {
         try {
-          const { model } = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
-          const result = switchModel(model)
+          const { provider, apiKey, model, baseURL } = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
+          const result = provider || apiKey || baseURL
+            ? await saveLLMSettings({ provider, apiKey, model, baseURL })
+            : switchModel(model)
           emitEvent('model_switched', result)
           jsonResponse(res, 200, { ok: true, ...result })
         } catch (err) {

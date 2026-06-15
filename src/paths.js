@@ -34,6 +34,7 @@ export const paths = {
   dataDir: ensureDir(path.join(USER_DIR, 'data')),
   dbFile: path.join(USER_DIR, 'data', 'jarvis.db'),
   configFile: path.join(USER_DIR, 'config.json'),
+  llmConfigDir: ensureDir(path.join(USER_DIR, 'llm')),
   // seedance（AI 视频生成）单独成文件，与主 config.json 物理隔离，
   // 避免被 activate() 等“全量覆盖写 config.json”的操作误删。
   seedanceConfigFile: path.join(USER_DIR, 'seedance.json'),

@@ -76,7 +76,7 @@ MiniMax 一个 Key 同时供 LLM 与 TTS 两用。`,
 ■ 智谱 AI（GLM）
 → 申请：https://open.bigmodel.cn/
 → 字段：apiKey
-→ 默认模型：glm-4-flash
+→ 默认模型：glm-5.1
 
 ■ OpenAI
 → 申请：https://platform.openai.com/api-keys
@@ -89,7 +89,8 @@ MiniMax 一个 Key 同时供 LLM 与 TTS 两用。`,
 
 ■ 官网：https://platform.xiaomimimo.com
 ■ 字段：apiKey（在 MiMo 控制台「API Keys」生成）
-■ 默认模型：mimo-v2.5
+■ 默认模型：MiMo-V2.5-Pro-UltraSpeed
+■ 降级策略：默认模型不可用时自动尝试其它 MiMo 模型
 ■ Base URL：https://api.xiaomimimo.com/v1（系统已内置）
 
 申请步骤：
@@ -118,8 +119,8 @@ MiniMax 一个 Key 同时供 LLM 与 TTS 两用。`,
       { name: 'MiniMax', url: 'https://platform.minimaxi.com/', free: false, note: 'MiniMax-M2.7，兼顾 TTS' },
       { name: '通义千问', url: 'https://bailian.console.aliyun.com/', free: false, note: 'qwen-turbo/plus' },
       { name: 'Moonshot', url: 'https://platform.moonshot.cn/', free: false, note: 'moonshot-v1-8k/32k' },
-      { name: '智谱 AI', url: 'https://open.bigmodel.cn/', free: false, note: 'glm-4-flash/plus' },
-      { name: '小米 MiMo', url: 'https://platform.xiaomimimo.com/', free: false, note: 'mimo-v2.5（默认）、mimo-v2.5-pro' },
+      { name: '智谱 AI', url: 'https://open.bigmodel.cn/', free: false, note: 'glm-5.1（默认）、glm-5-turbo、glm-5' },
+      { name: '小米 MiMo', url: 'https://platform.xiaomimimo.com/', free: false, note: 'MiMo-V2.5-Pro-UltraSpeed（默认，失败自动降级）、mimo-v2.5-pro、mimo-v2.5' },
     ],
   },
 

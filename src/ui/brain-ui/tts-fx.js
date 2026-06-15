@@ -385,3 +385,66 @@ export function attachJarvisFx(audioEl, voiceId) {
   }
   return ok
 }
+
+function shouldUseFx(voiceId) {
+  return isFxUnlocked() && isFxEnabledForVoice(voiceId)
+}
+
+export function attachJarvisAudioGraph(audioEl, voiceId) {
+  if (!audioEl) return null
+  const ctx = ensureCtx()
+  if (!ctx) return null
+  if (ctx.state !== 'running') {
+    ctx.resume?.().catch(() => {})
+    return null
+  }
+
+  let mediaSource
+  try {
+    mediaSource = ctx.createMediaElementSource(audioEl)
+  } catch {
+    return null
+  }
+
+  const analyser = ctx.createAnalyser()
+  analyser.fftSize = 512
+  analyser.smoothingTimeConstant = 0.5
+
+  let fxTeardown = null
+  let done = false
+  const teardown = () => {
+    if (done) return
+    done = true
+    try { fxTeardown?.() } catch { /* ignore */ }
+    try { analyser.disconnect() } catch { /* ignore */ }
+    try { mediaSource.disconnect() } catch { /* ignore */ }
+    audioEl.removeEventListener('ended', teardown)
+    audioEl.removeEventListener('error', teardown)
+    audioEl.removeEventListener('pause', teardown)
+  }
+
+  try {
+    mediaSource.connect(analyser)
+    if (shouldUseFx(voiceId)) {
+      const chain = buildChain(ctx, analyser, readParams())
+      fxTeardown = chain.teardown
+    } else {
+      analyser.connect(ctx.destination)
+    }
+  } catch {
+    teardown()
+    try {
+      mediaSource.connect(ctx.destination)
+      return {
+        analyser: null,
+        teardown: () => { try { mediaSource.disconnect() } catch { /* ignore */ } },
+      }
+    } catch { /* ignore */ }
+    return null
+  }
+
+  audioEl.addEventListener('ended', teardown)
+  audioEl.addEventListener('error', teardown)
+  audioEl.addEventListener('pause', teardown)
+  return { analyser, teardown }
+}

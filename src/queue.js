@@ -58,6 +58,7 @@ export function pushMessage(rawFromId, content, channel = 'TUI', meta = {}) {
   if (meta.persist !== false) insertConversation({
     role: 'user',
     from_id: canonicalId,
+    to_id: 'jarvis',
     content,
     timestamp,
     channel: channel || '',

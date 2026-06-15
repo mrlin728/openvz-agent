@@ -21,6 +21,7 @@ for (const k of [
 ]) delete process.env[k]
 
 const configFile = path.join(tmp, 'config.json')
+const llmDir = path.join(tmp, 'llm')
 
 let failed = 0
 function assert(cond, label) {
@@ -30,6 +31,7 @@ function assert(cond, label) {
 
 let v = 0
 async function loadFresh(json) {
+  try { fs.rmSync(llmDir, { recursive: true, force: true }) } catch {}
   fs.writeFileSync(configFile, JSON.stringify(json, null, 2), 'utf-8')
   v += 1
   return await import(`./config.js?v=${v}`)
@@ -94,7 +96,7 @@ async function loadFresh(json) {
   assert(config.needsActivation === true, 'D: 损坏文件 → 未激活且不崩溃')
 }
 
-// ── 场景 E：schema 迁移 v0 → v1，旧版 seedance 块拆到独立 seedance.json ──
+// ── 场景 E：schema 迁移 v0 → v2，旧版 seedance 和 LLM 块拆到独立文件 ──
 {
   const seedanceFile = path.join(tmp, 'seedance.json')
   try { fs.rmSync(seedanceFile, { force: true }) } catch {}
@@ -107,27 +109,78 @@ async function loadFresh(json) {
   })
   assert(config.needsActivation === false, 'E: 迁移后 LLM 仍正常激活')
   const after = JSON.parse(fs.readFileSync(configFile, 'utf-8'))
-  assert(after.schemaVersion === 1, 'E: config.json 被打上 schemaVersion=1')
+  assert(after.schemaVersion === 2, 'E: config.json 被打上 schemaVersion=2')
   assert(after.seedance === undefined, 'E: seedance 块已从 config.json 移除')
+  assert(after.apiKey === undefined && after.model === undefined && after.baseURL === undefined, 'E: LLM 凭据已从 config.json 移除')
   assert(after.voice && after.voice.voiceProvider === 'aliyun', 'E: 其它块（voice）在迁移中保留')
   assert(fs.existsSync(seedanceFile), 'E: seedance.json 独立文件已生成')
   const sd = JSON.parse(fs.readFileSync(seedanceFile, 'utf-8'))
   assert(sd.apiKey === 'ark-legacy-key' && sd.model === 'doubao-seedance-x', 'E: seedance 数据完整搬迁')
+  const llmFile = path.join(llmDir, 'deepseek.json')
+  assert(fs.existsSync(llmFile), 'E: deepseek LLM 配置已拆到 llm/deepseek.json')
+  const llm = JSON.parse(fs.readFileSync(llmFile, 'utf-8'))
+  assert(llm.apiKey === 'sk-deepseek-valid-key-1234567890' && llm.model === 'deepseek-v4-pro', 'E: LLM provider 文件数据完整')
 }
 
 // ── 场景 F：已是最新 schemaVersion 的文件不被重复迁移 / 改写 ──
 {
   await loadFresh({
-    schemaVersion: 1,
+    schemaVersion: 2,
+    provider: 'deepseek',
+  })
+  const after = JSON.parse(fs.readFileSync(configFile, 'utf-8'))
+  assert(after.schemaVersion === 2, 'F: 最新版本号保持不变')
+}
+
+// 清理
+// Scenario G: MiMo falls back from the UltraSpeed default to the remaining MiMo models.
+{
+  const { DEFAULT_MIMO_MODEL, MIMO_PROVIDER, getProviderModelFallbacks } = await loadFresh({ schemaVersion: 2 })
+  const chain = getProviderModelFallbacks(MIMO_PROVIDER, DEFAULT_MIMO_MODEL)
+  assert(chain[0] === 'MiMo-V2.5-Pro-UltraSpeed', 'G: MiMo fallback starts with UltraSpeed')
+  assert(chain[1] === 'mimo-v2.5-pro', 'G: MiMo fallback tries Pro next')
+  assert(chain.includes('mimo-v2.5'), 'G: MiMo fallback includes standard v2.5')
+  assert(new Set(chain).size === chain.length, 'G: MiMo fallback chain has no duplicates')
+  const invalidChain = getProviderModelFallbacks(MIMO_PROVIDER, 'missing-mimo-model')
+  assert(invalidChain[0] === DEFAULT_MIMO_MODEL, 'G: invalid MiMo model normalizes to the default before fallback')
+}
+
+// Scenario H: Zhipu defaults to GLM-5.1 and validates with a lightweight no-thinking ping.
+{
+  const { DEFAULT_ZHIPU_MODEL, ZHIPU_PROVIDER, getProviderModelFallbacks, __internals } = await loadFresh({ schemaVersion: 2 })
+  assert(DEFAULT_ZHIPU_MODEL === 'glm-5.1', 'H: Zhipu default model is GLM-5.1')
+  const zhipuModels = new Set(__internals.ZHIPU_MODELS.map(m => m.id))
+  assert(zhipuModels.has('glm-5.1'), 'H: Zhipu model list includes glm-5.1')
+  assert(zhipuModels.has('glm-5-turbo'), 'H: Zhipu model list includes glm-5-turbo')
+  assert(zhipuModels.has('glm-5'), 'H: Zhipu model list includes glm-5')
+  const invalidChain = getProviderModelFallbacks(ZHIPU_PROVIDER, 'missing-zhipu-model')
+  assert(invalidChain.length === 1 && invalidChain[0] === DEFAULT_ZHIPU_MODEL, 'H: invalid Zhipu model normalizes to GLM-5.1')
+  const ping = __internals.buildPingParams(ZHIPU_PROVIDER, DEFAULT_ZHIPU_MODEL)
+  assert(ping.thinking?.type === 'disabled', 'H: Zhipu activation ping disables thinking')
+}
+
+// Scenario I: provider files preserve old keys and allow switching back without re-entering a key.
+{
+  const mod = await loadFresh({
     provider: 'deepseek',
     apiKey: 'sk-deepseek-valid-key-1234567890',
     model: 'deepseek-v4-pro',
   })
-  const after = JSON.parse(fs.readFileSync(configFile, 'utf-8'))
-  assert(after.schemaVersion === 1, 'F: 最新版本号保持不变')
+  mod.commitPreparedActivation({
+    provider: 'openai',
+    apiKey: 'sk-openai-valid-key-1234567890',
+    model: 'gpt-4o-mini',
+  })
+  const deepseekFile = path.join(llmDir, 'deepseek.json')
+  const openaiFile = path.join(llmDir, 'openai.json')
+  assert(fs.existsSync(deepseekFile), 'I: 配置新 provider 后 deepseek 文件仍保留')
+  assert(fs.existsSync(openaiFile), 'I: 新 provider 写入 openai 文件')
+  const deepseekCfg = JSON.parse(fs.readFileSync(deepseekFile, 'utf-8'))
+  assert(deepseekCfg.apiKey === 'sk-deepseek-valid-key-1234567890', 'I: 旧 provider key 未被覆盖')
+  const switched = mod.switchProviderConfig({ provider: 'deepseek', model: 'deepseek-v4-flash' })
+  assert(switched.provider === 'deepseek' && mod.config.apiKey === 'sk-deepseek-valid-key-1234567890', 'I: 无需重新输入 key 即可切回旧 provider')
 }
 
-// 清理
 try { fs.rmSync(tmp, { recursive: true, force: true }) } catch {}
 
 if (failed > 0) process.exit(1)

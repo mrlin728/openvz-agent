@@ -479,6 +479,10 @@
     const agentNameInput = document.getElementById('agentName')
     const btn = document.getElementById('activate')
     const statusEl = document.getElementById('status')
+    const AUTO_DETECT_DELAY_MS = 650
+    let autoDetectTimer = null
+    let activationRequestSeq = 0
+    let activationState = { status: 'idle', key: '', agentName: '', token: '', info: null, promise: null }
 
     const AGENT_NAME_RE = /^[一-龥A-Za-z0-9 _-]+$/
     function readAgentName() {
@@ -499,8 +503,37 @@
       statusEl.className = 'status' + (kind ? ' ' + kind : '')
     }
 
+    function currentActivationDraft() {
+      return {
+        apiKey: apiKeyInput.value.trim(),
+        agentName: agentNameInput.value.trim(),
+      }
+    }
+
+    function isPreparedForCurrentDraft() {
+      const draft = currentActivationDraft()
+      return activationState.status === 'success'
+        && activationState.key === draft.apiKey
+        && activationState.token
+    }
+
     function syncButtonState() {
-      btn.disabled = apiKeyInput.value.trim().length === 0
+      const draft = currentActivationDraft()
+      if (!draft.apiKey) {
+        btn.disabled = true
+        btn.textContent = '激活并进入'
+        return
+      }
+      if (activationState.status === 'pending'
+          && activationState.key === draft.apiKey) {
+        btn.disabled = true
+        btn.textContent = '正在识别...'
+        return
+      }
+      btn.disabled = false
+      btn.textContent = isPreparedForCurrentDraft()
+        ? '激活并进入'
+        : (activationState.status === 'error' ? '重新识别' : '自动识别')
     }
 
     // ── STT auto-detect ──
@@ -786,60 +819,143 @@
     loadEmbeddingSettings()
 
     // ── Main activate ──
+    async function saveOptionalVoiceConfigs() {
+      const sttCfg = sttSection.getConfig()
+      const ttsCfg = ttsSection.getConfig()
+      const saves = []
+      if (sttCfg) {
+        saves.push(fetch('/settings/voice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(sttCfg),
+        }).catch(() => {}))
+      }
+      if (ttsCfg) {
+        saves.push(fetch('/settings/tts', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(ttsCfg),
+        }).catch(() => {}))
+      }
+      if (saves.length) await Promise.all(saves)
+      return { sttCfg, ttsCfg }
+    }
+
+    async function prepareActivation({ force = false } = {}) {
+      const draft = currentActivationDraft()
+      if (!draft.apiKey) return null
+
+      if (!force && isPreparedForCurrentDraft()) return activationState
+      if (activationState.status === 'pending'
+          && activationState.key === draft.apiKey) {
+        return activationState.promise
+      }
+
+      const seq = ++activationRequestSeq
+      const promise = (async () => {
+        try {
+          const resp = await fetch('/activate/prepare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ apiKey: draft.apiKey, provider: 'auto' }),
+          })
+          const data = await resp.json().catch(() => ({}))
+          const latest = currentActivationDraft()
+          if (seq !== activationRequestSeq || latest.apiKey !== draft.apiKey) return null
+          if (!resp.ok || !data.ok) {
+            activationState = { status: 'error', key: draft.apiKey, agentName: '', token: '', info: null, promise: null }
+            setStatus(data.error || '识别失败', 'err')
+            syncButtonState()
+            return null
+          }
+          activationState = {
+            status: 'success',
+            key: draft.apiKey,
+            agentName: '',
+            token: data.token,
+            info: data,
+            promise: null,
+          }
+          setStatus(`识别成功：${data.provider} · ${data.model}。点击“激活并进入”继续。`, 'ok')
+          syncButtonState()
+          return activationState
+        } catch (err) {
+          const latest = currentActivationDraft()
+          if (seq !== activationRequestSeq || latest.apiKey !== draft.apiKey) return null
+          activationState = { status: 'error', key: draft.apiKey, agentName: '', token: '', info: null, promise: null }
+          setStatus('网络错误：' + err.message, 'err')
+          syncButtonState()
+          return null
+        }
+      })()
+
+      activationState = { status: 'pending', key: draft.apiKey, agentName: '', token: '', info: null, promise }
+      setStatus('正在自动识别 API Key 所属厂商...')
+      syncButtonState()
+      return promise
+    }
+
+    function scheduleAutoActivation() {
+      if (autoDetectTimer) clearTimeout(autoDetectTimer)
+      const draft = currentActivationDraft()
+      activationState = { status: 'idle', key: draft.apiKey, agentName: draft.agentName, token: '', info: null, promise: null }
+      syncButtonState()
+      if (!draft.apiKey) {
+        setStatus('')
+        return
+      }
+      if (draft.apiKey.length < 8) return
+      autoDetectTimer = setTimeout(() => prepareActivation(), AUTO_DETECT_DELAY_MS)
+    }
+
     async function activate() {
-      const apiKey = apiKeyInput.value.trim()
-      if (!apiKey) return
+      const draft = currentActivationDraft()
+      if (!draft.apiKey) return
+
+      const prepared = isPreparedForCurrentDraft()
+        ? activationState
+        : await prepareActivation({ force: true })
+      if (!prepared || prepared.status !== 'success') return
 
       const agentNameResult = readAgentName()
       if (agentNameResult && typeof agentNameResult === 'object' && agentNameResult.error) {
         setStatus(agentNameResult.error, 'err')
         agentNameInput.focus()
+        syncButtonState()
         return
       }
       const agentName = agentNameResult || ''
 
       btn.disabled = true
-      setStatus('正在自动识别 API Key 所属厂商...')
+      btn.textContent = '正在进入...'
+      setStatus('正在激活并进入...')
 
       try {
         const resp = await fetch('/activate', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ apiKey, provider: 'auto', agentName }),
+          body: JSON.stringify({
+            apiKey: draft.apiKey,
+            provider: 'auto',
+            agentName,
+            preparedToken: prepared.token,
+          }),
         })
         const data = await resp.json().catch(() => ({}))
         if (!resp.ok || !data.ok) {
+          activationState = { status: 'error', key: draft.apiKey, agentName, token: '', info: null, promise: null }
           setStatus(data.error || '激活失败', 'err')
           syncButtonState()
           return
         }
 
-        // Save optional voice configs in parallel (fire-and-forget, don't block redirect)
-        const sttCfg = sttSection.getConfig()
-        const ttsCfg = ttsSection.getConfig()
-        const saves = []
-        if (sttCfg) {
-          saves.push(fetch('/settings/voice', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(sttCfg),
-          }).catch(() => {}))
-        }
-        if (ttsCfg) {
-          saves.push(fetch('/settings/tts', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(ttsCfg),
-          }).catch(() => {}))
-        }
-        if (saves.length) await Promise.all(saves)
-
+        const { sttCfg, ttsCfg } = await saveOptionalVoiceConfigs()
         try { sessionStorage.setItem(ACTIVATION_WARMUP_KEY, String(Date.now() + ACTIVATION_WARMUP_MS)) } catch {}
 
         const voiceNote = [sttCfg && '语音识别', ttsCfg && '语音合成'].filter(Boolean)
         const suffix = voiceNote.length ? `，已保存 ${voiceNote.join('+')} 配置` : ''
         setStatus(`激活成功：${data.provider} · ${data.model}${suffix}`, 'ok')
-        setTimeout(() => window.location.replace('/brain-ui'), 700)
+        setTimeout(() => window.location.replace('/brain-ui'), 350)
       } catch (err) {
         setStatus('网络错误：' + err.message, 'err')
         syncButtonState()
@@ -847,7 +963,7 @@
     }
 
     btn.addEventListener('click', activate)
-    apiKeyInput.addEventListener('input', syncButtonState)
+    apiKeyInput.addEventListener('input', scheduleAutoActivation)
     apiKeyInput.addEventListener('keydown', event => {
       if (event.key === 'Enter' && !btn.disabled) activate()
     })

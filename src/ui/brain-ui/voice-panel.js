@@ -69,6 +69,7 @@ export function initVoicePanel({
       core.resumeSession(false);
     },
     stop: () => core.stopSession(),
+    setTTSAnalyser: (analyser) => core.setTTSAnalyser(analyser),
     pttStart: ptt.pttStart,
     pttEnd: ptt.pttEnd,
   };

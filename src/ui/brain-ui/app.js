@@ -10,7 +10,7 @@ import { initWorldcup, toggleWorldcup, setWorldcupMode } from "./worldcup.js";
 import { enrichVisiblePersonCardFromText, initPersonCard, setPersonCardMode, showPersonCardByName } from "./person-card.js";
 import { initDocPanel, setDocPanelMode } from "./doc.js";
 import { initWechatPopup, showWechatPopup } from "./wechat-popup.js";
-import { attachJarvisFx, isFxEnabledForVoice, setFxEnabledForVoice, getJarvisFxParams, setJarvisFxParams, resetJarvisFxParams, isFxUnlocked, tryUnlockFx } from "./tts-fx.js";
+import { attachJarvisAudioGraph, attachJarvisFx, isFxEnabledForVoice, setFxEnabledForVoice, getJarvisFxParams, setJarvisFxParams, resetJarvisFxParams, isFxUnlocked, tryUnlockFx } from "./tts-fx.js";
 renderBrainUiApp(document.body);
 const THEME_KEY = "jarvis-brain-ui-theme";
 const PHYSICS_STORAGE_KEY = "jarvis-brain-ui-physics";
@@ -1596,6 +1596,7 @@ let ttsInterruptedOriginalContent = '';
 let ttsInterruptionApplied = false;
 let ttsInterruptionDbTimer = null;
 let ttsStreamReader = null; // 当前流式合成的网络读取器；打断/重播时取消，避免旧流继续占用
+let ttsAudioGraph = null;   // 当前 TTS <audio> 的 Web Audio 图，用于音效和语音球可视化
 
 // ── 边出文字边逐句流式合成（streaming sentence TTS）─────────────────────────────
 // 正文 token 边到边按句末标点切句入队，一个顺序播放队列逐句 /tts/stream 播放——第一句在
@@ -1706,6 +1707,7 @@ window.stopTTS = () => {
   // When duration is not yet loaded (NaN): spokenUpTo=0, remaining='', falls back to full text
   ttsInterruptedRemaining = remaining || ttsCurrentText;
   applyTTSInterruption(spokenUpTo);
+  clearTTSAudioGraph();
   ttsAudioEl.pause();
   try { URL.revokeObjectURL(ttsAudioEl.src); } catch {}
   if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
@@ -1737,6 +1739,29 @@ window.resumeTTSIfNoSpeech = () => {
   playTTSReply(text);
 };
 
+function activateTTSAudioGraph(graph) {
+  if (ttsAudioGraph && ttsAudioGraph !== graph) {
+    try { ttsAudioGraph.teardown?.(); } catch {}
+  }
+  ttsAudioGraph = graph || null;
+  window.bailongmaVoice?.setTTSAnalyser?.(ttsAudioGraph?.analyser || null);
+}
+
+function clearTTSAudioGraph(graph) {
+  if (arguments.length > 0) {
+    if (!graph) return;
+    if (graph !== ttsAudioGraph) {
+      try { graph.teardown?.(); } catch {}
+      return;
+    }
+  }
+  if (ttsAudioGraph) {
+    try { ttsAudioGraph.teardown?.(); } catch {}
+    ttsAudioGraph = null;
+  }
+  window.bailongmaVoice?.setTTSAnalyser?.(null);
+}
+
 // 接管一个 <audio> 元素开始播放：叠加音色音效、挂起 ASR、注册结束/出错清理。
 // revokeUrl 为该元素 src 的 objectURL（播放结束/出错时回收）。多条播放路径共用。
 // opts.manageMic：是否由本函数挂起/恢复麦克风（单段播放=true；逐句队列由队列在首尾统一管，传 false）。
@@ -1745,12 +1770,14 @@ function startTTSAudio(audioEl, revokeUrl, opts = {}) {
   const { manageMic = true, onComplete = null } = opts;
   ttsAudioEl = audioEl;
   audioEl.volume = 1.0; // ensure full volume (avoid residual duck state from previous play)
-  attachJarvisFx(audioEl, activeTTSVoiceId); // 仅当该音色开启了机器人音效才叠加；否则原生播放
+  const audioGraph = attachJarvisAudioGraph(audioEl, activeTTSVoiceId);
+  activateTTSAudioGraph(audioGraph);
   // Suspend cloud ASR but keep the mic hardware open for interruption detection
   if (manageMic) window.bailongmaVoice?.suspendForTTS?.();
   // 结束/出错收尾。注意：被新一轮播放替换掉的旧元素，其 onerror 可能在 pause/revoke 后迟到触发；
   // 此时全局已指向新元素，必须用 ttsAudioEl===audioEl 守卫，否则会误杀新播放的流读取器和状态。
   const finish = () => {
+    clearTTSAudioGraph(audioGraph);
     if (revokeUrl) { try { URL.revokeObjectURL(revokeUrl); } catch {} } // 释放本元素 URL（无论是否当前）
     if (ttsAudioEl !== audioEl) return; // 已不是当前播放对象：仅回收 URL，不动全局
     if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
@@ -1762,6 +1789,7 @@ function startTTSAudio(audioEl, revokeUrl, opts = {}) {
   audioEl.onended = finish;
   audioEl.onerror = finish;
   audioEl.play().catch(() => {
+    clearTTSAudioGraph(audioGraph);
     if (ttsAudioEl !== audioEl) return;
     if (onComplete) { ttsAudioEl = null; onComplete(); return; }
     if (manageMic) window.bailongmaVoice?.resumeAfterMedia();
@@ -1772,12 +1800,16 @@ function startTTSAudio(audioEl, revokeUrl, opts = {}) {
 function playTTSViaMediaSource(resp, opts = {}) {
   const mediaSource = new MediaSource();
   const url = URL.createObjectURL(mediaSource);
-  startTTSAudio(new Audio(url), url, opts); // play() 会在缓冲到首包后自动开始
+  const audioEl = new Audio(url);
+  const isCurrentAudio = () => ttsAudioEl === audioEl;
+  startTTSAudio(audioEl, url, opts); // play() 会在缓冲到首包后自动开始
   mediaSource.addEventListener('sourceopen', () => {
+    if (!isCurrentAudio()) { try { mediaSource.endOfStream(); } catch {} return; }
     let sb;
     try { sb = mediaSource.addSourceBuffer('audio/mpeg'); }
     catch { try { mediaSource.endOfStream(); } catch {} return; }
     const reader = resp.body.getReader();
+    if (!isCurrentAudio()) { try { reader.cancel(); } catch {} return; }
     ttsStreamReader = reader;
     const queue = [];
     let finished = false;
@@ -1792,10 +1824,21 @@ function playTTSViaMediaSource(resp, opts = {}) {
       try {
         for (;;) {
           const { done, value } = await reader.read();
-          if (done) { finished = true; flush(); break; }
+          if (!isCurrentAudio()) {
+            if (ttsStreamReader === reader) ttsStreamReader = null;
+            try { reader.cancel(); } catch {}
+            break;
+          }
+          if (done) {
+            if (ttsStreamReader === reader) ttsStreamReader = null;
+            finished = true; flush(); break;
+          }
           if (value && value.byteLength) { queue.push(value); flush(); }
         }
-      } catch { finished = true; flush(); } // 被取消/网络中断：收尾，已播部分照常结束
+      } catch {
+        if (ttsStreamReader === reader) ttsStreamReader = null;
+        finished = true; flush();
+      } // 被取消/网络中断：收尾，已播部分照常结束
     })();
   }, { once: true });
 }
@@ -1819,7 +1862,7 @@ async function playTTSReply(text) {
       try { const j = await resp.json(); errMsg = j.error || errMsg; } catch {}
       throw new Error(errMsg);
     }
-    if (ttsAudioEl) { ttsAudioEl.pause(); try { URL.revokeObjectURL(ttsAudioEl.src); } catch {} }
+    if (ttsAudioEl) { clearTTSAudioGraph(); ttsAudioEl.pause(); try { URL.revokeObjectURL(ttsAudioEl.src); } catch {} }
     // 默认流式：边下边播；不支持 MSE / 已关闭流式 → 退回整段 blob 播放
     if (ttsCanStream() && resp.body) {
       playTTSViaMediaSource(resp);
@@ -1829,6 +1872,7 @@ async function playTTSReply(text) {
       startTTSAudio(new Audio(url), url);
     }
   } catch {
+    clearTTSAudioGraph();
     ttsCurrentText = '';
     window.bailongmaVoice?.resumeAfterMedia();
   }
@@ -1865,7 +1909,7 @@ function toPlainSpeech(md) {
 function beginStreamingTTS() {
   // 停掉上一段仍在进行的单段播放 / 流读取
   if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
-  if (ttsAudioEl) { try { ttsAudioEl.pause(); URL.revokeObjectURL(ttsAudioEl.src); } catch {} ttsAudioEl = null; }
+  if (ttsAudioEl) { clearTTSAudioGraph(); try { ttsAudioEl.pause(); URL.revokeObjectURL(ttsAudioEl.src); } catch {} ttsAudioEl = null; }
   ttsStreamingMode = true;
   sttsActive = true;
   sttsConsumed = 0; sttsBuf = ''; sttsQueue = []; sttsPlaying = false;
@@ -1952,6 +1996,7 @@ function finalizeStreamingTTS() {
 function endStreamingTTS() {
   sttsActive = false;
   ttsStreamingMode = false;
+  clearTTSAudioGraph();
   if (sttsMicSuspended) { sttsMicSuspended = false; window.bailongmaVoice?.resumeAfterMedia(); }
   sttsQueue = []; sttsBuf = ''; sttsCurSeg = ''; sttsSpoken = ''; sttsPlaying = false;
 }
@@ -1972,7 +2017,7 @@ function stopStreamingTTS() {
   ttsCurrentText = fullPlain;                       // 让 ✋/续播的文本计算有一致的全文基准
   ttsInterruptedRemaining = remainingPlain || fullPlain;
   applyTTSInterruption(spokenPlain.length);
-  if (ttsAudioEl) { try { ttsAudioEl.pause(); URL.revokeObjectURL(ttsAudioEl.src); } catch {} }
+  if (ttsAudioEl) { clearTTSAudioGraph(); try { ttsAudioEl.pause(); URL.revokeObjectURL(ttsAudioEl.src); } catch {} }
   if (ttsStreamReader) { try { ttsStreamReader.cancel(); } catch {} ttsStreamReader = null; }
   ttsAudioEl = null;
   sttsActive = false; ttsStreamingMode = false;
@@ -2405,6 +2450,7 @@ function initTTSSettings() {
   const providerSelect  = document.getElementById("settings-provider-select");
   const modelSelect     = document.getElementById("settings-model-select");
   const llmKeyInput     = document.getElementById("settings-llm-key");
+  const llmKeyToggle    = document.getElementById("settings-llm-key-toggle");
   const saveLlmBtn      = document.getElementById("settings-save-llm");
   const llmFeedback     = document.getElementById("settings-llm-feedback");
   const tempSlider      = document.getElementById("settings-temperature");
@@ -2424,6 +2470,8 @@ function initTTSSettings() {
   if (!settingsBtn || !overlay) return;
 
   let cachedProviders = null;
+  let cachedLlm = null;
+  let llmKeyVisible = false;
 
   overlay.querySelectorAll(".settings-nav-item").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -2484,20 +2532,60 @@ function initTTSSettings() {
     providerSelect.value = providers[selected] || selected === "auto" ? selected : "auto";
   }
 
-  function applyCustomProviderUI(llm) {
+  function setLlmKeyVisible(visible) {
+    llmKeyVisible = Boolean(visible);
+    if (llmKeyInput) llmKeyInput.type = llmKeyVisible ? "text" : "password";
+    if (llmKeyToggle) {
+      llmKeyToggle.setAttribute("aria-label", llmKeyVisible ? "隐藏 API Key" : "显示 API Key");
+      llmKeyToggle.title = llmKeyVisible ? "隐藏 API Key" : "显示 API Key";
+    }
+  }
+
+  function getProviderConfigForUI(provider, llm = cachedLlm) {
+    const summary = cachedProviders?.[provider] || {};
+    if (llm && provider === llm.provider) {
+      return {
+        ...summary,
+        ...llm,
+        apiKey: llm.apiKey ?? summary.apiKey ?? "",
+      };
+    }
+    return summary;
+  }
+
+  function applyCustomProviderUI(providerOrLlm) {
+    const provider = typeof providerOrLlm === "string"
+      ? providerOrLlm
+      : (providerOrLlm?.provider || "auto");
+    const providerCfg = getProviderConfigForUI(provider, typeof providerOrLlm === "object" ? providerOrLlm : cachedLlm);
     const customSection = document.getElementById("settings-custom-llm-section");
     const modelRow = document.getElementById("settings-model-row");
-    if (llm?.provider === "custom") {
+    if (provider === "auto") {
+      if (customSection) customSection.style.display = "none";
+      if (modelRow) modelRow.style.display = "none";
+      if (llmKeyInput) llmKeyInput.value = "";
+      setLlmKeyVisible(false);
+      return;
+    }
+    if (provider === "custom") {
       if (customSection) customSection.style.display = "";
       if (modelRow) modelRow.style.display = "none";
       const baseUrlEl = document.getElementById("settings-custom-baseurl");
       const modelEl = document.getElementById("settings-custom-model");
-      if (baseUrlEl && llm.baseURL) baseUrlEl.value = llm.baseURL;
-      if (modelEl && llm.model) modelEl.value = llm.model;
+      if (baseUrlEl) baseUrlEl.value = providerCfg.baseURL || "";
+      if (modelEl) modelEl.value = providerCfg.model || "";
     } else {
       if (customSection) customSection.style.display = "none";
       if (modelRow) modelRow.style.display = "";
+      if (cachedProviders?.[provider]) {
+        populateModelSelect(
+          cachedProviders[provider].models,
+          providerCfg.model || cachedProviders[provider].defaultModel,
+        );
+      }
     }
+    if (llmKeyInput) llmKeyInput.value = providerCfg.apiKey || "";
+    setLlmKeyVisible(false);
   }
 
   async function loadSettings() {
@@ -2505,11 +2593,11 @@ function initTTSSettings() {
       const data = await fetch(`${API}/settings`).then(r => r.json());
       const { llm, minimax, providers } = data;
       if (providers) cachedProviders = providers;
+      cachedLlm = llm;
       refreshConfigSummary({ llm, minimax });
       populateProviderSelect(providers, llm.provider || "auto");
       if (providerSelect && llm.provider) providerSelect.value = llm.provider;
       applyCustomProviderUI(llm);
-      if (llm.provider !== "custom") populateModelSelect(llm.models, llm.model);
       if (typeof llm.temperature === "number" && tempSlider) {
         tempSlider.value = String(llm.temperature);
         if (tempVal) tempVal.textContent = llm.temperature.toFixed(2);
@@ -2954,58 +3042,43 @@ function initTTSSettings() {
 
   if (providerSelect) {
     providerSelect.addEventListener("change", () => {
-      const provider = providerSelect.value;
-      const customSection = document.getElementById("settings-custom-llm-section");
-      const modelRow = document.getElementById("settings-model-row");
-      if (provider === "custom") {
-        if (customSection) customSection.style.display = "";
-        if (modelRow) modelRow.style.display = "none";
-      } else {
-        if (customSection) customSection.style.display = "none";
-        if (modelRow) modelRow.style.display = "";
-        if (cachedProviders?.[provider]) populateModelSelect(cachedProviders[provider].models, null);
-      }
+      applyCustomProviderUI(providerSelect.value);
     });
   }
+
+  llmKeyToggle?.addEventListener("click", () => {
+    setLlmKeyVisible(!llmKeyVisible);
+  });
 
   saveLlmBtn?.addEventListener("click", async () => {
     const provider = providerSelect?.value || "auto";
     const apiKey = llmKeyInput.value.trim();
     saveLlmBtn.disabled = true;
-
-    if (provider === "custom") {
-      const baseURL = document.getElementById("settings-custom-baseurl")?.value?.trim();
-      const model   = document.getElementById("settings-custom-model")?.value?.trim();
-      if (!baseURL || !model) {
-        showFeedback(llmFeedback, "请填入 Base URL 和模型名称", true);
-        saveLlmBtn.disabled = false;
-        return;
-      }
-      try {
-        const res = await fetch(`${API}/activate`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ provider: "custom", baseURL, model, apiKey: apiKey || "none" }),
-        });
-        const data = await res.json();
-        if (data.ok) {
-          showFeedback(llmFeedback, `已连接：${data.model}`);
-          llmKeyInput.value = "";
-          loadSettings();
-        } else {
-          showFeedback(llmFeedback, data.error || "连接失败", true);
-        }
-      } catch { showFeedback(llmFeedback, "请求失败", true); }
-      finally { saveLlmBtn.disabled = false; }
-      return;
-    }
-
-    const model = modelSelect.value;
     try {
-      const body = apiKey
-        ? { provider, apiKey, ...(provider === "auto" ? {} : { model }) }
-        : { model };
-      const res = await fetch(apiKey ? `${API}/activate` : `${API}/settings/model`, {
+      const selectedCfg = cachedProviders?.[provider] || {};
+      const body = { provider };
+      if (provider === "custom") {
+        body.baseURL = document.getElementById("settings-custom-baseurl")?.value?.trim();
+        body.model = document.getElementById("settings-custom-model")?.value?.trim();
+        if (!body.baseURL || !body.model) {
+          showFeedback(llmFeedback, "请填入 Base URL 和模型名称", true);
+          saveLlmBtn.disabled = false;
+          return;
+        }
+        if (apiKey !== (selectedCfg.apiKey || "")) body.apiKey = apiKey || "none";
+      } else if (provider === "auto") {
+        if (!apiKey) {
+          showFeedback(llmFeedback, "自动识别需要填入 API Key", true);
+          saveLlmBtn.disabled = false;
+          return;
+        }
+        body.apiKey = apiKey;
+      } else {
+        body.model = modelSelect.value;
+        if (apiKey && apiKey !== (selectedCfg.apiKey || "")) body.apiKey = apiKey;
+      }
+
+      const res = await fetch(`${API}/settings/model`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -3013,7 +3086,6 @@ function initTTSSettings() {
       const data = await res.json();
       if (data.ok) {
         showFeedback(llmFeedback, "已保存");
-        llmKeyInput.value = "";
         loadSettings();
       } else {
         showFeedback(llmFeedback, data.error || "保存失败", true);

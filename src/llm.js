@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { config } from './config.js'
+import { config, MIMO_PROVIDER, ZHIPU_PROVIDER, getProviderModelFallbacks, switchModel } from './config.js'
 import { executeTool } from './capabilities/executor.js'
 import { getToolSchemas } from './capabilities/schemas.js'
 import { recordUsage, shouldThrottle } from './quota.js'
@@ -58,17 +58,26 @@ function shouldEnableDeepSeekThinking(thinking) {
   return true
 }
 
+function normalizeTemperatureForProvider(temperature) {
+  if (typeof temperature !== 'number') return temperature
+  if (config.provider !== ZHIPU_PROVIDER) return temperature
+  return Math.max(0, Math.min(1, Number(temperature.toFixed(2))))
+}
+
 // 单次流式调用，返回 { content, toolCalls, aborted }
-async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens, thinking = true, signal, onStream }) {
+async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens, thinking = true, signal, onStream, model = config.model }) {
+  const providerTemperature = normalizeTemperatureForProvider(temperature)
   const requestParams = {
-    model: config.model,
-    temperature,
+    model,
+    temperature: providerTemperature,
     messages,
     stream: true,
-    stream_options: { include_usage: true },
+  }
+  if (config.provider !== ZHIPU_PROVIDER) {
+    requestParams.stream_options = { include_usage: true }
   }
 
-  if (typeof topP === 'number' && topP > 0) requestParams.top_p = topP
+  if (typeof topP === 'number' && topP > 0 && config.provider !== ZHIPU_PROVIDER) requestParams.top_p = topP
   if (config.provider === 'deepseek') {
     const thinkingEnabled = shouldEnableDeepSeekThinking(thinking)
     if (thinkingEnabled) {
@@ -85,6 +94,7 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
   if (toolSchemas.length > 0) {
     requestParams.tools = toolSchemas
     requestParams.tool_choice = 'auto'
+    if (config.provider === ZHIPU_PROVIDER) requestParams.tool_stream = true
   }
 
   // ── 空闲超时（连接卡死保护）──
@@ -285,6 +295,12 @@ function isTransientError(err) {
   return /timeout|timed out|socket hang up|fetch failed|network error|upstream/i.test(msg)
 }
 
+function isAuthenticationError(err) {
+  const status = err.status ?? err.response?.status
+  const msg = err.message || ''
+  return status === 401 || /unauthoriz|invalid.*api.*key|authentication/i.test(msg)
+}
+
 function abortableSleep(ms, signal) {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) return reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }))
@@ -326,6 +342,48 @@ async function streamOnceWithRetry(args) {
 }
 
 // XML 格式工具调用的参数名别名映射（某些模型使用不同参数名）
+async function streamOnceWithModelFallback(args) {
+  if (config.provider !== MIMO_PROVIDER) return await streamOnceWithRetry(args)
+
+  const models = getProviderModelFallbacks(config.provider, args.model || config.model)
+  if (models.length <= 1) return await streamOnceWithRetry({ ...args, model: models[0] || config.model })
+
+  let lastErr
+  for (let idx = 0; idx < models.length; idx++) {
+    const model = models[idx]
+    try {
+      const result = await streamOnceWithRetry({ ...args, model })
+      if (model !== config.model) {
+        try {
+          switchModel(model)
+        } catch (persistErr) {
+          console.warn(`[LLM] MiMo fallback model "${model}" worked but could not be saved: ${persistErr.message || persistErr}`)
+        }
+        console.warn(`[LLM] MiMo model fallback selected "${model}"`)
+      }
+      return result
+    } catch (err) {
+      if (err.name === 'AbortError' || args.signal?.aborted) throw err
+      if (err.hadContent || isAuthenticationError(err)) throw err
+      lastErr = err
+      const nextModel = models[idx + 1]
+      if (!nextModel) break
+      args.onRetry?.({
+        attempt: idx + 1,
+        nextAttempt: idx + 2,
+        maxAttempts: models.length,
+        delayMs: 0,
+        error: err.message || String(err),
+        modelFallback: true,
+        model,
+        nextModel,
+      })
+      console.warn(`[LLM] MiMo model "${model}" failed before content; falling back to "${nextModel}": ${(err.message || String(err)).slice(0, 120)}`)
+    }
+  }
+  throw lastErr
+}
+
 const PARAM_ALIASES = {
   send_message: { to: 'target_id', message: 'content', text: 'content', recipient: 'target_id' },
   read_file: { file: 'path', filename: 'path', filepath: 'path' },
@@ -832,7 +890,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
 
     let roundResult
     try {
-      roundResult = await streamOnceWithRetry({
+      roundResult = await streamOnceWithModelFallback({
         messages,
         toolSchemas,
         temperature,

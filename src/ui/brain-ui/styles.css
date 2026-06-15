@@ -1467,6 +1467,38 @@ body {
 .settings-select:focus,
 .settings-input:focus { border-color: var(--cool); }
 
+.settings-secret-wrap {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-secret-wrap .settings-input {
+  width: 100%;
+  padding-right: 34px;
+}
+
+.settings-secret-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translateY(-50%);
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink2);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.settings-secret-toggle:hover {
+  background: var(--line);
+  color: var(--ink);
+}
+
 .settings-row-action {
   display: flex;
   align-items: center;

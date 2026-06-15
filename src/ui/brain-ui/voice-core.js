@@ -168,6 +168,8 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
   let lastDrawTs = 0;
   let lastVoiceTs = 0;          // 最近一次 vol 超过 QUIET_VOL 的时刻（performance.now）
   let lastVol = 0;              // 分析帧比绘制帧密，绘制段用最近一次分析到的音量
+  let ttsData = null;
+  let lastTTSVol = 0;
 
   // 画面节流档位：返回 0 = 不限（跟随显示器刷新率）
   function targetDrawFps(ts) {
@@ -204,8 +206,38 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
     }, 2000);
   }
 
+  function setTTSAnalyser(analyser) {
+    if (analyser) {
+      ttsData = { analyser, dataArray: new Uint8Array(analyser.fftSize) };
+      setStatus('speaking');
+      return;
+    }
+    ttsData = null;
+    lastTTSVol = 0;
+    if (sk === 'speaking' && !suspendedByMedia) setStatus(micActive ? 'listening' : 'idle');
+  }
+
+  function readTTSVol() {
+    if (!ttsData) return 0;
+    try {
+      ttsData.analyser.getByteTimeDomainData(ttsData.dataArray);
+      let sum = 0;
+      for (const v of ttsData.dataArray) {
+        const centered = (v - 128) / 128;
+        sum += centered * centered;
+      }
+      const rms = Math.sqrt(sum / ttsData.dataArray.length);
+      const level = Math.min(1, Math.max(0, rms * 3.2));
+      lastTTSVol = lerp(lastTTSVol, level, 0.35);
+      return lastTTSVol;
+    } catch {
+      return 0;
+    }
+  }
+
   function drawFrame(now) {
     const ts = now ?? performance.now();
+    const ttsVol = sk === 'speaking' ? readTTSVol() : 0;
 
     // ── 每帧必跑：音量分析 + 状态机推进（一次 analyser 读取，便宜）。
     //    与下面的画面节流解耦：降帧期间 barge-in 检测、识别看门狗、状态切换零延迟。──
@@ -217,7 +249,12 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
 
       // 模式策略：barge-in 检测 + 活动计时（continuous）。core 只把 vol 抛出去，
       // 不含任何打断/自动发送逻辑。在视觉块之前调用，保持与原始顺序一致。
-      onFrame?.(vol);
+      onFrame?.(vol, {
+        ttsActive: Boolean(ttsData),
+        ttsVol,
+        suspendedByMedia,
+        status: sk,
+      });
 
       // 看门狗：记录最近一次人声级音量的时刻（判断「用户是否还在说」）
       if (vol > WATCHDOG_SPEECH_VOL) lastLoudTs = Date.now();
@@ -227,8 +264,6 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
         // speaking 状态下用户开口 → 视觉反馈但不覆盖状态（等 barge-in 触发后自然切换）
         if (sk !== 'recognizing' && sk !== 'event' && sk !== 'speaking')
           setStatus(vol > 0.15 ? 'recognizing' : 'listening');
-        else if (sk === 'speaking' && vol > BARGEIN_THRESHOLD)
-          setStatus('recognizing');
       } else if (sk !== 'idle' && sk !== 'event' && sk !== 'processing' && sk !== 'done' && sk !== 'speaking') {
         setStatus('idle');
       }
@@ -257,9 +292,10 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
     ];
 
     // 有声时放大振幅/转速（音量来自上方分析段，可能比本绘制帧新）
-    if (micData && lastVol > QUIET_VOL) {
-      s.amp = lerp(s.amp, 0.08 + lastVol * 1.2, 0.4);
-      s.spd = lerp(s.spd, 1.0 + lastVol * 5.0, 0.2);
+    const visualVol = sk === 'speaking' ? ttsVol : (micData ? lastVol : 0);
+    if (visualVol > QUIET_VOL) {
+      s.amp = lerp(s.amp, 0.08 + visualVol * 1.2, 0.4);
+      s.spd = lerp(s.spd, 1.0 + visualVol * 5.0, 0.2);
     }
 
     // 声音事件闪烁效果自动恢复
@@ -703,15 +739,16 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
 
   function stopCloudStream({ preserveProcessor = false } = {}) {
     cloudWsIntentional = true; // 标记为主动关闭，防止 onclose 触发重连
+    const ws = cloudWs;
     try {
-      if (cloudWs && cloudWs.readyState === WebSocket.OPEN) {
-        cloudWs.send(JSON.stringify({ type: 'flush' }));
-        setTimeout(() => { try { cloudWs?.close(); } catch {} }, 200);
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'flush' }));
+        setTimeout(() => { try { ws.close(); } catch {} }, 200);
       } else {
-        cloudWs?.close();
+        ws?.close();
       }
     } catch {}
-    cloudWs = null;
+    if (cloudWs === ws) cloudWs = null;
 
     if (!preserveProcessor) {
       try { cloudWorkletNode?.disconnect(); } catch {}
@@ -808,6 +845,7 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
       setStatus('listening');
       resetTranscriptAccumulation();
       if (transcript) transcript.textContent = '';
+      cloudWsIntentional = false; // stopCloudStream(TTS) 留下的是旧连接标志，新连接要恢复自愈重连
       const bargeinWs = new WebSocket(CLOUD_WS_URL);
       bargeinWs.binaryType = 'arraybuffer';
       cloudWs = bargeinWs;
@@ -882,6 +920,7 @@ export function createVoiceCore({ canvas, transcript, getChatInput, getSendMessa
     hasLiveProcessor: () => Boolean(micActive && micData && (cloudWorkletNode || cloudProcessor)),
     getText: () => lastTranscriptText,
     setText: (v) => { lastTranscriptText = v; },
+    setTTSAnalyser,
     // 清当前句未定稿 interim：PTT 开始新一轮说话时调用，避免上一段残留 interim
     // 在恰好重连时被 commitPendingInterim 提级进来。
     clearPendingInterim: () => { pendingInterim = ''; },
