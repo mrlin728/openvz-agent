@@ -6,6 +6,10 @@ import { paths } from '../../paths.js'
 const IS_WIN = process.platform === 'win32'
 
 const TOOLS_DIR = path.join(paths.sandboxDir, 'installed_tools')
+const DEFAULT_PERMISSIONS = Object.freeze({
+  network: false,
+  exec: false,
+})
 
 // 运行时注册表：name → { schema, execute }
 const registry = new Map()
@@ -22,7 +26,7 @@ const BUILTIN_NAMES = new Set([
   'ui_hide', 'ui_patch', 'manage_app', 'ui_register', 'focus_banner',
   'set_location', 'delegate_to_agent', 'grant_agent_delegation', 'recall_memory',
   'complete_startup_self_check', 'set_task', 'complete_task', 'update_task_step',
-  'install_tool', 'uninstall_tool', 'list_tools', 'set_security', 'connect_wechat',
+  'install_tool', 'uninstall_tool', 'list_tools', 'manage_tool_factory', 'set_security', 'connect_wechat',
 ])
 
 function ensureToolsDir() {
@@ -36,12 +40,55 @@ function buildSchema(name, description, parameters) {
   }
 }
 
-// helpers 暴露给已安装工具代码使用的受控能力
-function buildHelpers() {
+export function normalizeToolPermissions(permissions = {}, { legacy = false } = {}) {
+  const base = legacy
+    ? { network: true, exec: true }
+    : { ...DEFAULT_PERMISSIONS }
+  if (!permissions || typeof permissions !== 'object') return base
   return {
-    fetch: (...args) => globalThis.fetch(...args),
+    network: permissions.network === true,
+    exec: permissions.exec === true,
+  }
+}
+
+const CODE_DENY_RULES = [
+  { re: /\b(?:eval|Function)\s*\(/, reason: 'dynamic JavaScript evaluation is not allowed' },
+  { re: /\bnew\s+Function\b/, reason: 'dynamic JavaScript evaluation is not allowed' },
+  { re: /\b(?:require|import)\s*(?:\(|["'])/, reason: 'module loading is not allowed' },
+  { re: /\b(?:process|globalThis|global|window|document)\b/, reason: 'global runtime access is not allowed' },
+  { re: /\b(?:fs|child_process|worker_threads|vm)\b/, reason: 'Node system modules are not allowed' },
+  { re: /\b(?:execSync|execFileSync|spawn|spawnSync|fork)\b/, reason: 'process execution APIs are not allowed' },
+  { re: /constructor\s*\.\s*constructor/, reason: 'constructor escape is not allowed' },
+  { re: /__proto__|prototype\s*\[/, reason: 'prototype manipulation is not allowed' },
+]
+
+export function analyzeToolCode(code = '', permissions = {}) {
+  const text = String(code || '')
+  const normalized = normalizeToolPermissions(permissions)
+  const issues = []
+  for (const rule of CODE_DENY_RULES) {
+    if (rule.re.test(text)) issues.push(rule.reason)
+  }
+  if (!normalized.exec && /\bhelpers\s*\.\s*exec\b/.test(text)) {
+    issues.push('helpers.exec requires permissions.exec=true')
+  }
+  if (!normalized.network && (/\bhelpers\s*\.\s*fetch\b/.test(text) || /\bfetch\s*\(/.test(text))) {
+    issues.push('network access requires permissions.network=true')
+  }
+  return [...new Set(issues)]
+}
+
+// helpers 暴露给已安装工具代码使用的受控能力
+function buildHelpers(permissions = {}) {
+  const normalized = normalizeToolPermissions(permissions)
+  return {
+    fetch: (...args) => {
+      if (!normalized.network) throw new Error('network permission is not granted for this tool')
+      return globalThis.fetch(...args)
+    },
 
     exec: (command, opts = {}) => {
+      if (!normalized.exec) throw new Error('exec permission is not granted for this tool')
       try {
         const execOpts = {
           encoding: 'utf-8',
@@ -72,18 +119,33 @@ function buildHelpers() {
 
 // 把工具代码字符串编译为可调用的 async 函数
 // 代码是函数体（不含 function 声明），可用变量：args, helpers
-function compileExecute(name, code) {
+function compileExecute(name, code, permissions = {}, { legacyUnsafeGlobals = false } = {}) {
   let fn
   try {
     // AsyncFunction 构造器接受参数名列表 + 函数体
     // eslint-disable-next-line no-new-func
-    fn = new Function('args', 'helpers', `"use strict";\nreturn (async () => {\n${code}\n})()`)
+    fn = legacyUnsafeGlobals
+      ? new Function('args', 'helpers', `"use strict";\nreturn (async () => {\n${code}\n})()`)
+      : new Function(
+          'args',
+          'helpers',
+          'fetch',
+          'process',
+          'globalThis',
+          'require',
+          'module',
+          'exports',
+          'Buffer',
+          `"use strict";\nreturn (async () => {\n${code}\n})()`,
+        )
   } catch (err) {
     throw new Error(`工具 "${name}" 代码语法错误：${err.message}`)
   }
   return async (args) => {
-    const helpers = buildHelpers()
-    return await fn(args ?? {}, helpers)
+    const helpers = buildHelpers(permissions)
+    return legacyUnsafeGlobals
+      ? await fn(args ?? {}, helpers)
+      : await fn(args ?? {}, helpers, undefined, undefined, undefined, undefined, undefined, undefined, undefined)
   }
 }
 
@@ -103,24 +165,41 @@ function validateParameters(parameters) {
   }
 }
 
-// ─── 对外 API ────────────────────────────────────────────────────────────────
-
-export async function installTool({ name, description, parameters, code }) {
+export function validateToolManifest({ name, description, parameters, code, permissions } = {}) {
   validateName(name)
   if (!description || typeof description !== 'string') throw new Error('description 不能为空')
   validateParameters(parameters)
   if (!code || typeof code !== 'string') throw new Error('code 不能为空')
-
-  // 先编译，语法错误立即报告
-  const executeFn = compileExecute(name, code)
-
-  ensureToolsDir()
-
-  const meta = {
+  const normalizedPermissions = normalizeToolPermissions(permissions)
+  const issues = analyzeToolCode(code, normalizedPermissions)
+  if (issues.length > 0) {
+    throw new Error(`工具代码未通过安全检查：${issues.join('; ')}`)
+  }
+  return {
     name,
     description,
     parameters,
     code,
+    permissions: normalizedPermissions,
+  }
+}
+
+// ─── 对外 API ────────────────────────────────────────────────────────────────
+
+export async function installTool({ name, description, parameters, code, permissions }) {
+  const manifest = validateToolManifest({ name, description, parameters, code, permissions })
+
+  // 先编译，语法错误立即报告
+  const executeFn = compileExecute(name, code, manifest.permissions)
+
+  ensureToolsDir()
+
+  const meta = {
+    name: manifest.name,
+    description: manifest.description,
+    parameters: manifest.parameters,
+    permissions: manifest.permissions,
+    code: manifest.code,
     installed_at: new Date().toISOString(),
   }
   fs.writeFileSync(
@@ -129,9 +208,9 @@ export async function installTool({ name, description, parameters, code }) {
     'utf-8',
   )
 
-  registry.set(name, { schema: buildSchema(name, description, parameters), execute: executeFn })
-  console.log(`[marketplace] 工具 "${name}" 安装完成`)
-  return `工具 "${name}" 安装成功。下一轮对话起即可调用。`
+  registry.set(manifest.name, { schema: buildSchema(manifest.name, manifest.description, manifest.parameters), execute: executeFn })
+  console.log(`[marketplace] 工具 "${manifest.name}" 安装完成`)
+  return `工具 "${manifest.name}" 安装成功。下一轮对话起即可调用。`
 }
 
 export function uninstallTool({ name }) {
@@ -189,7 +268,9 @@ export async function loadInstalledTools() {
         console.warn(`[marketplace] 跳过无效工具文件 ${file}`)
         continue
       }
-      const executeFn = compileExecute(name, code)
+      const legacy = !meta.permissions
+      const permissions = normalizeToolPermissions(meta.permissions, { legacy })
+      const executeFn = compileExecute(name, code, permissions, { legacyUnsafeGlobals: legacy })
       registry.set(name, { schema: buildSchema(name, description, parameters), execute: executeFn })
       loaded++
     } catch (err) {

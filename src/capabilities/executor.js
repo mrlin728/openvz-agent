@@ -13,6 +13,7 @@ import { setDocPanelState, getDocPanelState } from '../docs.js'
 import { setUserLocation } from '../weather.js'
 import { getAgentById, isDelegationAllowed } from '../agents/registry.js'
 import { installTool, uninstallTool, listInstalledTools, isInstalledTool, executeInstalledTool, getInstalledToolSchema } from './marketplace/index.js'
+import { execManageToolFactory } from './tool-factory.js'
 import { TOOL_SCHEMAS } from './schemas.js'
 import { TOOL_GROUPS } from '../memory/tool-router.js'
 import { throwIfAborted } from './abort-utils.js'
@@ -247,6 +248,8 @@ async function executeToolUnchecked(name, args, context = {}) {
         return execUninstallTool(args)
       case 'list_tools':
         return execListTools()
+      case 'manage_tool_factory':
+        return await execManageToolFactory(args)
       case 'find_tool':
         return execFindTool(args)
       case 'connect_wechat':
@@ -470,8 +473,8 @@ function toolJson(payload) {
 // ─── 工具市场执行函数 ──────────────────────────────────────────────────────────
 
 async function execInstallTool(args) {
-  const { name, description, parameters_schema, code } = args
-  return await installTool({ name, description, parameters: parameters_schema, code })
+  const { name, description, parameters_schema, code, permissions } = args
+  return await installTool({ name, description, parameters: parameters_schema, code, permissions })
 }
 
 function execUninstallTool(args) {

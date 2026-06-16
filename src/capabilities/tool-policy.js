@@ -36,6 +36,7 @@ const TOOL_RISK = {
   install_tool: 'high',
   uninstall_tool: 'medium',
   list_tools: 'low',
+  manage_tool_factory: 'high',
   find_tool: 'low',
   complete_startup_self_check: 'low',
   delete_file: 'high',

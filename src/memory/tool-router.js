@@ -69,7 +69,7 @@ const STARTUP_SELF_CHECK_TOOLS = [
 const PERSON_CARD_TOOLS = ['person_card_mode']
 const FOCUS_BANNER_TOOLS = ['focus_banner']
 const ADMIN_TOOLS       = [
-  'install_tool', 'uninstall_tool', 'list_tools',
+  'manage_tool_factory', 'install_tool', 'uninstall_tool', 'list_tools',
   'set_security', 'connect_wechat',
   'set_location', 'set_agent_name', 'manage_app', 'manage_rule',
 ]
@@ -158,9 +158,11 @@ const FOCUS_BANNER_TRIGGERS = [
 
 const ADMIN_TRIGGERS = [
   '装一下', '安装', '装个', '卸载', '装好', '装上', '工具市场', '插件',
+  '自写工具', '自己写工具', '工具工厂', '工具审核', '生成工具', '注册工具',
   '安全', '沙箱', '权限', '微信', '绑定', '连接', '配对',
   '位置', '在哪', '改名字', '改名', '叫你', '叫我', '管理应用', 'app 列表',
-  'install tool', 'uninstall', 'plugin', 'security', 'sandbox', 'wechat',
+  'install tool', 'tool factory', 'generated tool', 'review tool', 'register tool',
+  'uninstall', 'plugin', 'security', 'sandbox', 'wechat',
   'connect ', 'location', 'rename', 'apps',
   '规则', '关键词规则', '上下文规则', '记忆注入',
   'rule', 'rules', 'context rule', 'keyword rule', 'memory injection',
