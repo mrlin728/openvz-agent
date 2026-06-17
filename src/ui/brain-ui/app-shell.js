@@ -262,6 +262,18 @@ const createSettingsModal = () => `
               <span class="settings-feedback" id="settings-temperature-feedback"></span>
             </div>
           </div>
+          <div class="settings-section">
+            <div class="settings-section-label">思考模式</div>
+            <p class="settings-hint">默认关闭：直接作答，响应更快、更省 token。开启后模型会先推理再回答，复杂任务更可靠（具体想多深由模型自己决定），但响应更慢。遇到难题想要更高质量时再开启。</p>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-thinking">启用思考模式</label>
+              <label class="settings-toggle">
+                <input type="checkbox" id="settings-thinking">
+                <span class="settings-toggle-track"></span>
+              </label>
+              <span class="settings-feedback" id="settings-thinking-feedback"></span>
+            </div>
+          </div>
         </div>
 
         <!-- ── 媒体能力 tab ── -->

@@ -12,7 +12,7 @@ import { getQuotaStatus } from './quota.js'
 import { isRunning, stopLoop, startLoop } from './control.js'
 import { buildHeartbeatSystemPromptPreview } from './system-prompt-preview.js'
 import { paths } from './paths.js'
-import { config, activate as activateLLM, prepareActivation as prepareLLMActivation, commitPreparedActivation, getActivationStatus, switchModel, saveLLMSettings, setTemperature, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS, getWebSearchConfig, setWebSearchConfig } from './config.js'
+import { config, activate as activateLLM, prepareActivation as prepareLLMActivation, commitPreparedActivation, getActivationStatus, switchModel, saveLLMSettings, setTemperature, setThinking, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS, getWebSearchConfig, setWebSearchConfig } from './config.js'
 import { streamTTS, TTS_PROVIDERS, TTS_VOICES, validateTTSConfig } from './voice/tts-providers.js'
 import { restartConnector } from './social/index.js'
 // manager.js (Whisper local server) removed
@@ -1043,6 +1043,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
           baseURL: status.baseURL,
           models: status.models,
           temperature: config.temperature,
+          thinking: config.thinking === true,
           apiKey: config.apiKey || '',
         },
         providers: getProviderSummaries(),
@@ -1080,6 +1081,22 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         try {
           const { temperature } = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
           const result = setTemperature(temperature)
+          jsonResponse(res, 200, { ok: true, ...result })
+        } catch (err) {
+          jsonResponse(res, 400, { ok: false, error: err.message })
+        }
+      })
+      return
+    }
+
+    // POST /settings/thinking — toggle the model's thinking (reasoning) mode
+    if (req.method === 'POST' && url.pathname === '/settings/thinking') {
+      const chunks = []
+      req.on('data', chunk => chunks.push(chunk))
+      req.on('end', () => {
+        try {
+          const { thinking } = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
+          const result = setThinking(thinking)
           jsonResponse(res, 200, { ok: true, ...result })
         } catch (err) {
           jsonResponse(res, 400, { ok: false, error: err.message })

@@ -632,6 +632,10 @@ export const config = {
   baseURL: null,
   needsActivation: true,
   temperature: 0.5,
+  // 思考模式开关：true=向 provider 传 thinking enabled（深度由模型自控），false=thinking disabled。
+  // 默认关闭——只有用户在设置里显式开启才思考。这是「用户显式选择」的开关，
+  // 不是 runtime 按难度替模型决定开关 reasoning（那条路 index.js 已注释外掉）。
+  thinking: false,
   security: {
     fileSandbox: true,
     execSandbox: true,
@@ -650,6 +654,10 @@ const parsedConfig = readParsedConfig()
 if (parsedConfig) {
   if (typeof parsedConfig.temperature === 'number' && parsedConfig.temperature >= 0 && parsedConfig.temperature <= 2) {
     config.temperature = parsedConfig.temperature
+  }
+  // 缺字段（旧版升级 / 未开启过）按默认 false 处理 —— 无需 schema 迁移。
+  if (typeof parsedConfig.thinking === 'boolean') {
+    config.thinking = parsedConfig.thinking
   }
   if (parsedConfig.security && typeof parsedConfig.security === 'object') {
     const s = parsedConfig.security
@@ -983,6 +991,13 @@ export function setTemperature(t) {
   config.temperature = v
   patchConfig({ temperature: v })
   return { temperature: v }
+}
+
+export function setThinking(enabled) {
+  const v = !!enabled
+  config.thinking = v
+  patchConfig({ thinking: v })
+  return { thinking: v }
 }
 
 export function getSecurity() {

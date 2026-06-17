@@ -2464,6 +2464,8 @@ function initTTSSettings() {
   const tempVal         = document.getElementById("settings-temperature-val");
   const saveTempBtn     = document.getElementById("settings-save-temperature");
   const tempFeedback    = document.getElementById("settings-temperature-feedback");
+  const thinkingToggle  = document.getElementById("settings-thinking");
+  const thinkingFeedback = document.getElementById("settings-thinking-feedback");
   const minimaxKeyInput = document.getElementById("settings-minimax-key");
   const saveMinimaxBtn  = document.getElementById("settings-save-minimax");
   const minimaxFeedback = document.getElementById("settings-minimax-feedback");
@@ -2615,6 +2617,7 @@ function initTTSSettings() {
         tempSlider.value = String(llm.temperature);
         if (tempVal) tempVal.textContent = llm.temperature.toFixed(2);
       }
+      if (thinkingToggle) thinkingToggle.checked = llm.thinking === true;
     } catch {}
   }
 
@@ -2834,6 +2837,30 @@ function initTTSSettings() {
         }
       } catch { showFeedback(tempFeedback, "请求失败", true); }
       finally { saveTempBtn.disabled = false; }
+    });
+  }
+
+  if (thinkingToggle) {
+    thinkingToggle.addEventListener("change", async () => {
+      const thinking = thinkingToggle.checked;
+      thinkingToggle.disabled = true;
+      try {
+        const res = await fetch(`${API}/settings/thinking`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ thinking }),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showFeedback(thinkingFeedback, data.thinking ? "已开启 — 下一轮生效" : "已关闭 — 下一轮生效");
+        } else {
+          thinkingToggle.checked = !thinking;
+          showFeedback(thinkingFeedback, data.error || "保存失败", true);
+        }
+      } catch {
+        thinkingToggle.checked = !thinking;
+        showFeedback(thinkingFeedback, "请求失败", true);
+      } finally { thinkingToggle.disabled = false; }
     });
   }
 

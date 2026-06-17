@@ -1343,10 +1343,9 @@ async function runTurn(input, label, msg = null) {
     if (voiceTurn && !silentSignal && !voiceTurnNeedsSendMessage(input)) {
       turnTools = turnTools.filter(t => t !== 'send_message')
     }
-    // thinking 始终开启：不再用"消息是否 trivial"的正则判定来关 reasoning。
-    // 浅层模式不该替模型决定"这题不用想"——复合意图下会把需要 reasoning 的部分误杀。
-    // 真正 trivial 的问题，模型开着 thinking 也会几乎瞬间收尾（深度由模型自控）；
-    // trivial 的延迟优化交给 prefix cache + focus 分类的 async 后台化，而非削能力。
+    // thinking 不用"消息是否 trivial"的正则判定来开关 reasoning：浅层模式不该替模型决定"这题用不用想"
+    // ——复合意图下会把需要 reasoning 的部分误判。是否思考由「用户在设置里的显式选择」(config.thinking) 决定，
+    // 默认关闭、用户主动开启才思考；这是用户的选择，不是 runtime 按难度替它判定。
     //
     // 流式回复：onStream 把 text/think 两种模式的 token 逐块吐出。curStreamMode 跟踪当前模式
     // 让 stream_chunk 也带上 mode（前端据此区分"思考流"与"正文流"）。sawTextStream 标记本轮
@@ -1360,7 +1359,7 @@ async function runTurn(input, label, msg = null) {
       messages: llmMessages,
       tools: turnTools,
       temperature: voiceTurn ? Math.min(config.temperature, 0.35) : config.temperature,
-      thinking: true,
+      thinking: config.thinking === true,
       signal: controller.signal,
       toolContext,
       mustReply: !!msg?.fromId && !silentSignal,
