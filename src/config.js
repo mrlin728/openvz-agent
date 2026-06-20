@@ -643,6 +643,10 @@ export const config = {
     blockedTools: [],
     updatedAt: null,
   },
+  network: {
+    allowLanAccess: false,
+    updatedAt: null,
+  },
 }
 
 // 迁移必须在下面读取/加载 config.json 之前跑完，确保后续逻辑看到的是已升级的结构。
@@ -666,6 +670,11 @@ if (parsedConfig) {
     if (typeof s.execSandbox === 'boolean') config.security.execSandbox = s.execSandbox
     if (Array.isArray(s.blockedTools)) config.security.blockedTools = s.blockedTools
     if (typeof s.updatedAt === 'string') config.security.updatedAt = s.updatedAt
+  }
+  if (parsedConfig.network && typeof parsedConfig.network === 'object') {
+    const n = parsedConfig.network
+    if (typeof n.allowLanAccess === 'boolean') config.network.allowLanAccess = n.allowLanAccess
+    if (typeof n.updatedAt === 'string') config.network.updatedAt = n.updatedAt
   }
 }
 
@@ -1023,6 +1032,27 @@ export function setSecurity(updates) {
   if (changed) config.security.updatedAt = nowTimestamp()
   patchConfig({ security: { ...config.security } })
   return getSecurity()
+}
+
+export function getNetworkConfig() {
+  return {
+    allowLanAccess: !!config.network.allowLanAccess,
+    updatedAt: config.network.updatedAt || null,
+  }
+}
+
+export function setNetworkConfig(updates) {
+  const before = getNetworkConfig()
+  if (typeof updates.allowLanAccess === 'boolean') {
+    config.network.allowLanAccess = updates.allowLanAccess
+  }
+  const changed = before.allowLanAccess !== config.network.allowLanAccess
+  if (changed) config.network.updatedAt = nowTimestamp()
+  patchConfig({ network: { ...config.network } })
+  return {
+    ...getNetworkConfig(),
+    restartRequired: changed,
+  }
 }
 
 export function getMinimaxKey() {

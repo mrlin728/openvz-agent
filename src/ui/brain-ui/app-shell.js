@@ -377,7 +377,7 @@ const createSettingsModal = () => `
         <!-- ── 语音 tab ── -->
         <div class="settings-tab" data-tab="voice">
           <div class="settings-section">
-            <div class="settings-section-label">云端模式配置</div>
+            <div class="settings-section-label">识别模式配置</div>
             <div class="settings-row">
               <label class="settings-label" for="voice-auto-key">粘贴 Key 自动识别厂商</label>
               <input class="settings-input" type="password" id="voice-auto-key" placeholder="阿里云 / 腾讯云 / 讯飞 / 火山豆包 ASR Key">
@@ -386,6 +386,7 @@ const createSettingsModal = () => `
             <div class="settings-row">
               <label class="settings-label" for="voice-provider-select">服务商</label>
               <select class="settings-select" id="voice-provider-select">
+                <option value="local">本机识别（macOS）</option>
                 <option value="aliyun">阿里云百炼（推荐）</option>
                 <option value="volcengine">火山引擎豆包 ASR</option>
                 <option value="tencent">腾讯云 ASR</option>
@@ -715,6 +716,17 @@ const createSettingsModal = () => `
             </div>
           </div>
           <div class="settings-section">
+            <div class="settings-section-label">局域网访问</div>
+            <p class="settings-hint">允许同一局域网内的设备访问本机白龙马 API，用于多台白龙马互相通信。开启或关闭后需要重启应用生效。</p>
+            <div class="settings-row">
+              <label class="settings-label" for="security-lan-access">允许局域网访问</label>
+              <label class="settings-toggle">
+                <input type="checkbox" id="security-lan-access">
+                <span class="settings-toggle-track"></span>
+              </label>
+            </div>
+          </div>
+          <div class="settings-section">
             <div class="settings-section-label">工具黑名单</div>
             <p class="settings-hint">勾选后该工具将被拒绝执行，对话中 Agent 调用时会收到"已被安全策略禁用"错误。</p>
             <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="exec_command"> exec_command &nbsp;<span style="color:var(--ink2);font-size:12px;">（执行 shell 命令）</span></label></div>
@@ -726,6 +738,7 @@ const createSettingsModal = () => `
           </div>
           <div class="settings-section settings-section-action">
             <button class="settings-save-btn" id="settings-save-security" type="button">保存</button>
+            <button class="settings-save-btn hidden" id="settings-restart-security" type="button" style="width:auto;padding:0 14px;">立即重启</button>
             <span class="settings-feedback" id="settings-security-feedback"></span>
           </div>
         </div>

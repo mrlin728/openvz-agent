@@ -27,6 +27,7 @@ function run(command, args) {
 }
 
 run('node', ['scripts/prebuild-clean.mjs']);
+run('node', ['scripts/build-macos-speech.mjs']);
 
 for (const arch of archs) {
   console.log(`[build:mac] rebuilding better-sqlite3 for ${arch}`);

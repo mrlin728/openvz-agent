@@ -1,7 +1,7 @@
 {
   "name": "bailongma",
   "productName": "Bailongma",
-  "version": "2.1.427",
+  "version": "2.1.428",
   "description": "A continuously running digital consciousness framework",
   "type": "module",
   "main": "electron/main.cjs",
@@ -14,12 +14,12 @@
     "start:backend": "node --env-file=.env src/index.js",
     "start:backend:lan": "powershell -ExecutionPolicy Bypass -File scripts/start-lan.ps1 backend",
     "dev": "node --env-file=.env --watch src/index.js",
-    "build": "node scripts/prebuild-clean.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js",
-    "build:win": "node scripts/prebuild-clean.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js --win",
+    "build": "node scripts/prebuild-clean.mjs && node scripts/build-macos-speech.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js",
+    "build:win": "node scripts/prebuild-clean.mjs && node scripts/build-macos-speech.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js --win",
     "build:mac": "node scripts/build-mac.mjs",
     "build:mac:x64": "node scripts/build-mac.mjs x64",
     "build:mac:arm64": "node scripts/build-mac.mjs arm64",
-    "publish": "node scripts/prebuild-clean.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js --publish always",
+    "publish": "node scripts/prebuild-clean.mjs && node scripts/build-macos-speech.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js --publish always",
     "postinstall": "node ./node_modules/electron-builder/cli.js install-app-deps",
     "test:rule-context": "electron ./src/test-rule-context.js",
     "test:complex-task": "electron ./src/test-complex-task.js",
@@ -61,6 +61,7 @@
     "asar": true,
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
+      "build/native-speech-recognizer",
       "src/voice/**"
     ],
     "files": [
@@ -78,8 +79,10 @@
       "focus-banner.html",
       "turn-trace.html",
       "build/icon.ico",
+      "build/icon.icns",
       "build/icon.png",
       "build/icon-mac-cartoon.png",
+      "build/native-speech-recognizer",
       "sandbox/**/*",
       "music/**/*",
       "package.json",
@@ -122,7 +125,7 @@
       "shortcutName": "Bailongma"
     },
     "mac": {
-      "icon": "build/icon.png",
+      "icon": "build/icon.icns",
       "target": [
         {
           "target": "dmg",
@@ -133,6 +136,10 @@
         }
       ],
       "category": "public.app-category.productivity",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Bailongma uses the microphone for voice input when you enable voice features.",
+        "NSSpeechRecognitionUsageDescription": "Bailongma may use speech recognition for voice input features."
+      },
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "publish": [

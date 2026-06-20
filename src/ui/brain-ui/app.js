@@ -2663,7 +2663,9 @@ function initTTSSettings() {
 
   const fileSandboxToggle = document.getElementById("security-file-sandbox");
   const execSandboxToggle = document.getElementById("security-exec-sandbox");
+  const lanAccessToggle   = document.getElementById("security-lan-access");
   const saveSecurityBtn   = document.getElementById("settings-save-security");
+  const restartSecurityBtn = document.getElementById("settings-restart-security");
   const securityFeedback  = document.getElementById("settings-security-feedback");
 
   async function loadWebSearchSettings() {
@@ -2741,9 +2743,11 @@ function initTTSSettings() {
 
   async function loadSecuritySettings() {
     try {
-      const { security } = await fetch(`${API}/settings/security`).then(r => r.json());
+      const { security, network } = await fetch(`${API}/settings/security`).then(r => r.json());
       if (fileSandboxToggle) fileSandboxToggle.checked = security.fileSandbox !== false;
       if (execSandboxToggle) execSandboxToggle.checked = security.execSandbox !== false;
+      if (lanAccessToggle) lanAccessToggle.checked = network?.allowLanAccess === true;
+      restartSecurityBtn?.classList.add("hidden");
       document.querySelectorAll(".security-blocked-tool").forEach(cb => {
         cb.checked = (security.blockedTools || []).includes(cb.value);
       });
@@ -2758,6 +2762,7 @@ function initTTSSettings() {
       const body = {
         fileSandbox: fileSandboxToggle ? fileSandboxToggle.checked : true,
         execSandbox: execSandboxToggle ? execSandboxToggle.checked : true,
+        allowLanAccess: lanAccessToggle ? lanAccessToggle.checked : false,
         blockedTools,
       };
       saveSecurityBtn.disabled = true;
@@ -2769,7 +2774,12 @@ function initTTSSettings() {
         });
         const data = await res.json();
         if (data.ok) {
-          showFeedback(securityFeedback, "已保存 — 立即生效");
+          if (data.network?.restartRequired) {
+            showFeedback(securityFeedback, "已保存 — 重启后生效");
+            restartSecurityBtn?.classList.remove("hidden");
+          } else {
+            showFeedback(securityFeedback, "已保存 — 立即生效");
+          }
         } else {
           showFeedback(securityFeedback, data.error || "保存失败", true);
         }
@@ -2777,6 +2787,19 @@ function initTTSSettings() {
         showFeedback(securityFeedback, "请求失败", true);
       } finally {
         saveSecurityBtn.disabled = false;
+      }
+    });
+  }
+
+  if (restartSecurityBtn) {
+    restartSecurityBtn.addEventListener("click", async () => {
+      restartSecurityBtn.disabled = true;
+      try {
+        await fetch(`${API}/admin/restart`, { method: "POST" });
+        showFeedback(securityFeedback, "正在重启…");
+      } catch {
+        showFeedback(securityFeedback, "重启请求失败，请手动重启应用", true);
+        restartSecurityBtn.disabled = false;
       }
     });
   }
@@ -2877,8 +2900,10 @@ function initTTSSettings() {
       volcengine: "voice-cred-volcengine",
       tencent: "voice-cred-tencent",
       xunfei: "voice-cred-xunfei",
+      local: null,
     };
     for (const [key, id] of Object.entries(panels)) {
+      if (!id) continue;
       const el = document.getElementById(id);
       if (el) el.style.display = key === provider ? "" : "none";
     }

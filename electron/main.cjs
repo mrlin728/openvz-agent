@@ -1,5 +1,10 @@
+const PLATFORM = process.platform
+const IS_WIN = PLATFORM === 'win32'
+const IS_MAC = PLATFORM === 'darwin'
+const IS_LINUX = PLATFORM === 'linux'
+
 // Windows: 把控制台代码页切到 UTF-8，避免中文 stdout 显示为乱码
-if (process.platform === 'win32') {
+if (IS_WIN) {
   try {
     require('child_process').execSync('chcp 65001', { stdio: 'ignore', windowsHide: true })
   } catch (_) {}
@@ -20,6 +25,13 @@ const USER_DIR = app.getPath('userData')
 const CODE_ROOT = app.getAppPath()
 const RESOURCE_ROOT = CODE_ROOT
 const BACKEND_ENTRY = path.join(CODE_ROOT, 'src', 'index.js')
+
+function getAppIconPath({ trayIcon = false } = {}) {
+  if (IS_WIN) return path.join(RESOURCE_ROOT, 'build', 'icon.ico')
+  if (IS_MAC) return path.join(RESOURCE_ROOT, 'build', 'icon.png')
+  if (IS_LINUX) return path.join(RESOURCE_ROOT, 'build', 'icon.png')
+  return path.join(RESOURCE_ROOT, 'build', trayIcon ? 'icon.png' : 'icon.png')
+}
 
 // 持久化日志：把 console.* 镜像到 USER_DIR/logs/bailongma.log，
 // 安装版没有 stdout 的情况下，卡死/崩溃后还能 tail 这个文件复盘。
@@ -88,7 +100,7 @@ console.log(`[main] Bailongma ${app.getVersion()} starting, logs → ${LOG_FILE}
 // 该键在 GPU 进程创建 D3D 设备时读取——这里在启动最早期同步写入，
 // 但首次变更仍可能晚于 GPU 进程拉起，此时要到下次启动才真正切换适配器。
 function applyGpuPreference() {
-  if (process.platform !== 'win32') return
+  if (!IS_WIN) return
   let pref = 'system'
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(USER_DIR, 'config.json'), 'utf-8'))
@@ -128,7 +140,7 @@ global.bailongmaAppControl = {
   },
 }
 
-if (process.platform === 'win32') {
+if (IS_WIN) {
   app.setAppUserModelId(WINDOWS_APP_USER_MODEL_ID)
 }
 
@@ -210,7 +222,7 @@ async function createWindow() {
     minHeight: 600,
     backgroundColor: '#0b0b0e',
     title: 'Bailongma',
-    icon: path.join(RESOURCE_ROOT, 'build', 'icon.png'),
+    icon: getAppIconPath(),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -260,9 +272,9 @@ async function createWindow() {
   })
 
   await mainWindow.loadURL(`http://127.0.0.1:${backendPort}/`)
-  // 关闭主窗口时最小化到托盘，不退出
+  // Windows/Linux 关闭主窗口时最小化到托盘；macOS 允许销毁窗口，Dock/托盘可重建。
   mainWindow.on('close', (e) => {
-    if (!app.isQuiting) {
+    if (!app.isQuiting && !IS_MAC) {
       e.preventDefault()
       mainWindow.hide()
     }
@@ -273,21 +285,25 @@ async function createWindow() {
   })
 }
 
+async function showMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    await createWindow()
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  if (!mainWindow.isVisible()) mainWindow.show()
+  mainWindow.focus()
+}
+
 function setupTray() {
-  const iconName = process.platform === 'darwin' ? 'icon.png' : 'icon.ico'
-  const iconPath = path.join(RESOURCE_ROOT, 'build', iconName)
-  tray = new Tray(nativeImage.createFromPath(iconPath))
+  const trayImage = nativeImage.createFromPath(getAppIconPath({ trayIcon: true }))
+  if (IS_MAC) trayImage.setTemplateImage(true)
+  tray = new Tray(trayImage)
   tray.setToolTip('Bailongma')
 
   const contextMenu = Menu.buildFromTemplate([
     {
       label: '显示主界面',
-      click: () => {
-        if (mainWindow) {
-          mainWindow.show()
-          mainWindow.focus()
-        }
-      },
+      click: () => { showMainWindow().catch(() => {}) },
     },
     { type: 'separator' },
     {
@@ -300,12 +316,8 @@ function setupTray() {
   ])
 
   tray.setContextMenu(contextMenu)
-  tray.on('double-click', () => {
-    if (mainWindow) {
-      mainWindow.show()
-      mainWindow.focus()
-    }
-  })
+  tray.on('double-click', () => { showMainWindow().catch(() => {}) })
+  if (IS_MAC) tray.on('click', () => { showMainWindow().catch(() => {}) })
 }
 
 function createFocusBannerWindow({ task = '', current_step = '', tasks = [] } = {}) {
@@ -497,15 +509,20 @@ ipcMain.handle('updater:quit-and-install', () => {
 })
 
 app.on('second-instance', () => {
-  if (!mainWindow) return
-  if (mainWindow.isMinimized()) mainWindow.restore()
-  if (!mainWindow.isVisible()) mainWindow.show()
-  mainWindow.focus()
+  showMainWindow().catch(() => {})
+})
+
+app.on('activate', () => {
+  if (IS_MAC) showMainWindow().catch(() => {})
 })
 
 app.on('window-all-closed', () => {
   // 主窗口关闭后保持后台运行（Focus Banner 等桌面功能继续工作）
   // 只有托盘菜单「退出」才真正退出
+})
+
+app.on('before-quit', () => {
+  app.isQuiting = true
 })
 
 app.whenReady().then(async () => {

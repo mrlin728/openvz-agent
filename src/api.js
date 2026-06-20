@@ -12,7 +12,7 @@ import { getQuotaStatus } from './quota.js'
 import { isRunning, stopLoop, startLoop } from './control.js'
 import { buildHeartbeatSystemPromptPreview } from './system-prompt-preview.js'
 import { paths } from './paths.js'
-import { config, activate as activateLLM, prepareActivation as prepareLLMActivation, commitPreparedActivation, getActivationStatus, switchModel, saveLLMSettings, setTemperature, setThinking, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS, getWebSearchConfig, setWebSearchConfig } from './config.js'
+import { config, activate as activateLLM, prepareActivation as prepareLLMActivation, commitPreparedActivation, getActivationStatus, switchModel, saveLLMSettings, setTemperature, setThinking, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getNetworkConfig, setNetworkConfig, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS, getWebSearchConfig, setWebSearchConfig } from './config.js'
 import { streamTTS, TTS_PROVIDERS, TTS_VOICES, validateTTSConfig } from './voice/tts-providers.js'
 import { restartConnector } from './social/index.js'
 // manager.js (Whisper local server) removed
@@ -55,11 +55,14 @@ const SILENT_CARD_ACTIONS = new Set([
 ])
 
 function getApiHost() {
-  return String(globalThis.process?.env?.BAILONGMA_HOST || DEFAULT_API_HOST).trim() || DEFAULT_API_HOST
+  const envHost = String(globalThis.process?.env?.BAILONGMA_HOST || '').trim()
+  if (envHost) return envHost
+  return getNetworkConfig().allowLanAccess ? '0.0.0.0' : DEFAULT_API_HOST
 }
 
 function isLanAccessEnabled() {
-  return /^(1|true|yes|on)$/i.test(String(globalThis.process?.env?.BAILONGMA_ALLOW_LAN || '').trim())
+  return getNetworkConfig().allowLanAccess
+    || /^(1|true|yes|on)$/i.test(String(globalThis.process?.env?.BAILONGMA_ALLOW_LAN || '').trim())
 }
 
 function normalizeRemoteAddress(address = '') {
@@ -137,7 +140,7 @@ function hasValidAuthToken(req, url) {
 }
 
 function requireLocalOrToken(req, res, url) {
-  if (hasAllowedAccess(req, url)) return true
+  if (isLoopbackRequest(req) || hasValidAuthToken(req, url)) return true
   jsonResponse(res, 403, { ok: false, error: 'forbidden' })
   return false
 }
@@ -1050,6 +1053,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         minimax: {
           configured: !!(globalThis.process?.env?.MINIMAX_API_KEY || minimaxKey),
         },
+        network: getNetworkConfig(),
       })
       return
     }
@@ -1108,7 +1112,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
     // GET /settings/security — read security sandbox configuration
     if (req.method === 'GET' && url.pathname === '/settings/security') {
       if (!hasAllowedAccess(req, url)) return jsonResponse(res, 403, { ok: false, error: 'forbidden' })
-      jsonResponse(res, 200, { ok: true, security: getSecurity() })
+      jsonResponse(res, 200, { ok: true, security: getSecurity(), network: getNetworkConfig() })
       return
     }
 
@@ -1121,7 +1125,10 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         try {
           const updates = JSON.parse(Buffer.concat(chunks).toString('utf-8') || '{}')
           const result = setSecurity(updates)
-          jsonResponse(res, 200, { ok: true, security: result })
+          const network = Object.prototype.hasOwnProperty.call(updates, 'allowLanAccess')
+            ? setNetworkConfig({ allowLanAccess: !!updates.allowLanAccess })
+            : getNetworkConfig()
+          jsonResponse(res, 200, { ok: true, security: result, network })
         } catch (err) {
           jsonResponse(res, 400, { ok: false, error: err.message })
         }

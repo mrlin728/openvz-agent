@@ -1,7 +1,8 @@
 // 云端 ASR WebSocket 代理
 // 前端 → ws://127.0.0.1:3721/voice/cloud → 后端签名/鉴权 → 云端 ASR
 //
-// 支持云端服务商：
+// 支持语音识别服务商：
+//   local   — 平台本地识别；当前 macOS 使用 Speech.framework
 //   aliyun  — 阿里云百炼 Paraformer（首选）
 //   tencent — 腾讯云 ASR
 //   xunfei  — 科大讯飞 RTASR
@@ -10,6 +11,7 @@
 import crypto from 'crypto'
 import zlib from 'zlib'
 import { WebSocket } from 'ws'
+import { createMacSpeechSession } from './macos-speech.js'
 
 // ─── 阿里云 Paraformer ───
 // 协议：run-task → PCM binary chunks → finish-task
@@ -439,6 +441,14 @@ function createVolcengineSession(config, lang, onTranscript, onError, onClose) {
 //           volcAsrApiKey?, volcAsrAppKey?, volcAsrAccessKey?, volcAsrResourceId? }
 export function createCloudASRSession(config, onTranscript, onError, onClose, onEvent) {
   const { provider = 'aliyun', lang = 'zh' } = config
+
+  if (provider === 'local') {
+    if (process.platform === 'darwin') {
+      return createMacSpeechSession({ ...config, lang }, onTranscript, onError, onClose)
+    }
+    onError(`本地语音识别暂不支持当前平台: ${process.platform}`)
+    return null
+  }
 
   if (provider === 'aliyun') {
     if (!config.aliyunApiKey) { onError('未配置阿里云 API Key'); return null }
