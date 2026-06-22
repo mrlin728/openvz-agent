@@ -37,6 +37,12 @@ export function initChat({
 
   const PUSH_TO_TALK_PLACEHOLDER = "按住空格键开始说话";
 
+  // 多行输入：每次内容变化时把高度重置为内容实际高度（上限由 CSS max-height 接管、超出后内部滚动）。
+  function autoGrowInput() {
+    msgInput.style.height = "auto";
+    msgInput.style.height = msgInput.scrollHeight + "px";
+  }
+
   // 聚焦输入框时提示发消息，未聚焦时提示语音输入
   function idlePlaceholder() {
     return document.activeElement === msgInput ? defaultInputPlaceholder() : PUSH_TO_TALK_PLACEHOLDER;
@@ -236,7 +242,7 @@ export function initChat({
     const fromInput = (text == null);
     const content = (fromInput ? msgInput.value : text).trim();
     if (!content) return;
-    if (fromInput) msgInput.value = "";
+    if (fromInput) { msgInput.value = ""; autoGrowInput(); }
     // If onUserMessage returns a string, use it as the backend payload; if it returns false, skip the backend call
     const override = onUserMessage?.(content);
     addMsg("user", content, { label: label || undefined });
@@ -284,6 +290,7 @@ export function initChat({
     setTimeout(hideSlashMenu, 120);
   });
   msgInput.addEventListener("input", () => {
+    autoGrowInput();
     updateSlashMenu();
     if (isTyping()) openChat();
     else if (!hasPendingJarvisMessage || pendingMessageDismissed) scheduleClose();
@@ -427,6 +434,7 @@ export function initChat({
   function runSlash(c) {
     hideSlashMenu();
     msgInput.value = "";   // 清掉已输入的 "/xxx"
+    autoGrowInput();
     try { c.run(); } catch (e) { console.warn("[slash]", c.cmd, e); }
   }
 
@@ -442,6 +450,7 @@ export function initChat({
     // 视频生成（火山方舟 Seedance）没有独立设置面板，靠对话引导配置
     msgInput.value = "我想配置视频生成（火山方舟 Seedance），请告诉我怎么申请 API Key 以及如何填入";
     openChat();
+    autoGrowInput();
     try { msgInput.focus(); } catch {}
   }
 

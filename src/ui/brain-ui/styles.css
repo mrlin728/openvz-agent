@@ -1002,7 +1002,7 @@ body {
   position: relative;
   flex: 0 0 auto;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 12px;
   padding: 12px 14px;
   border-top: 1px solid var(--line);
@@ -1086,7 +1086,12 @@ body {
   color: var(--ink);
   font-size: 14px;
   font-family: inherit;
+  line-height: 1.5;
   padding: 6px 0;
+  /* 多行输入：随内容自动增高（高度由 JS 设置），到上限后内部滚动 */
+  resize: none;
+  max-height: 160px;
+  overflow-y: auto;
 }
 
 #msg-input::placeholder { color: var(--dim); }
