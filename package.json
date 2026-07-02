@@ -1,7 +1,7 @@
 {
   "name": "openvz-agent",
   "productName": "OpenVZ Agent",
-  "version": "2.1.435",
+  "version": "2.1.436",
   "description": "OpenVZ Agent — Your Personal AI Agent OS. A continuously running personal AI agent workspace that remembers you, plans tasks, executes workflows, manages tools, and shows its execution trace.",
   "type": "module",
   "main": "electron/main.cjs",
@@ -57,7 +57,7 @@
   "build": {
     "appId": "com.openvz.agent",
     "productName": "OpenVZ Agent",
-    "artifactName": "OpenVZ-Agent-Setup-${version}.${ext}",
+    "artifactName": "OpenVZ-Agent-Setup.${ext}",
     "afterPack": "scripts/adhoc-sign.cjs",
     "npmRebuild": false,
     "asar": true,
@@ -72,8 +72,6 @@
       "skills/**/*",
       "scripts/seed-memories.js",
       "index.html",
-      "dashboard.html",
-      "brain.html",
       "brain-ui.html",
       "website.html",
       "systemPrompt.html",
@@ -142,7 +140,7 @@
         "NSMicrophoneUsageDescription": "OpenVZ Agent uses the microphone for voice input when you enable voice features.",
         "NSSpeechRecognitionUsageDescription": "OpenVZ Agent may use speech recognition for voice input features."
       },
-      "artifactName": "OpenVZ-Agent-${version}-mac-${arch}.${ext}"
+      "artifactName": "OpenVZ-Agent-mac-${arch}.${ext}"
     },
     "publish": [
       {

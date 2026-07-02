@@ -2,7 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { paths } from './paths.js'
 import { nowTimestamp } from './time.js'
-import { encryptSecret, decryptSecret } from './secure-store.js'
+import { encryptSecret, decryptSecret, encryptSecretsDeep, decryptSecretsDeep } from './secure-store.js'
 
 export const DEEPSEEK_PROVIDER = 'deepseek'
 export const MINIMAX_PROVIDER = 'minimax'
@@ -440,7 +440,10 @@ function readParsedConfig() {
   try {
     if (!fs.existsSync(paths.configFile)) return null
     const parsed = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))
-    return (parsed && typeof parsed === 'object') ? parsed : null
+    if (!parsed || typeof parsed !== 'object') return null
+    // 解密静态密钥（voice/tts/search/social 等敏感字段）；旧的明文值原样透传，向后兼容。
+    decryptSecretsDeep(parsed)
+    return parsed
   } catch {
     return null
   }
@@ -465,8 +468,10 @@ function resolveStoredLlm(parsed) {
 }
 
 function writeStoredConfig(obj) {
+  // 落盘前加密敏感字段。加密副本，不改调用方内存里的明文对象（safeStorage 不可用时回退明文）。
+  const toWrite = encryptSecretsDeep(JSON.parse(JSON.stringify(obj ?? {})))
   const tmp = paths.configFile + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf-8')
+  fs.writeFileSync(tmp, JSON.stringify(toWrite, null, 2), 'utf-8')
   fs.renameSync(tmp, paths.configFile)
 }
 

@@ -54,3 +54,41 @@ export function decryptSecret(enc) {
 export function isEncrypted(value) {
   return typeof value === 'string' && value.startsWith(PREFIX)
 }
+
+// 字段名以 key / secret / token / password 结尾（大小写不敏感）视为敏感字段。
+// 这样能覆盖 volcAsrApiKey / doubaoKey / botToken / appSecret / xunfeiApiSecret /
+// serper_api_key / jina_api_key / verificationToken 等驼峰与下划线两种命名，
+// 又不会误伤 resourceId / voiceId / appId / url 之类非密字段。
+const SECRET_NAME_RE = /(?:key|secret|token|password)$/i
+
+export function isSecretFieldName(name) {
+  return typeof name === 'string' && SECRET_NAME_RE.test(name)
+}
+
+// 递归就地加密：对敏感字段名、且值为非空明文字符串的项加密。已加密（v1:）跳过，幂等。
+export function encryptSecretsDeep(obj) {
+  if (!obj || typeof obj !== 'object') return obj
+  for (const [k, v] of Object.entries(obj)) {
+    if (v && typeof v === 'object') {
+      encryptSecretsDeep(v)
+    } else if (typeof v === 'string' && v && isSecretFieldName(k) && !isEncrypted(v)) {
+      const enc = encryptSecret(v)
+      if (enc) obj[k] = enc // safeStorage 不可用时保持明文，不破坏保存
+    }
+  }
+  return obj
+}
+
+// 递归就地解密：把任何 v1: 前缀的字符串还原成明文（不按字段名筛，安全）。
+export function decryptSecretsDeep(obj) {
+  if (!obj || typeof obj !== 'object') return obj
+  for (const [k, v] of Object.entries(obj)) {
+    if (v && typeof v === 'object') {
+      decryptSecretsDeep(v)
+    } else if (isEncrypted(v)) {
+      const dec = decryptSecret(v)
+      if (dec != null) obj[k] = dec
+    }
+  }
+  return obj
+}
