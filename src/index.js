@@ -84,11 +84,22 @@ collectInstalledSoftware()
 // the user has before being asked "上服务器看看".
 collectLocalResources()
 
+// 启动健壮性：网络采集不能阻塞启动。给依赖网络的采集加超时兜底——
+// 断网 / 慢网 / 目标不可达时最多等 8s 就继续启动（数据会由后续刷新循环补齐），
+// 否则 await 会把整个主循环卡死在启动阶段（无网环境下应用起不来）。
+const withStartupTimeout = (p, ms, label) => Promise.race([
+  Promise.resolve(p).catch((e) => { console.warn(`[startup] ${label} failed:`, e?.message || e); return null }),
+  new Promise((resolve) => setTimeout(() => {
+    console.warn(`[startup] ${label} timed out after ${ms}ms; continuing without it`)
+    resolve(null)
+  }, ms)),
+])
+
 // Collect geo-location + live weather (refresh on IP change or after 7 days; weather refreshed every time)
-const geoResult = await collectGeoWeather()
+const geoResult = await withStartupTimeout(collectGeoWeather(), 8000, 'geo-weather')
 
 // Collect trending topics (CN → Weibo+Zhihu, others → HN+Reddit; 1h cache)
-await collectTrending(geoResult?.location?.country_code)
+await withStartupTimeout(collectTrending(geoResult?.location?.country_code), 8000, 'trending')
 
 // Scan locally installed AI agents (Claude Code, Codex, Hermes, OpenClaw, etc.) and persist to known_agents table
 await collectAgents()
