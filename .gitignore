@@ -149,3 +149,7 @@ dist
 build/icon-1024.png
 build/native-speech-recognizer
 build/*.iconset/
+
+# Runtime config may hold API keys — never commit
+config.json
+seedance.json
