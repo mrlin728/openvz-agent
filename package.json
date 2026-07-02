@@ -57,7 +57,7 @@
   "build": {
     "appId": "com.openvz.agent",
     "productName": "OpenVZ Agent",
-    "artifactName": "${productName}-Setup-${version}.${ext}",
+    "artifactName": "OpenVZ-Agent-Setup-${version}.${ext}",
     "npmRebuild": false,
     "asar": true,
     "asarUnpack": [
@@ -140,7 +140,7 @@
         "NSMicrophoneUsageDescription": "OpenVZ Agent uses the microphone for voice input when you enable voice features.",
         "NSSpeechRecognitionUsageDescription": "OpenVZ Agent may use speech recognition for voice input features."
       },
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
+      "artifactName": "OpenVZ-Agent-${version}-mac-${arch}.${ext}"
     },
     "publish": [
       {
