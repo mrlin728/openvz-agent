@@ -1,0 +1,49 @@
+name: Release
+
+# 打 tag（v*）时自动构建 macOS(arm64) + Windows(x64) 安装包并发布到 GitHub Release。
+# 也可在 Actions 页面手动触发（workflow_dispatch）先跑一遍构建。
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-mac:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'   # electron-builder 的 DMG 步骤需要 python
+      - run: npm ci
+      - run: node scripts/build-macos-speech.mjs
+      - run: node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 -a arm64
+      - name: Build & publish macOS arm64 DMG
+        run: node ./node_modules/electron-builder/cli.js --mac --arm64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # 无 Apple 证书 → 走 ad-hoc 签名
+
+  build-win:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 -a x64
+      - name: Build & publish Windows x64 installer
+        run: node ./node_modules/electron-builder/cli.js --win nsis --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
