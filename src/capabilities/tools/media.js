@@ -638,7 +638,7 @@ export function resumePendingVideoJobs() {
 const MUSIC_AUDIO_EXTS = new Set(['.mp3', '.flac', '.wav', '.aac', '.ogg', '.m4a', '.opus'])
 
 async function fetchLrcFromNet(title, artist) {
-  const headers = { 'User-Agent': 'BaiLongma/1.0' }
+  const headers = { 'User-Agent': 'OpenVZ Agent/1.0' }
   // 策略1：精确匹配（title + artist）
   try {
     const params = new URLSearchParams({ track_name: title })

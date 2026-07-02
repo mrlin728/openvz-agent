@@ -217,7 +217,7 @@ function baseCardFromName(name = '') {
     name: normalizedName,
     aliases: [],
     title: '人物卡片',
-    summary: '暂时没有内置资料。可以让 Longma 补充身份、代表作品和为什么被提到。',
+    summary: '暂时没有内置资料。可以让 OpenVZ 补充身份、代表作品和为什么被提到。',
     knownFor: [],
     tags: ['待补充'],
     source: 'fallback',

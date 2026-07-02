@@ -20,7 +20,7 @@ const { pathToFileURL } = require('url')
 const { autoUpdater } = require('electron-updater')
 
 const IS_DEV = !app.isPackaged
-const WINDOWS_APP_USER_MODEL_ID = 'com.xiaoyuanda.bailongma'
+const WINDOWS_APP_USER_MODEL_ID = 'com.openvz.agent'
 const USER_DIR = app.getPath('userData')
 const CODE_ROOT = app.getAppPath()
 const RESOURCE_ROOT = CODE_ROOT
@@ -84,7 +84,7 @@ process.on('unhandledRejection', (reason) => {
 process.on('uncaughtException', (err) => {
   console.error('[uncaughtException]', err?.stack || err?.message || String(err))
 })
-console.log(`[main] Bailongma ${app.getVersion()} starting, logs → ${LOG_FILE}`)
+console.log(`[main] OpenVZ Agent ${app.getVersion()} starting, logs → ${LOG_FILE}`)
 
 // ── GPU 适配器偏好（Windows 多显卡：核显 + 独显笔记本） ──
 // Windows 的逐应用显卡偏好存在 HKCU\...\DirectX\UserGpuPreferences
@@ -221,7 +221,7 @@ async function createWindow() {
     minWidth: 900,
     minHeight: 600,
     backgroundColor: '#0b0b0e',
-    title: 'Bailongma',
+    title: 'OpenVZ Agent',
     icon: getAppIconPath(),
     webPreferences: {
       contextIsolation: true,
@@ -298,7 +298,7 @@ function setupTray() {
   const trayImage = nativeImage.createFromPath(getAppIconPath({ trayIcon: true }))
   if (IS_MAC) trayImage.setTemplateImage(true)
   tray = new Tray(trayImage)
-  tray.setToolTip('Bailongma')
+  tray.setToolTip('OpenVZ Agent')
 
   const contextMenu = Menu.buildFromTemplate([
     {
@@ -534,7 +534,7 @@ app.whenReady().then(async () => {
     await waitForBackend(backendPort)
   } catch (err) {
     console.error(`[main] Backend startup failed on port ${backendPort || 'unknown'}`, err?.stack || err?.message || err)
-    dialog.showErrorBox('Startup failed', `Unable to start the Bailongma backend:\n${err.message}`)
+    dialog.showErrorBox('Startup failed', `Unable to start the OpenVZ Agent backend:\n${err.message}`)
     app.quit()
     return
   }

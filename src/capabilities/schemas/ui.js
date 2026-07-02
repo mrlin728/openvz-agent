@@ -50,7 +50,7 @@ export const uiSchemas = {
           topic: {
             type: 'string',
             enum: ['voice_asr', 'voice_tts', 'voice_config', 'model_config', 'wechat_config', 'self_architecture', 'ui_design'],
-            description: 'Required when action=open. Choose one topic: voice_asr, voice_tts, voice_config, model_config, wechat_config, self_architecture (how BaiLongma works internally), or ui_design (BaiLongma\'s interface/ACUI design). Do not invent other values. Optional when action=close.'
+            description: 'Required when action=open. Choose one topic: voice_asr, voice_tts, voice_config, model_config, wechat_config, self_architecture (how OpenVZ Agent works internally), or ui_design (OpenVZ Agent\'s interface/ACUI design). Do not invent other values. Optional when action=close.'
           },
           reason: { type: 'string', description: 'Optional short reason.' },
         },

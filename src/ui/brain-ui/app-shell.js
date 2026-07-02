@@ -5,16 +5,22 @@ import { createDocPanel } from './doc-panel.js';
 
 const createGraphStage = () => `
 <div class="grid-overlay"></div>
-<svg id="graph" aria-label="Longma 记忆节点图"></svg>
+<svg id="graph" aria-label="OpenVZ Agent 记忆节点图"></svg>
 `;
 
 const createPrimaryPanel = () => `
 <aside id="panel-l1" class="panel">
   <header class="panel-identity">
-    <div class="brand-mark"></div>
+    <div class="brand-mark" aria-hidden="true">
+      <svg viewBox="0 0 32 32" width="24" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path class="brand-glyph" d="M16 2 3 9v14l13 7 13-7V9L16 2Z" />
+        <path class="brand-glyph-inner" d="M16 9.5 22 13v6l-6 3.5L10 19v-6l6-3.5Z" />
+        <circle class="brand-glyph-core" cx="16" cy="16" r="2.4" />
+      </svg>
+    </div>
     <div class="brand-copy">
-      <div class="eyebrow">认知界面</div>
-      <div class="brand-title" id="agent-brand-name">Longma AI Agent</div>
+      <div class="eyebrow">Your Personal AI Agent OS</div>
+      <div class="brand-title" id="agent-brand-name">OpenVZ&nbsp;Agent</div>
     </div>
     <button class="voice-btn" id="voice-btn" title="麦克风 开/关" type="button">🎤</button>
     <button class="video-btn" id="video-btn" title="视频模式 (V)" type="button" hidden>⊞</button>
@@ -138,7 +144,7 @@ const createConsole = () => `
   <div id="input-row">
     <div id="slash-menu" class="slash-menu" role="listbox" aria-label="命令" hidden></div>
     <span class="prompt-mark">▸</span>
-    <textarea id="msg-input" rows="1" placeholder="向 Longma 发送消息…（输入 / 调出命令，Shift+Enter 换行）" autocomplete="off"></textarea>
+    <textarea id="msg-input" rows="1" placeholder="向 OpenVZ 发送消息…（输入 / 调出命令，Shift+Enter 换行）" autocomplete="off"></textarea>
     <button id="send-btn" type="button">发送</button>
   </div>
 </section>
@@ -146,7 +152,8 @@ const createConsole = () => `
 
 const createThemeSwitcher = () => `
 <div class="theme-switcher" id="theme-switcher">
-  <div class="theme-dot active" data-t="midnight" title="Midnight Steel"></div>
+  <div class="theme-dot active" data-t="openvz" title="OpenVZ Aurora"></div>
+  <div class="theme-dot" data-t="midnight" title="Midnight Steel"></div>
   <div class="theme-dot" data-t="phosphor" title="Phosphor CRT"></div>
   <div class="theme-dot" data-t="violet" title="Violet Lab"></div>
   <div class="theme-dot" data-t="rose" title="Rose Dusk"></div>
@@ -193,7 +200,7 @@ const createSettingsModal = () => `
             <div class="settings-section-label">AI 名字</div>
             <div class="settings-row">
               <label class="settings-label" for="settings-agent-name">显示名</label>
-              <input class="settings-input" id="settings-agent-name" type="text" maxlength="32" autocomplete="off" spellcheck="false" placeholder="小白龙">
+              <input class="settings-input" id="settings-agent-name" type="text" maxlength="32" autocomplete="off" spellcheck="false" placeholder="OpenVZ">
             </div>
             <div class="settings-row-action">
               <button class="settings-save-btn" id="settings-save-agent-name" type="button">保存</button>
@@ -728,7 +735,7 @@ const createSettingsModal = () => `
           </div>
           <div class="settings-section">
             <div class="settings-section-label">局域网访问</div>
-            <p class="settings-hint">允许同一局域网内的设备访问本机白龙马 API，用于多台白龙马互相通信。开启或关闭后需要重启应用生效。</p>
+            <p class="settings-hint">允许同一局域网内的设备访问本机 OpenVZ Agent API，用于多台 OpenVZ Agent 互相通信。开启或关闭后需要重启应用生效。</p>
             <div class="settings-row">
               <label class="settings-label" for="security-lan-access">允许局域网访问</label>
               <label class="settings-toggle">

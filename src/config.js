@@ -2,6 +2,7 @@ import fs from 'fs'
 import path from 'path'
 import { paths } from './paths.js'
 import { nowTimestamp } from './time.js'
+import { encryptSecret, decryptSecret } from './secure-store.js'
 
 export const DEEPSEEK_PROVIDER = 'deepseek'
 export const MINIMAX_PROVIDER = 'minimax'
@@ -382,7 +383,14 @@ function readLlmProviderConfig(provider) {
   if (!file) return null
   try {
     const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'))
-    return (parsed && typeof parsed === 'object') ? parsed : null
+    if (!parsed || typeof parsed !== 'object') return null
+    // 静态密钥解密：新格式把 apiKey 加密后存在 apiKeyEnc；解出来还原成 apiKey，
+    // 下游 resolveLlmRecord 等逻辑照旧读 .apiKey，无需改动。旧的明文 apiKey 直接透传兼容。
+    if (parsed.apiKeyEnc && !parsed.apiKey) {
+      const dec = decryptSecret(parsed.apiKeyEnc)
+      if (dec) parsed.apiKey = dec
+    }
+    return parsed
   } catch {
     return null
   }
@@ -391,9 +399,19 @@ function readLlmProviderConfig(provider) {
 function writeLlmProviderConfig(provider, record) {
   const file = getLlmConfigFile(provider)
   if (!file) throw new Error(`Unsupported provider: "${provider}"`)
+  // 写盘前加密 apiKey：safeStorage 可用时存 apiKeyEnc 并抹掉明文；
+  // 不可用（纯 Node 独立后端）时回退明文，保证仍能保存、不破坏激活。
+  const toWrite = { ...record }
+  if (typeof toWrite.apiKey === 'string' && toWrite.apiKey && toWrite.apiKey !== 'none') {
+    const enc = encryptSecret(toWrite.apiKey)
+    if (enc) {
+      toWrite.apiKeyEnc = enc
+      delete toWrite.apiKey
+    }
+  }
   const tmp = `${file}.tmp`
   fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(tmp, JSON.stringify(record, null, 2), 'utf-8')
+  fs.writeFileSync(tmp, JSON.stringify(toWrite, null, 2), 'utf-8')
   fs.renameSync(tmp, file)
 }
 

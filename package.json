@@ -1,12 +1,12 @@
 {
-  "name": "bailongma",
-  "productName": "Bailongma",
+  "name": "openvz-agent",
+  "productName": "OpenVZ Agent",
   "version": "2.1.435",
-  "description": "A continuously running digital consciousness framework",
+  "description": "OpenVZ Agent — Your Personal AI Agent OS. A continuously running personal AI agent workspace that remembers you, plans tasks, executes workflows, manages tools, and shows its execution trace.",
   "type": "module",
   "main": "electron/main.cjs",
   "author": {
-    "name": "xiaoyuanda666-ship-it"
+    "name": "OpenVZ"
   },
   "scripts": {
     "start": "electron .",
@@ -55,8 +55,8 @@
     "playwright": "^1.59.1"
   },
   "build": {
-    "appId": "com.xiaoyuanda.bailongma",
-    "productName": "Bailongma",
+    "appId": "com.openvz.agent",
+    "productName": "OpenVZ Agent",
     "artifactName": "${productName}-Setup-${version}.${ext}",
     "npmRebuild": false,
     "asar": true,
@@ -123,7 +123,7 @@
       "uninstallerSidebar": "build/uninstallerSidebar.bmp",
       "createDesktopShortcut": false,
       "createStartMenuShortcut": false,
-      "shortcutName": "Bailongma"
+      "shortcutName": "OpenVZ Agent"
     },
     "mac": {
       "icon": "build/icon.icns",
@@ -131,23 +131,22 @@
         {
           "target": "dmg",
           "arch": [
-            "x64",
             "arm64"
           ]
         }
       ],
       "category": "public.app-category.productivity",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Bailongma uses the microphone for voice input when you enable voice features.",
-        "NSSpeechRecognitionUsageDescription": "Bailongma may use speech recognition for voice input features."
+        "NSMicrophoneUsageDescription": "OpenVZ Agent uses the microphone for voice input when you enable voice features.",
+        "NSSpeechRecognitionUsageDescription": "OpenVZ Agent may use speech recognition for voice input features."
       },
       "artifactName": "${productName}-${version}-mac-${arch}.${ext}"
     },
     "publish": [
       {
         "provider": "github",
-        "owner": "xiaoyuanda666-ship-it",
-        "repo": "BaiLongma",
+        "owner": "mrlin728",
+        "repo": "openvz-agent",
         "releaseType": "release"
       }
     ]

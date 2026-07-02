@@ -1,30 +1,57 @@
 :root {
-  --bg0: #111821;
-  --bg1: #172231;
-  --bg-deep: #0d141d;
-  --ink: #f3f5fb;
-  --ink2: #a2adbd;
-  --dim: #778397;
-  --line: rgba(150, 169, 198, 0.13);
-  --line-strong: rgba(164, 183, 214, 0.32);
-  --panel: rgba(20, 28, 40, 0.78);
-  --panel-raised: rgba(26, 36, 50, 0.70);
-  --console-bg: rgba(22, 31, 44, 0.78);
-  --cool: #4f8cff;
-  --warm: #ff9f1c;
-  --ok: #39d98a;
-  --warn: #f59e0b;
-  --danger: #f87171;
-  --node-low: #213652;
-  --node-high: #ffbe6b;
+  /* ── OpenVZ Agent · "Aurora Noir" signature theme (default) ──
+     Deep space indigo canvas with a cyan → violet → magenta aurora accent.
+     Variable names are kept stable so the graph / legend / theme JS keep working. */
+  --bg0: #080b14;
+  --bg1: #0e1322;
+  --bg-deep: #05070e;
+  --ink: #eef2ff;
+  --ink2: #9aa8cf;
+  --dim: #5f6f92;
+  --line: rgba(126, 152, 224, 0.12);
+  --line-strong: rgba(140, 168, 240, 0.30);
+  --panel: rgba(13, 18, 32, 0.72);
+  --panel-raised: rgba(19, 26, 44, 0.68);
+  --console-bg: rgba(12, 17, 30, 0.72);
+  --cool: #38d6ff;
+  --warm: #a06bff;
+  --ok: #3ee6a0;
+  --warn: #ffb547;
+  --danger: #ff6b8b;
+  --node-low: #1c2b52;
+  --node-high: #9f7bff;
+  --glow-halo: rgba(124, 92, 255, 0.20);
+  --glow-tint1: rgba(160, 107, 255, 0.14);
+  --glow-tint2: rgba(56, 214, 255, 0.10);
+  --link-stroke: rgba(124, 140, 255, 0.26);
+  --shadow-soft: 0 18px 50px rgba(2, 6, 20, 0.45);
+  --shadow-console: 0 16px 40px rgba(2, 6, 20, 0.50);
+  --shadow-pop: 0 10px 28px rgba(2, 6, 20, 0.45);
+  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  /* New brand tokens for the futuristic accents (additive, safe for other themes). */
+  --accent-1: #38d6ff;
+  --accent-2: #7c5cff;
+  --accent-3: #d16bff;
+  --accent-grad: linear-gradient(120deg, var(--accent-1) 0%, var(--accent-2) 52%, var(--accent-3) 100%);
+  --accent-grad-soft: linear-gradient(120deg, rgba(56,214,255,0.16) 0%, rgba(124,92,255,0.16) 52%, rgba(209,107,255,0.16) 100%);
+  --brand-glow: 0 0 24px rgba(124, 92, 255, 0.45);
+}
+
+/* Optional darker "Midnight Steel" variant kept available in the theme switcher. */
+[data-theme="midnight"] {
+  --bg0: #0d141d; --bg1: #172231; --bg-deep: #0a0f16;
+  --ink: #f3f5fb; --ink2: #a2adbd; --dim: #778397;
+  --line: rgba(150, 169, 198, 0.13); --line-strong: rgba(164, 183, 214, 0.30);
+  --panel: rgba(20, 28, 40, 0.78); --panel-raised: rgba(26, 36, 50, 0.70); --console-bg: rgba(22, 31, 44, 0.78);
+  --cool: #4f8cff; --warm: #ff9f1c;
+  --node-low: #213652; --node-high: #ffbe6b;
   --glow-halo: rgba(255, 159, 28, 0.16);
   --glow-tint1: rgba(255, 159, 28, 0.12);
   --glow-tint2: rgba(79, 140, 255, 0.08);
   --link-stroke: rgba(255, 159, 28, 0.22);
-  --shadow-soft: 0 14px 40px rgba(0, 0, 0, 0.18);
-  --shadow-console: 0 12px 32px rgba(0, 0, 0, 0.22);
-  --shadow-pop: 0 8px 22px rgba(0, 0, 0, 0.20);
-  --shadow-inset: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  --accent-1: #4f8cff; --accent-2: #6ea8ff; --accent-3: #ff9f1c;
+  --accent-grad: linear-gradient(120deg, #4f8cff 0%, #6ea8ff 60%, #ff9f1c 100%);
 }
 
 [data-theme="phosphor"] {
@@ -110,6 +137,27 @@ body {
   transition: background 0.6s ease, color 0.6s ease;
 }
 
+/* Futuristic ambient aurora — soft cyan / violet / magenta glows drifting behind the panels. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: -20%;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(38% 42% at 16% 18%, var(--glow-tint2), transparent 70%),
+    radial-gradient(42% 46% at 84% 22%, var(--glow-tint1), transparent 72%),
+    radial-gradient(50% 50% at 50% 108%, var(--glow-halo), transparent 74%);
+  filter: saturate(1.1);
+  animation: aurora-drift 26s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); opacity: 0.9; }
+  50%  { transform: translate3d(2%, -1.5%, 0) scale(1.06); opacity: 1; }
+  100% { transform: translate3d(-2%, 1.5%, 0) scale(1.03); opacity: 0.85; }
+}
+
 .grid-overlay {
   display: none;
 }
@@ -177,34 +225,66 @@ body {
 }
 
 .brand-mark {
-  width: 30px;
-  height: 30px;
-  border-radius: 50%;
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
   background:
-    radial-gradient(circle at 34% 28%, #ffffff 0 8%, transparent 9%),
-    radial-gradient(circle at 45% 42%, var(--cool), var(--warm) 58%, #2a1708 100%);
-  box-shadow:
-    0 0 0 1px rgba(255, 255, 255, 0.06),
-    0 0 18px color-mix(in srgb, var(--warm) 48%, transparent);
-  animation: neb-blink 2.6s ease-in-out infinite;
+    linear-gradient(150deg, rgba(56,214,255,0.14), rgba(124,92,255,0.10) 55%, rgba(209,107,255,0.14)),
+    var(--panel-raised);
+  border: 1px solid var(--line-strong);
+  box-shadow: var(--brand-glow), inset 0 1px 0 rgba(255,255,255,0.08);
   flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+.brand-mark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 30% 22%, rgba(255,255,255,0.20), transparent 55%);
+  pointer-events: none;
+}
+.brand-mark svg { position: relative; z-index: 1; }
+.brand-glyph {
+  stroke: url(#brand-grad, var(--accent-2));
+  stroke: var(--accent-2);
+  stroke-width: 1.6;
+  fill: rgba(124,92,255,0.06);
+}
+.brand-glyph-inner {
+  stroke: var(--accent-1);
+  stroke-width: 1.4;
+  fill: none;
+  opacity: 0.9;
+}
+.brand-glyph-core {
+  fill: var(--accent-1);
+  filter: drop-shadow(0 0 4px var(--accent-1));
+  animation: neb-pulse 2.8s ease-in-out infinite;
 }
 
-.brand-copy { display: flex; flex-direction: column; gap: 2px; }
+.brand-copy { display: flex; flex-direction: column; gap: 3px; }
 
 .eyebrow {
-  font-size: 10px;
-  letter-spacing: 0.22em;
+  font-size: 9.5px;
+  letter-spacing: 0.26em;
   text-transform: uppercase;
-  color: var(--dim);
+  color: var(--accent-1);
   font-family: "JetBrains Mono", ui-monospace, monospace;
+  opacity: 0.92;
 }
 
 .brand-title {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  background: var(--accent-grad);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
   color: var(--ink);
-  letter-spacing: -0.01em;
 }
 
 .panel-stats {
@@ -1006,6 +1086,12 @@ body {
   gap: 12px;
   padding: 12px 14px;
   border-top: 1px solid var(--line);
+  transition: border-color 0.25s ease, box-shadow 0.25s ease;
+}
+#input-row:focus-within {
+  border-top-color: color-mix(in srgb, var(--accent-1) 55%, transparent);
+  box-shadow: 0 -1px 0 0 color-mix(in srgb, var(--accent-1) 30%, transparent),
+              0 -14px 30px -18px color-mix(in srgb, var(--accent-2) 60%, transparent);
 }
 
 /* ── 斜杠命令菜单 ───────────────────────────────────────── */
@@ -1065,7 +1151,7 @@ body {
 .prompt-mark {
   font-family: "JetBrains Mono", ui-monospace, monospace;
   font-size: 13px;
-  color: var(--warm);
+  color: var(--accent-1);
   animation: neb-blink 1.6s ease-in-out infinite;
   width: 24px;
   height: 24px;
@@ -1073,8 +1159,8 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: 50%;
-  background: color-mix(in srgb, var(--warm) 12%, transparent);
-  box-shadow: 0 0 18px color-mix(in srgb, var(--warm) 24%, transparent);
+  background: color-mix(in srgb, var(--accent-1) 14%, transparent);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--accent-1) 28%, transparent);
 }
 
 #msg-input {
@@ -1100,20 +1186,21 @@ body {
   padding: 9px 20px;
   border-radius: 12px;
   border: 0;
-  background: linear-gradient(135deg, color-mix(in srgb, var(--warm) 88%, #ffffff 12%), #d97706);
+  background: var(--accent-grad);
   color: #ffffff;
   font-size: 11px;
   font-weight: 700;
   font-family: "JetBrains Mono", ui-monospace, monospace;
   letter-spacing: 0.1em;
   cursor: pointer;
-  box-shadow: 0 10px 24px color-mix(in srgb, var(--warm) 28%, transparent);
-  transition: transform 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease;
+  box-shadow: 0 10px 26px color-mix(in srgb, var(--accent-2) 34%, transparent);
+  transition: transform 0.18s ease, opacity 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
 }
 
 #send-btn:hover {
   transform: translateY(-1px);
-  box-shadow: 0 14px 30px color-mix(in srgb, var(--warm) 36%, transparent);
+  filter: brightness(1.08);
+  box-shadow: 0 14px 34px color-mix(in srgb, var(--accent-2) 44%, transparent);
 }
 #send-btn:active { transform: translateY(0); opacity: 0.85; }
 
@@ -1177,6 +1264,7 @@ body {
     0 0 16px color-mix(in srgb, var(--warm) 34%, transparent);
 }
 
+.theme-dot[data-t="openvz"] { background: linear-gradient(135deg, #070b16 8%, #38d6ff 42%, #7c5cff 68%, #d16bff); }
 .theme-dot[data-t="midnight"] { background: linear-gradient(135deg, #070b12 10%, #4f8cff 48%, #ff9f1c); }
 .theme-dot[data-t="phosphor"] { background: linear-gradient(135deg, #0a120c, #9fe09a); }
 .theme-dot[data-t="violet"] { background: linear-gradient(135deg, #161128, #b098f0); }

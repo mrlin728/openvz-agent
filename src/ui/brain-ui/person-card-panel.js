@@ -13,7 +13,7 @@ export const createPersonCardPanel = () => `
         <div class="pc-title" id="pc-title">等待选择人物</div>
       </div>
     </div>
-    <div class="pc-summary" id="pc-summary">当你不认识某位公众人物时，Longma 会在这里弹出一张简短人物卡片。</div>
+    <div class="pc-summary" id="pc-summary">当你不认识某位公众人物时，OpenVZ 会在这里弹出一张简短人物卡片。</div>
     <div class="pc-section">
       <div class="pc-section-title">识别点</div>
       <ul class="pc-known-list" id="pc-known-list"></ul>

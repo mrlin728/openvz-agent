@@ -18,7 +18,7 @@ const PHYSICS_STORAGE_KEY = "jarvis-brain-ui-physics";
 const ACTIVATION_WARMUP_KEY = "bailongma_activation_warmup_until";
 const UI_ZOOM_STORAGE_KEY = "bailongma_ui_zoom_factor";
 const MAX_CHAT_HISTORY = 60;
-const DEFAULT_AGENT_NAME = "小白龙";
+const DEFAULT_AGENT_NAME = "OpenVZ";
 const DEFAULT_UI_ZOOM = 1.1;
 const MIN_UI_ZOOM = 0.8;
 const MAX_UI_ZOOM = 1.8;
@@ -146,8 +146,9 @@ function initUiZoom() {
 function setAgentName(nextName) {
   const normalized = String(nextName || "").trim() || DEFAULT_AGENT_NAME;
   agentName = normalized;
-  document.title = `${normalized} · Cognitive Surface`;
-  if (brandNameEl) brandNameEl.textContent = `${normalized} AI Agent`;
+  // Header stays the fixed product identity ("OpenVZ Agent · Your Personal AI Agent OS");
+  // the persona name only drives chat labels, the input placeholder and the graph aria-label.
+  document.title = "OpenVZ Agent · Your Personal AI Agent OS";
   if (graphEl) graphEl.setAttribute("aria-label", `${normalized} memory graph`);
   const input = document.getElementById("msg-input");
   if (input && !chat?.isComposerLocked?.() && document.activeElement === input) input.placeholder = defaultInputPlaceholder();
@@ -240,8 +241,8 @@ function applyTheme(theme) {
 }
 
 (function initTheme() {
-  let saved = "midnight";
-  try { saved = localStorage.getItem(THEME_KEY) || "midnight"; } catch {}
+  let saved = "openvz";
+  try { saved = localStorage.getItem(THEME_KEY) || "openvz"; } catch {}
   applyTheme(saved);
 })();
 
@@ -4490,7 +4491,7 @@ initWorldcup().catch((err) => console.warn('[Worldcup] init failed:', err));
   function openPanel(configured){
     setActive(true);
     hydrateHistory();   // 每次打开都拉一次历史，重建之前生成的视频队列
-    if(configured===false){ composeErr.textContent="尚未配置火山方舟（Seedance）API Key —— 把 key 发给小白龙即可（例如「火山视频 你的APIKey」），配置后就能在这里生成。"; composeErr.hidden=false; }
+    if(configured===false){ composeErr.textContent="尚未配置火山方舟（Seedance）API Key —— 把 key 发给OpenVZ即可（例如「火山视频 你的APIKey」），配置后就能在这里生成。"; composeErr.hidden=false; }
     else composeErr.hidden=true;
     setTimeout(function(){ try{ promptInput.focus(); }catch(e){} },60);
   }

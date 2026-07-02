@@ -143,3 +143,9 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# OpenVZ build helpers / intermediates
+.binshim/
+build/icon-1024.png
+build/native-speech-recognizer
+build/*.iconset/

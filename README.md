@@ -1,8 +1,12 @@
-![Bailongma](https://github.com/xiaoyuanda666-ship-it/BaiLongma/blob/main/images/AGI128k.jpg)
+![OpenVZ Agent](https://github.com/mrlin728/openvz-agent/blob/main/images/AGI128k.jpg)
 
-# Bailongma
+# OpenVZ Agent
 
-Bailongma 是一个持续运行的桌面 AI Agent 项目。它不是一次问答结束就退出的聊天程序，而是由主循环驱动：有用户消息时优先处理，空闲时按节奏继续整理记忆、检查任务、刷新上下文，并把状态实时推送到 Brain UI。
+> **Your Personal AI Agent OS** —— 一个未来感的个人 AI Agent 操作系统。
+
+OpenVZ Agent 不是一个聊天机器人，而是一个真正的个人 AI Agent 工作空间：它会**记住你**、**规划任务**、**执行工作流**、**管理工具**、**展示执行轨迹**，并帮你完成代码开发、资料研究、浏览器自动化和个人效率任务。
+
+它是一个持续运行的桌面 AI Agent，由主循环驱动：有用户消息时优先处理，空闲时按节奏继续整理记忆、检查任务、刷新上下文，并把状态实时推送到 Brain UI。
 
 项目由 Electron 桌面壳、本地 HTTP 服务、LLM 调用层、记忆系统、工具执行器、语音系统、社交连接器和 Brain UI 组成。它的目标是让一个本地 Agent 既能聊天，也能记住、行动、观察自己的运行状态，并通过工具完成文件、网页、媒体、提醒、任务和系统级操作。
 
@@ -144,7 +148,7 @@ http://127.0.0.1:3721
 
 ## 数据与持久化
 
-Bailongma 的长期状态主要保存在本地 SQLite 数据库中，包括：
+OpenVZ Agent 的长期状态主要保存在本地 SQLite 数据库中，包括：
 
 - 对话记录、参与者身份和用户画像。
 - 记忆节点、记忆关系、全文检索索引和可见性状态。
