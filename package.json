@@ -58,6 +58,7 @@
     "appId": "com.openvz.agent",
     "productName": "OpenVZ Agent",
     "artifactName": "OpenVZ-Agent-Setup-${version}.${ext}",
+    "afterPack": "scripts/adhoc-sign.cjs",
     "npmRebuild": false,
     "asar": true,
     "asarUnpack": [
@@ -127,6 +128,7 @@
     },
     "mac": {
       "icon": "build/icon.icns",
+      "identity": null,
       "target": [
         {
           "target": "dmg",
