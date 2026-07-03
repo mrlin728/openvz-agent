@@ -28,6 +28,7 @@ import { execManageReminder } from './tools/reminders.js'
 import { execGenerateImage, execGenerateLyrics, execGenerateMusic, execGenerateVideo, execMediaMode, execMusic, execSpeak } from './tools/media.js'
 import { execManageRule } from './tools/rules.js'
 import { runWorkReview } from '../review/reviewer.js'
+import { execPlanWorkflow, execRunWorkflow, execListWorkflows, execReplayWorkflow } from './tools/workflow.js'
 export { calculateNextDueAt } from './tools/reminders.js'
 export { autoSpeakForVoiceReply } from './tools/media.js'
 export { persistAppState } from './tools/ui.js'
@@ -279,6 +280,14 @@ async function executeToolUnchecked(name, args, context = {}) {
         return await execReviewWork(args, context)
       case 'review_verdict':
         return execReviewVerdict(args)
+      case 'plan_workflow':
+        return await execPlanWorkflow(args, context)
+      case 'run_workflow':
+        return await execRunWorkflow(args, context)
+      case 'list_workflows':
+        return execListWorkflows()
+      case 'replay_workflow':
+        return await execReplayWorkflow(args, context)
       case 'recall_memory':
         return await execRecallMemory(args, context)
       case 'install_tool':

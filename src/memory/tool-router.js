@@ -47,6 +47,9 @@ const TASK_CTRL_OPENER  = ['set_task']  // 没任务时只暴露 set_task
 // 无任务的临时成果，靠下面这组触发词 / find_tool 主动拉进来。
 const REVIEW_TOOLS      = ['review_work']
 
+// 自进化工作流引擎：给个目标 → 自动拆分 → 执行 → 评分 → 改进 → 存成可复用工作流。
+const WORKFLOW_TOOLS    = ['run_workflow', 'plan_workflow', 'list_workflows', 'replay_workflow']
+
 const WEB_TOOLS         = ['web_search', 'fetch_url', 'browser_read']
 const FILESYSTEM_TOOLS  = ['read_file', 'write_file', 'delete_file', 'list_dir', 'make_dir']
 const EXEC_TOOLS        = ['exec_command', 'exec_quick_command', 'exec_task_command', 'exec_background_command', 'download_file', 'kill_process', 'list_processes']
@@ -215,6 +218,13 @@ const REVIEW_TRIGGERS = [
   'review', 'double-check', 'double check', 'verify the work', 'check my work', 'sanity check',
 ]
 
+const WORKFLOW_TRIGGERS = [
+  '工作流', '编排', '自动拆分', '拆分任务', '拆解任务', '自动执行', '自动完成', '分工执行',
+  '多步任务', '自动规划', '自动改进', '一键完成', '复用流程', '可复用', '流程化', '自动完成目标',
+  'workflow', 'orchestrate', 'auto plan', 'auto-plan', 'decompose', 'break down the goal',
+  'run workflow', 'reusable workflow', 'plan the steps', 'self-improving',
+]
+
 // 触发词 → 工具组的单一数据源。selectTools（按轮注入）和 find_tool（模型主动搜工具）
 // 共用它，避免两处各维护一份中文关键词。注：CORE / task / memory / 多模态 mmCaps gate 等
 // 特殊注入逻辑仍在 selectTools 里，这里只收录"纯关键词触发的专业组"，正好是 find_tool 要搜的范围。
@@ -238,6 +248,7 @@ export const TOOL_GROUPS = [
   { triggers: IMAGE_GEN_TRIGGERS,    tools: [MM_GEN_TOOLS.image] },
   { triggers: VIDEO_GEN_TRIGGERS,    tools: ['generate_video'] },
   { triggers: REVIEW_TRIGGERS,       tools: REVIEW_TOOLS },
+  { triggers: WORKFLOW_TRIGGERS,     tools: WORKFLOW_TOOLS },
 ]
 
 // 通用辅助：消息正文里是否含有给定触发词之一（lower-case 包含）。
