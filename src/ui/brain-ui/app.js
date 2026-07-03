@@ -6,6 +6,7 @@ import { initPanelCollapse } from "./panel-collapse.js";
 import { ThoughtStream } from "./thought-stream.js";
 import { initVoicePanel } from "./voice-panel.js";
 import { initHotspot, toggleHotspot, setHotspotMode, moveVoicePanelToBody, restoreVoicePanel } from "./hotspot.js";
+import { initWorkflowPanel } from "./workflow-panel.js";
 import { initWorldcup, toggleWorldcup, setWorldcupMode } from "./worldcup.js";
 import { enrichVisiblePersonCardFromText, initPersonCard, setPersonCardMode, showPersonCardByName } from "./person-card.js";
 import { initDocPanel, setDocPanelMode } from "./doc.js";
@@ -1480,6 +1481,9 @@ function handle({ type, data = {} }) {
       break;
     case "aivideo_mode":
       window.dispatchEvent(new CustomEvent("bailongma:aivideo", { detail: data }));
+      break;
+    case "workflow_progress":
+      window.dispatchEvent(new CustomEvent("bailongma:workflow", { detail: data }));
       break;
     case "hotspot_mode":
       setHotspotMode(!!data.active || data.action === "show" || data.action === "open", { source: "agent_event" });
@@ -3653,6 +3657,9 @@ initVoicePanel({
 // 监听设备插拔：拔耳机/虚拟设备占用系统默认时，把正在播的语音即时切到真实硬件；
 // 完全无设备时弹一键修复横幅。getCurrentAudioEl 回传当前在播 TTS 元素。
 initAudioOutputRouting({ getCurrentAudioEl: () => ttsAudioEl });
+
+// ── Workflow engine panel ──
+try { initWorkflowPanel(); } catch (err) { console.warn('[Workflow] init failed:', err); }
 
 // ── Hotspot mode ──
 initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));

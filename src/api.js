@@ -12,6 +12,7 @@ import { getQuotaStatus } from './quota.js'
 import { isRunning, stopLoop, startLoop } from './control.js'
 import { buildHeartbeatSystemPromptPreview } from './system-prompt-preview.js'
 import { paths } from './paths.js'
+import { listWorkflows } from './workflow/store.js'
 import { config, activate as activateLLM, prepareActivation as prepareLLMActivation, commitPreparedActivation, getActivationStatus, switchModel, saveLLMSettings, setTemperature, setThinking, getMinimaxKey, setMinimaxKey, getSocialConfig, setSocialConfig, getVoiceConfig, setVoiceConfig, getTTSConfig, setTTSConfig, getTTSCredentials, getProviderSummaries, getSecurity, setSecurity, getNetworkConfig, setNetworkConfig, getEmbeddingConfig, setEmbeddingConfig, EMBEDDING_PROVIDER_PRESETS, getWebSearchConfig, setWebSearchConfig } from './config.js'
 import { streamTTS, TTS_PROVIDERS, TTS_VOICES, validateTTSConfig } from './voice/tts-providers.js'
 import { restartConnector } from './social/index.js'
@@ -540,6 +541,16 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
       const db = getDB()
       const { n } = db.prepare('SELECT COUNT(*) as n FROM memories').get()
       jsonResponse(res, 200, { ok: true, memory_count: n, running: isRunning() })
+      return
+    }
+
+    // GET /workflows — 列出已保存的可复用工作流（供 Brain UI 工作流面板展示与复用）
+    if (req.method === 'GET' && url.pathname === '/workflows') {
+      try {
+        jsonResponse(res, 200, { ok: true, workflows: listWorkflows(path.join(paths.userDir, 'workflows')) })
+      } catch (err) {
+        jsonResponse(res, 200, { ok: true, workflows: [], error: err.message })
+      }
       return
     }
 

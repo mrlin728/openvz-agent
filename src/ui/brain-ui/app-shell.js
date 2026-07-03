@@ -2,6 +2,7 @@ import { createHotspotPanel } from './hotspot-panel.js';
 import { createWorldcupPanel } from './worldcup-panel.js';
 import { createPersonCardPanel } from './person-card-panel.js';
 import { createDocPanel } from './doc-panel.js';
+import { createWorkflowPanel } from './workflow-panel.js';
 
 const createGraphStage = () => `
 <div class="grid-overlay"></div>
@@ -979,6 +980,7 @@ export function createBrainUiMarkup() {
     createWorldcupPanel(),
     createPersonCardPanel(),
     createDocPanel(),
+    createWorkflowPanel(),
   ].join("\n\n");
 }
 
