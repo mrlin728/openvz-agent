@@ -155,4 +155,4 @@ config.json
 seedance.json
 
 # workflow-engine demo output
-workflows/
+/workflows/

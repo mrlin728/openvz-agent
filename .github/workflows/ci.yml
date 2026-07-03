@@ -1,0 +1,28 @@
+name: CI
+
+# 每次 push / PR 跑：工作流引擎单测 + 关键文件语法检查。
+# 引擎单测是纯 Node（无外部依赖、无网络），所以不需要 npm install，秒级完成。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Workflow engine unit tests
+        run: node src/workflow/engine.test.mjs
+      - name: Syntax check core modules
+        run: |
+          for f in src/index.js src/config.js src/secure-store.js \
+                   src/workflow/engine.js src/workflow/store.js \
+                   src/capabilities/schemas.js src/capabilities/executor.js \
+                   src/capabilities/tools/workflow.js src/memory/tool-router.js; do
+            node --check "$f"
+          done
