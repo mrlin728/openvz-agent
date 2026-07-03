@@ -156,3 +156,6 @@ seedance.json
 
 # workflow-engine demo output
 /workflows/
+
+# Runtime per-provider LLM key configs (created in repo root in standalone/dev mode)
+/llm/
