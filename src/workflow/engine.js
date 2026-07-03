@@ -62,9 +62,16 @@ export async function executeStep(llm, { goal, step, context = '', fixHint = '' 
 
 /** 对一步结果评分。返回 { score(0-100), pass, issues[], fix_hint }。*/
 export async function scoreStep(llm, { goal, step, result }) {
-  const system = '你是一个独立评审（第二意见），对照目标与步骤要求，客观评估这步成果的质量。'
-    + '只返回 JSON：{"score":0-100,"pass":true/false,"issues":["..."],"fix_hint":"一句可操作的改进建议"}。'
-    + 'score≥75 视为达标。不要输出 JSON 以外的文字。'
+  const system = '你是一个【严格】的独立评审。别当老好人——只有确实优秀才给高分，平庸就打平庸的分。'
+    + '按四个维度各 0-25 分打分并加总为 0-100：'
+    + '① 完整性（是否真正完成了这步的全部要求）'
+    + '② 准确性（有无错误、臆造、过时信息）'
+    + '③ 可用性（结果能否直接拿去用，还是只是空泛描述）'
+    + '④ 证据/具体度（有没有具体内容/数据/例子支撑，而非套话）。'
+    + '评分锚点：套话/跑题≈30-50；能用但明显有欠缺≈55-74；扎实达标≈75-85；真正出色才 86-100。'
+    + '除非确实无可挑剔，否则 issues 至少给 1 条具体、可操作的改进点（指出哪里、怎么改），不要给空泛评价。'
+    + '只返回 JSON：{"score":0-100,"pass":true/false,"issues":["..."],"fix_hint":"一句最关键的改进建议"}。'
+    + 'score≥75 视为达标。不要输出 JSON 以外的任何文字。'
   const out = await llm([
     { role: 'system', content: system },
     { role: 'user', content: `总目标：${goal}\n步骤：${step.title} — ${step.instruction}\n\n成果：\n${result}` },

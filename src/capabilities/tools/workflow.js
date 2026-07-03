@@ -9,6 +9,7 @@ import path from 'node:path'
 import { config } from '../../config.js'
 import { paths } from '../../paths.js'
 import { emitEvent } from '../../events.js'
+import { recordUsage, shouldThrottle } from '../../quota.js'
 import { runGoalWorkflow, planWorkflow, replayWorkflow } from '../../workflow/engine.js'
 import { saveWorkflow, listWorkflows, loadWorkflow } from '../../workflow/store.js'
 
@@ -18,10 +19,14 @@ function makeLlm(signal) {
   if (!config.apiKey) throw new Error('LLM 尚未激活，请先在设置里填入 API Key')
   const client = new OpenAI({ apiKey: config.apiKey, baseURL: config.baseURL })
   return async (messages) => {
+    // 与主循环共用配额/限流：超限时中止工作流，避免绕过 quota.js 悄悄烧 token。
+    if (shouldThrottle()) throw new Error('已触发速率/额度限流，工作流暂停（避免超额）。稍后再试。')
     const resp = await client.chat.completions.create(
       { model: config.model, messages, temperature: 0.4 },
       signal ? { signal } : {},
     )
+    // 把本次用量计入配额窗口（供限流与自适应节奏使用）。
+    recordUsage(resp.usage?.total_tokens || 0)
     return resp.choices?.[0]?.message?.content || ''
   }
 }

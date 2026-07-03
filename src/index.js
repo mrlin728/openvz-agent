@@ -73,16 +73,15 @@ try {
 // Must complete before the main loop starts so buildSystemPrompt can inject the env block.
 await collectSystemInfo()
 
-// Scan the user's desktop (shortcuts cached by mtime, regular files scanned every time)
-collectDesktopInfo(getDesktopPath())
-
-// Scan installed software once so software/app/proxy questions can use local evidence.
-collectInstalledSoftware()
-
-// Scan the user's local resources (ssh hosts, keys, known_hosts, git identity)
-// for the "Self-Sufficient Execution" prompt — so the agent already knows what
-// the user has before being asked "上服务器看看".
-collectLocalResources()
+// 本地资源扫描（桌面 / 已装软件 / SSH 等）会同步读文件系统，遇到坏挂载或慢盘可能卡住。
+// 这些不是启动必需项（只是给系统提示补充上下文），所以 defer 到启动序列之后再跑，并各自 try/catch，
+// 保证即使某个扫描卡住/报错，主循环与本地服务也已经先起来了（不再重演 scandir 卡启动的问题）。
+const deferScan = (label, fn) => setImmediate(() => {
+  try { fn() } catch (err) { console.warn(`[startup] ${label} 扫描失败（已跳过）:`, err?.message || err) }
+})
+deferScan('desktop', () => collectDesktopInfo(getDesktopPath()))
+deferScan('installed-software', () => collectInstalledSoftware())
+deferScan('local-resources', () => collectLocalResources())
 
 // 启动健壮性：网络采集不能阻塞启动。给依赖网络的采集加超时兜底——
 // 断网 / 慢网 / 目标不可达时最多等 8s 就继续启动（数据会由后续刷新循环补齐），
