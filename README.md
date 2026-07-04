@@ -1,5 +1,3 @@
-![OpenVZ Agent](https://github.com/mrlin728/openvz-agent/blob/main/images/AGI128k.jpg)
-
 # OpenVZ Agent
 
 > **Your Personal AI Agent OS** —— 一个未来感的个人 AI Agent 操作系统。
