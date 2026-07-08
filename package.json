@@ -64,7 +64,8 @@
     "asarUnpack": [
       "**/node_modules/better-sqlite3/**",
       "build/native-speech-recognizer",
-      "src/voice/**"
+      "src/voice/**",
+      "src/mcp/servers/**"
     ],
     "files": [
       "electron/**/*",

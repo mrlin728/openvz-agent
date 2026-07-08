@@ -8,8 +8,12 @@
 // 可直接复用社区现成配置。示例见仓库根目录 mcp.servers.example.json。
 
 import fs from 'fs'
+import path from 'path'
 import { paths } from '../paths.js'
 import { McpStdioClient } from './client.js'
+
+// 随安装包内置的默认配置（打包进 asar，位于资源目录下）。
+const DEFAULT_CONFIG_FILE = path.join(paths.resourcesDir, 'src', 'mcp', 'servers.default.json')
 
 const clients = new Map()       // serverName -> McpStdioClient
 const toolIndex = new Map()     // 完整工具名 mcp__srv__tool -> { server, toolName, schema }
@@ -22,14 +26,41 @@ function fullName(server, toolName) {
   return `mcp__${sanitize(server)}__${sanitize(toolName)}`
 }
 
-function readConfig() {
+function readServersFrom(file) {
   try {
-    if (!fs.existsSync(paths.mcpConfigFile)) return {}
-    const raw = JSON.parse(fs.readFileSync(paths.mcpConfigFile, 'utf-8'))
+    if (!fs.existsSync(file)) return {}
+    const raw = JSON.parse(fs.readFileSync(file, 'utf-8'))
     return raw?.mcpServers && typeof raw.mcpServers === 'object' ? raw.mcpServers : {}
   } catch (err) {
-    console.log(`[mcp] 读取配置失败：${err.message}`)
+    console.log(`[mcp] 读取配置失败（${file}）：${err.message}`)
     return {}
+  }
+}
+
+// 分层配置：先内置默认，再叠加用户配置（同名 server 用户覆盖，方便关掉/改参数）。
+function readConfig() {
+  const defaults = readServersFrom(DEFAULT_CONFIG_FILE)
+  const user = readServersFrom(paths.mcpConfigFile)
+  return { ...defaults, ...user }
+}
+
+// 把 App 自带运行时能跑的内置 server（runtime:'node'）解析成具体的 spawn 参数。
+// - command 用 process.execPath：开发时是 node，打包后是 electron 二进制；
+//   对 electron 设 ELECTRON_RUN_AS_NODE=1 让它以 Node 模式运行脚本。
+// - 脚本路径优先取 asar.unpacked 下的真实文件（若存在），否则回落到 asar 内路径
+//   （Electron 的 Node 运行时可直接读取 asar）。
+function resolveServerSpec(spec = {}) {
+  if (spec.runtime !== 'node') return spec
+  const rel = spec.script
+  if (!rel) return { ...spec, command: null }
+  let scriptPath = path.join(paths.resourcesDir, rel)
+  const unpacked = scriptPath.replace(`app.asar${path.sep}`, `app.asar.unpacked${path.sep}`)
+  if (unpacked !== scriptPath && fs.existsSync(unpacked)) scriptPath = unpacked
+  return {
+    ...spec,
+    command: process.execPath,
+    args: [scriptPath, ...(spec.args || [])],
+    env: { ...(spec.env || {}), ELECTRON_RUN_AS_NODE: '1' },
   }
 }
 
@@ -46,7 +77,7 @@ export async function loadMcpServers() {
   await Promise.all(names.map(async (name) => {
     // disabled: true 的 server 跳过，方便临时关掉而不删配置
     if (servers[name]?.disabled) return
-    const client = new McpStdioClient(name, servers[name])
+    const client = new McpStdioClient(name, resolveServerSpec(servers[name]))
     clients.set(name, client)
     await client.connect()
     if (client.status !== 'ready') {
