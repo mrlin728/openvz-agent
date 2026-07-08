@@ -29,6 +29,7 @@ import { getCustomIntervalMs, consumeTick as consumeTickerTick, getStatus as get
 import { seedSandboxOnce, seedMusicOnce, rescueDataFromInstallDir } from './paths.js'
 import { ensureSkillMemories } from './memory/seed-skills.js'
 import { loadInstalledTools } from './capabilities/marketplace/index.js'
+import { loadMcpServers } from './mcp/index.js'
 import { resumePendingVideoJobs, getAIVideoPanelState } from './capabilities/tools/media.js'
 import { dispatchSocialMessage } from './social/dispatch.js'
 import { startSocialConnectors } from './social/index.js'
@@ -105,6 +106,10 @@ await collectAgents()
 
 // Load persisted installed tools
 await loadInstalledTools()
+
+// Connect configured MCP servers (Model Context Protocol) and register their tools.
+// Failure of any single server never blocks startup (see mcp/index.js).
+await loadMcpServers()
 
 // Load Agent Skills metadata. Full SKILL.md bodies are injected only when a turn matches.
 const startupSkills = refreshSkills()

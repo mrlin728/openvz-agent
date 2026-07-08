@@ -1,4 +1,5 @@
 import { getInstalledToolSchema } from './marketplace/index.js'
+import { getMcpToolSchema } from '../mcp/index.js'
 import { commsSchemas } from './schemas/comms.js'
 import { filesystemSchemas } from './schemas/filesystem.js'
 import { shellSchemas } from './schemas/shell.js'
@@ -38,7 +39,7 @@ export function getToolSchemas(toolNames) {
     // but we don't expose it to the model. The model should use
     // `send_message` for outbound text messages.
     .filter(name => name !== 'express')
-    .map(name => TOOL_SCHEMAS[name] ?? getInstalledToolSchema(name))
+    .map(name => TOOL_SCHEMAS[name] ?? getInstalledToolSchema(name) ?? getMcpToolSchema(name))
     .filter(Boolean)
     // 剥离识别器专用元数据，避免发给 LLM API
     .map(({ recognizer_highlights, ...rest }) => rest)

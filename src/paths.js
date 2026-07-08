@@ -37,6 +37,9 @@ export const paths = {
   // 与易失的原始路径（截图、临时文件）解耦——原文件删了或被同名替换，聊天记录里的图仍在。
   mediaDir: ensureDir(path.join(USER_DIR, 'data', 'media')),
   configFile: path.join(USER_DIR, 'config.json'),
+  // MCP（Model Context Protocol）server 配置。格式：{ "mcpServers": { ... } }，
+  // 与业界事实标准一致，可直接复用社区现成配置。缺失则不加载任何 MCP 工具。
+  mcpConfigFile: path.join(USER_DIR, 'mcp.servers.json'),
   llmConfigDir: ensureDir(path.join(USER_DIR, 'llm')),
   // seedance（AI 视频生成）单独成文件，与主 config.json 物理隔离，
   // 避免被 activate() 等“全量覆盖写 config.json”的操作误删。
