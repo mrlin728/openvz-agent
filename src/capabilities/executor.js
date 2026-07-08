@@ -13,6 +13,7 @@ import { setDocPanelState, getDocPanelState } from '../docs.js'
 import { setUserLocation } from '../weather.js'
 import { getAgentById, isDelegationAllowed } from '../agents/registry.js'
 import { installTool, uninstallTool, listInstalledTools, isInstalledTool, executeInstalledTool, getInstalledToolSchema } from './marketplace/index.js'
+import { isMcpTool, executeMcpTool } from '../mcp/index.js'
 import { execManageToolFactory } from './tool-factory.js'
 import { TOOL_SCHEMAS } from './schemas.js'
 import { TOOL_GROUPS } from '../memory/tool-router.js'
@@ -307,6 +308,9 @@ async function executeToolUnchecked(name, args, context = {}) {
       default:
         if (isInstalledTool(name)) {
           return await executeInstalledTool(name, args)
+        }
+        if (isMcpTool(name)) {
+          return await executeMcpTool(name, args)
         }
         return `错误：未知工具 "${name}"`
     }

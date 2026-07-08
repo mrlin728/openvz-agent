@@ -27,6 +27,7 @@
 // 输出：去重后的 tools: string[]
 
 import { getStatus as getTickerStatus } from '../ticker.js'
+import { getMcpToolNames } from '../mcp/index.js'
 
 // ---- 工具分组 ----
 //
@@ -443,6 +444,11 @@ export function selectTools(ctx = {}) {
     for (const name of installedToolNames) {
       if (name && !suppressed.has(name)) out.add(name)
     }
+  }
+
+  // —— MCP 工具：与已安装工具同级，永远全注入（用户主动配置的外部能力不能省） ——
+  for (const name of getMcpToolNames()) {
+    if (name && !suppressed.has(name)) out.add(name)
   }
 
   // —— Fastpath 收紧（可选） ——
