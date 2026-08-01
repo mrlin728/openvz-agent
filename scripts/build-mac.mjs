@@ -45,5 +45,7 @@ for (const arch of archs) {
   run('node', ['scripts/rebuild-native.mjs', `--arch=${arch}`]);
 
   console.log(`[build:mac] packaging ${arch} DMG and auto-update ZIP`);
-  run('node', ['./node_modules/electron-builder/cli.js', '--config', 'electron-builder.config.cjs', '--mac', 'dmg', 'zip', `--${arch}`]);
+  // Native platform jobs only create Actions artifacts. The publish job owns
+  // the GitHub Release, even when this checkout points at a release tag.
+  run('node', ['./node_modules/electron-builder/cli.js', '--config', 'electron-builder.config.cjs', '--mac', 'dmg', 'zip', `--${arch}`, '--publish', 'never']);
 }

@@ -50,7 +50,7 @@ SmartScreen/Gatekeeper prompts. Do not promote these exact binaries to stable.
 ## Candidate release
 
 1. Merge the reviewed 2.2.0 pull request after CI passes.
-2. Create and push the `v2.2.0-rc.1` tag on the reviewed commit.
+2. Create and push the next unused `v2.2.0-rc.N` tag on the reviewed commit.
 3. Let the signed workflow, or the explicitly selected unsigned community RC
    workflow, finish all platform smoke tests.
 4. Download the published assets and verify `SHA256SUMS.txt`.
