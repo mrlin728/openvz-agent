@@ -2,19 +2,21 @@
 
 > Your Personal AI Agent OS — 一个持续运行、拥有长期记忆并能真实执行任务的本地桌面 Agent。
 
-[下载最新稳定版](https://mrlin728.github.io/openvz-agent/) · [GitHub Releases](https://github.com/mrlin728/openvz-agent/releases/latest) · [问题反馈](https://github.com/mrlin728/openvz-agent/issues)
+[下载 v2.2.0-rc.1](https://mrlin728.github.io/openvz-agent/) · [GitHub Releases](https://github.com/mrlin728/openvz-agent/releases) · [问题反馈](https://github.com/mrlin728/openvz-agent/issues)
 
 OpenVZ Agent 不是一次问答后退出的聊天程序。它由主循环驱动，统一处理用户消息、长期任务、定时提醒、心跳、工具行动和多渠道回复，并把状态实时投影到 Brain UI。
 
 ## 下载安装
 
-| 系统 | 最低版本 | 稳定下载 |
-| --- | --- | --- |
-| Windows x64 | Windows 10/11 | [OpenVZ-Agent-Setup.exe](https://github.com/mrlin728/openvz-agent/releases/latest/download/OpenVZ-Agent-Setup.exe) |
-| macOS Apple Silicon | macOS 12+，M1/M2/M3/M4 | [OpenVZ-Agent-mac-arm64.dmg](https://github.com/mrlin728/openvz-agent/releases/latest/download/OpenVZ-Agent-mac-arm64.dmg) |
-| macOS Intel | macOS 12+，Intel | [OpenVZ-Agent-mac-x64.dmg](https://github.com/mrlin728/openvz-agent/releases/latest/download/OpenVZ-Agent-mac-x64.dmg) |
+当前公开版本是 **v2.2.0-rc.1 未签名社区测试版**。它由 GitHub 托管的原生 Windows/macOS runner 从标签源码构建，但因为仓库尚未配置 Apple Developer ID 和 Azure Trusted Signing，系统会显示安全提醒。请只从本仓库下载并先核对 SHA-256；正式 `v2.2.0` 仍会强制签名和 Apple 公证。
 
-Windows 直接运行签名安装包。macOS 打开对应 DMG 后，将 `OpenVZ Agent.app` 拖入“应用程序”。正式 Release 强制通过 Windows Azure Trusted Signing 或 Apple Developer ID 签名与公证；校验和见 [SHA256SUMS.txt](https://github.com/mrlin728/openvz-agent/releases/latest/download/SHA256SUMS.txt)。完整安装说明、芯片判断和常见问题见下载页。
+| 系统 | 最低版本 | RC 下载 |
+| --- | --- | --- |
+| Windows x64 | Windows 10/11 | [OpenVZ-Agent-Setup.exe](https://github.com/mrlin728/openvz-agent/releases/download/v2.2.0-rc.1/OpenVZ-Agent-Setup.exe) |
+| macOS Apple Silicon | macOS 12+，M1/M2/M3/M4 | [OpenVZ-Agent-mac-arm64.dmg](https://github.com/mrlin728/openvz-agent/releases/download/v2.2.0-rc.1/OpenVZ-Agent-mac-arm64.dmg) |
+| macOS Intel | macOS 12+，Intel | [OpenVZ-Agent-mac-x64.dmg](https://github.com/mrlin728/openvz-agent/releases/download/v2.2.0-rc.1/OpenVZ-Agent-mac-x64.dmg) |
+
+校验和见 [SHA256SUMS.txt](https://github.com/mrlin728/openvz-agent/releases/download/v2.2.0-rc.1/SHA256SUMS.txt)。Windows 核对哈希后运行安装包；若 SmartScreen 拦截，仅在确认文件来自本 Release 后选择“更多信息 → 仍要运行”。macOS 将应用拖入“应用程序”后，按住 Control 点按应用并选择“打开”；若仍被拦截，到“系统设置 → 隐私与安全性”选择“仍要打开”。不要全局关闭 Gatekeeper，也不要运行来路不明的绕过脚本。完整步骤、芯片判断和常见问题见下载页。
 
 首次启动需要填写一个受支持模型服务商的 API Key。打包环境使用 Electron `safeStorage`；纯 Node 环境使用权限为 `0600` 的 AES-256-GCM 本机密钥存储，设置接口不会回显凭据。
 
@@ -96,7 +98,7 @@ npm run build:mac:x64
 npm run build:mac:arm64
 ```
 
-发行构建设置 `OPENVZ_RELEASE_BUILD=1` 后，缺少签名或公证配置会立即失败，不会生成“看似正式”的未签名包。实际签名配置与验收步骤见 `.github/workflows/release.yml`。
+正式发行构建设置 `OPENVZ_RELEASE_BUILD=1` 后，缺少签名或公证配置会立即失败，不会生成“看似正式”的未签名包。只有人工明确启用的 `v2.2.0-rc.N` 才允许走受保护的未签名社区 RC 流程，并会在 Release、下载页和产物中同时标识。实际配置与验收步骤见 `.github/workflows/release.yml`。
 
 ## 安全
 

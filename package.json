@@ -51,7 +51,7 @@
     "test:mcp": "node ./src/test-mcp-integration.js",
     "test:upgrade": "node ./src/test-upgrade-migration.js && node ./src/test-v21439-upgrade.js && node ./src/test-secure-store.js",
     "test:secret-redaction": "node ./src/test-api-secret-redaction.js && node ./src/test-error-logger.js && node ./src/test-console-redaction.js",
-    "test:release-metadata": "node ./scripts/test-release-metadata.mjs",
+    "test:release-metadata": "node ./scripts/test-release-metadata.mjs && node ./scripts/test-release-workflow.mjs",
     "test:website": "node ./scripts/test-website.mjs",
     "smoke:packaged-playwright": "node ./scripts/smoke-packaged-playwright.mjs",
     "smoke:packaged-playwright:mac": "node ./scripts/smoke-packaged-playwright-mac.mjs",

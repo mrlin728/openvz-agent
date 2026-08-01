@@ -56,3 +56,17 @@ jobs:
           grep -q 'OpenVZ-Agent-mac-arm64.dmg' page.html
           grep -q 'OpenVZ-Agent-mac-x64.dmg' page.html
           grep -q '<noscript>' page.html
+      - name: Verify published release assets
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        shell: bash
+        run: |
+          base='https://github.com/mrlin728/openvz-agent/releases/download/v2.2.0-rc.1'
+          for asset in \
+            OpenVZ-Agent-Setup.exe \
+            OpenVZ-Agent-mac-arm64.dmg \
+            OpenVZ-Agent-mac-x64.dmg \
+            SHA256SUMS.txt \
+            UNSIGNED-BUILD.txt
+          do
+            curl --fail --location --retry 5 --retry-delay 10 --output /dev/null "$base/$asset"
+          done

@@ -2,8 +2,10 @@
 
 Public desktop releases are produced only by `.github/workflows/release.yml`.
 The workflow builds Windows x64, macOS Intel x64 and macOS Apple Silicon on
-native GitHub runners, signs each platform, assembles update metadata once and
-then publishes a single GitHub Release.
+native GitHub runners, assembles update metadata once and then publishes a
+single GitHub Release. Stable releases are always signed. A manually selected,
+clearly labelled unsigned community candidate is permitted only for a
+`v2.2.0-rc.N` tag while signing credentials are unavailable.
 
 ## Required repository configuration
 
@@ -29,15 +31,28 @@ Azure repository variables:
 - `AZURE_SIGN_CERTIFICATE_PROFILE`
 - `AZURE_SIGN_ACCOUNT_NAME`
 
-`npm run verify:release-config` fails a release job when any required value is
-missing. Formal builds also enable `forceCodeSigning`; an unsigned installer
-can never be silently published.
+`npm run verify:release-config` fails a stable release job when any required
+value is missing. Formal builds also enable `forceCodeSigning`; an unsigned
+installer can never be silently published as `v2.2.0`.
+
+## Unsigned community candidate
+
+When Apple/Azure credentials are unavailable, dispatch **Desktop release** with
+an existing `v2.2.0-rc.N` tag and set `unsigned` to `true`. The workflow rejects
+all other unsigned tag names. This mode still runs the native install, launch,
+upgrade, SQLite, offline Chromium and architecture smoke tests, but does not
+claim Authenticode, Developer ID or notarization.
+
+The resulting GitHub Release is a prerelease named **Unsigned Community RC**,
+contains `UNSIGNED-BUILD.txt` and SHA-256 checksums, and documents the expected
+SmartScreen/Gatekeeper prompts. Do not promote these exact binaries to stable.
 
 ## Candidate release
 
 1. Merge the reviewed 2.2.0 pull request after CI passes.
 2. Create and push the `v2.2.0-rc.1` tag on the reviewed commit.
-3. Let the signed release workflow finish all platform smoke tests.
+3. Let the signed workflow, or the explicitly selected unsigned community RC
+   workflow, finish all platform smoke tests.
 4. Download the published assets and verify `SHA256SUMS.txt`.
 5. Perform real first-run, activation, upgrade and uninstall checks on Windows
    10/11, macOS 12+ Intel and macOS 12+ Apple Silicon.
@@ -50,6 +65,7 @@ Expected assets:
 - ZIP blockmaps
 - `latest.yml` and `latest-mac.yml`
 - `SHA256SUMS.txt`
+- `UNSIGNED-BUILD.txt` (unsigned community RC only)
 
 ## Stable release
 
@@ -64,4 +80,5 @@ npm ci
 npm run build:mac
 ```
 
-Never upload a locally unsigned artifact as a public release.
+Never upload a locally unsigned artifact as stable or outside the guarded
+community RC workflow.

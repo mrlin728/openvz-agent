@@ -2,18 +2,27 @@ $ErrorActionPreference = 'Stop'
 
 $Root = Split-Path -Parent $PSScriptRoot
 $Setup = Join-Path $Root 'dist\OpenVZ-Agent-Setup.exe'
+$RequireSignature = $env:OPENVZ_RELEASE_BUILD -eq '1'
 if (-not (Test-Path $Setup)) { throw "Installer missing: $Setup" }
 
-function Assert-ValidSignature([string]$Path) {
+function Assert-SignatureContract([string]$Path) {
   $signature = Get-AuthenticodeSignature -FilePath $Path
-  if ($signature.Status -ne 'Valid') { throw "Invalid Authenticode signature for $Path ($($signature.Status))" }
-  if ($env:OPENVZ_AZURE_PUBLISHER -and $signature.SignerCertificate.Subject -notlike "*$($env:OPENVZ_AZURE_PUBLISHER)*") {
-    throw "Unexpected signer: $($signature.SignerCertificate.Subject)"
+  if ($RequireSignature) {
+    if ($signature.Status -ne 'Valid') { throw "Invalid Authenticode signature for $Path ($($signature.Status))" }
+    if ($env:OPENVZ_AZURE_PUBLISHER -and $signature.SignerCertificate.Subject -notlike "*$($env:OPENVZ_AZURE_PUBLISHER)*") {
+      throw "Unexpected signer: $($signature.SignerCertificate.Subject)"
+    }
+    Write-Host "Signature OK: $($signature.SignerCertificate.Subject)"
+    return
   }
-  Write-Host "Signature OK: $($signature.SignerCertificate.Subject)"
+
+  if ($signature.Status -notin @('NotSigned', 'Valid')) {
+    throw "Unexpected signature status for unsigned RC: $Path ($($signature.Status))"
+  }
+  Write-Host "Unsigned RC signature status: $($signature.Status)"
 }
 
-Assert-ValidSignature $Setup
+Assert-SignatureContract $Setup
 node (Join-Path $PSScriptRoot 'smoke-packaged-playwright.mjs')
 
 $SmokeRoot = Join-Path $env:RUNNER_TEMP 'openvz-install-smoke'
@@ -27,7 +36,7 @@ if ($installer.ExitCode -ne 0) { throw "Silent installer failed with $($installe
 $Exe = Join-Path $InstallDir 'OpenVZ Agent.exe'
 $Uninstaller = Join-Path $InstallDir 'Uninstall OpenVZ Agent.exe'
 if (-not (Test-Path $Exe)) { throw "Installed executable missing: $Exe" }
-Assert-ValidSignature $Exe
+Assert-SignatureContract $Exe
 
 $env:OPENVZ_USER_DIR = $UserDir
 $env:OPENVZ_PORT = '3721'
@@ -60,4 +69,5 @@ $uninstall = Start-Process -FilePath $Uninstaller -ArgumentList @('/S', '/curren
 if ($uninstall.ExitCode -ne 0) { throw "Silent uninstall failed with $($uninstall.ExitCode)" }
 if (-not (Test-Path $marker)) { throw 'Silent uninstall removed user data despite keep-data default' }
 
-Write-Host 'Windows signed install, launch, SQLite, offline Chromium, upgrade and uninstall smoke: OK'
+$mode = if ($RequireSignature) { 'signed release' } else { 'unsigned community RC' }
+Write-Host "Windows $mode install, launch, SQLite, offline Chromium, upgrade and uninstall smoke: OK"
