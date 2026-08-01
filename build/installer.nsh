@@ -39,6 +39,8 @@ Function BailongmaFindForeignInstallRootItem
     StrCmp $R2 "chrome_100_percent.pak" bailongmaScanInstallRootNext
     StrCmp $R2 "chrome_200_percent.pak" bailongmaScanInstallRootNext
     StrCmp $R2 "d3dcompiler_47.dll" bailongmaScanInstallRootNext
+    StrCmp $R2 "dxcompiler.dll" bailongmaScanInstallRootNext
+    StrCmp $R2 "dxil.dll" bailongmaScanInstallRootNext
     StrCmp $R2 "ffmpeg.dll" bailongmaScanInstallRootNext
     StrCmp $R2 "icudtl.dat" bailongmaScanInstallRootNext
     StrCmp $R2 "libEGL.dll" bailongmaScanInstallRootNext
@@ -69,13 +71,13 @@ Function BailongmaValidateInstallDir
   ${GetFileName} "$INSTDIR" $R0
   ${if} $R0 != "OpenVZ Agent"
   ${andIf} $R0 != "Bailongma"
-    MessageBox MB_ICONSTOP|MB_OK "Please install OpenVZ Agent into its own folder, for example:$\r$\n$\r$\nD:\OpenVZ Agent$\r$\nD:\Apps\OpenVZ Agent$\r$\n$\r$\nCurrent path:$\r$\n$INSTDIR"
+    MessageBox MB_ICONSTOP|MB_OK "Please install OpenVZ Agent into its own folder, for example:$\r$\n$\r$\nD:\OpenVZ Agent$\r$\nD:\Apps\OpenVZ Agent$\r$\n$\r$\nCurrent path:$\r$\n$INSTDIR" /SD IDOK
     Abort
   ${endIf}
 
   Call BailongmaFindForeignInstallRootItem
   ${if} $R3 != "0"
-    MessageBox MB_ICONSTOP|MB_OK "The selected OpenVZ Agent install folder already contains unrelated content:$\r$\n$\r$\n$INSTDIR\$R3$\r$\n$\r$\nTo protect your files and other software, choose an empty folder or a folder used only by OpenVZ Agent."
+    MessageBox MB_ICONSTOP|MB_OK "The selected OpenVZ Agent install folder already contains unrelated content:$\r$\n$\r$\n$INSTDIR\$R3$\r$\n$\r$\nTo protect your files and other software, choose an empty folder or a folder used only by OpenVZ Agent." /SD IDOK
     Abort
   ${endIf}
 
@@ -86,7 +88,7 @@ Function BailongmaValidateInstallDir
   ${GetRoot} "$INSTDIR" $R4
   ${DriveSpace} "$R4\" "/D=F /S=M" $R5
   ${if} $R5 < 600
-    MessageBox MB_ICONSTOP|MB_OK "目标磁盘可用空间不足，无法安全安装 OpenVZ Agent。$\r$\n$\r$\n所在磁盘：$R4$\r$\n当前可用：$R5 MB$\r$\n至少需要：600 MB$\r$\n$\r$\n请清理磁盘空间，或将 OpenVZ Agent 安装到其他磁盘后重试。"
+    MessageBox MB_ICONSTOP|MB_OK "目标磁盘可用空间不足，无法安全安装 OpenVZ Agent。$\r$\n$\r$\n所在磁盘：$R4$\r$\n当前可用：$R5 MB$\r$\n至少需要：600 MB$\r$\n$\r$\n请清理磁盘空间，或将 OpenVZ Agent 安装到其他磁盘后重试。" /SD IDOK
     Abort
   ${endIf}
 FunctionEnd
@@ -118,6 +120,8 @@ Function BailongmaValidateInstalledPayload
   ; incomplete. Missing files here produce confusing launch failures later.
   IfFileExists "$INSTDIR\OpenVZ Agent.exe" 0 bailongmaPayloadMissing
   IfFileExists "$INSTDIR\d3dcompiler_47.dll" 0 bailongmaPayloadMissing
+  IfFileExists "$INSTDIR\dxcompiler.dll" 0 bailongmaPayloadMissing
+  IfFileExists "$INSTDIR\dxil.dll" 0 bailongmaPayloadMissing
   IfFileExists "$INSTDIR\ffmpeg.dll" 0 bailongmaPayloadMissing
   IfFileExists "$INSTDIR\libEGL.dll" 0 bailongmaPayloadMissing
   IfFileExists "$INSTDIR\libGLESv2.dll" 0 bailongmaPayloadMissing
@@ -144,7 +148,7 @@ Function BailongmaValidateInstalledPayload
     Return
 
   bailongmaPayloadMissing:
-    MessageBox MB_ICONSTOP|MB_OK "OpenVZ Agent installation did not complete correctly. To avoid leaving a broken app on this computer, setup will stop now.$\r$\n$\r$\nPlease close OpenVZ Agent and run this installer again. If the problem continues, send this path to support:$\r$\n$INSTDIR"
+    MessageBox MB_ICONSTOP|MB_OK "OpenVZ Agent installation did not complete correctly. To avoid leaving a broken app on this computer, setup will stop now.$\r$\n$\r$\nPlease close OpenVZ Agent and run this installer again. If the problem continues, send this path to support:$\r$\n$INSTDIR" /SD IDOK
     Abort
 FunctionEnd
 
@@ -225,7 +229,7 @@ FunctionEnd
       ${orIf} ${FileExists} "$INSTDIR\Uninstall OpenVZ Agent.exe"
       ${orIf} ${FileExists} "$INSTDIR\Uninstall Bailongma.exe"
       ${orIf} ${FileExists} "$INSTDIR\resources\app.asar"
-        MessageBox MB_ICONSTOP|MB_OK "OpenVZ Agent is installed in an unsafe shared folder:$\r$\n$\r$\n$INSTDIR$\r$\n$\r$\nTo protect other software, this installer will not continue. Please contact support or manually move/remove only the OpenVZ Agent files, then install again."
+        MessageBox MB_ICONSTOP|MB_OK "OpenVZ Agent is installed in an unsafe shared folder:$\r$\n$\r$\n$INSTDIR$\r$\n$\r$\nTo protect other software, this installer will not continue. Please contact support or manually move/remove only the OpenVZ Agent files, then install again." /SD IDOK
         Abort
       ${else}
         Call BailongmaNormalizeInstallDir
@@ -240,7 +244,7 @@ FunctionEnd
   ; contains anything we do not recognize as OpenVZ Agent/Electron payload.
   Call BailongmaFindForeignInstallRootItem
   ${if} $R3 != "0"
-      MessageBox MB_ICONSTOP|MB_OK "OpenVZ Agent install folder contains unrelated content:$\r$\n$\r$\n$INSTDIR\$R3$\r$\n$\r$\nTo protect your files and other software, this installer will not run the old uninstaller automatically. Please back up or move this content out of the OpenVZ Agent folder, then install again."
+      MessageBox MB_ICONSTOP|MB_OK "OpenVZ Agent install folder contains unrelated content:$\r$\n$\r$\n$INSTDIR\$R3$\r$\n$\r$\nTo protect your files and other software, this installer will not run the old uninstaller automatically. Please back up or move this content out of the OpenVZ Agent folder, then install again." /SD IDOK
       Abort
     ${endIf}
 
@@ -281,6 +285,8 @@ FunctionEnd
   Delete "$INSTDIR\chrome_100_percent.pak"
   Delete "$INSTDIR\chrome_200_percent.pak"
   Delete "$INSTDIR\d3dcompiler_47.dll"
+  Delete "$INSTDIR\dxcompiler.dll"
+  Delete "$INSTDIR\dxil.dll"
   Delete "$INSTDIR\ffmpeg.dll"
   Delete "$INSTDIR\icudtl.dat"
   Delete "$INSTDIR\libEGL.dll"

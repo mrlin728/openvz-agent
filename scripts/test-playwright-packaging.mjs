@@ -31,6 +31,14 @@ assert.match(installerSource, /better-sqlite3\\prebuilds\\win32-x64\.node/)
 assert.doesNotMatch(installerSource, /better-sqlite3\\build\\Release\\better_sqlite3\.node/)
 assert.match(installerSource, /Recognized legacy Bailongma install directory; upgrading in place/)
 assert.match(installerSource, /StrCmp \$R2 "Bailongma\.exe"/)
+for (const electronRuntimeFile of ['dxcompiler.dll', 'dxil.dll']) {
+  assert.ok(installerSource.includes(`StrCmp $R2 "${electronRuntimeFile}"`), `${electronRuntimeFile} must be recognized as Electron-owned during upgrade`)
+  assert.ok(installerSource.includes(`IfFileExists "$INSTDIR\\${electronRuntimeFile}"`), `${electronRuntimeFile} must be part of payload validation`)
+  assert.ok(installerSource.includes(`Delete "$INSTDIR\\${electronRuntimeFile}"`), `${electronRuntimeFile} must be removed during uninstall`)
+}
+for (const line of installerSource.split('\n').filter(line => line.includes('MessageBox MB_ICONSTOP|MB_OK'))) {
+  assert.ok(line.includes('/SD IDOK'), `fatal installer message must have a silent default: ${line.trim()}`)
+}
 assert.match(installerSource, /StrCpy \$R8 "\$INSTDIR\.openvz-update-\$pid"/)
 assert.match(installerSource, /Rename "\$INSTDIR" "\$R8"/)
 assert.doesNotMatch(installerSource, /Call un\.atomicRMDir/, 'cross-volume upgrades must not move the bundled Chromium file by file')
