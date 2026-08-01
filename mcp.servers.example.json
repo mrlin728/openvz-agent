@@ -1,0 +1,23 @@
+{
+  "_comment": "复制此文件为 mcp.servers.json 放到用户数据目录（与 config.json 同级），重启 agent 即生效。每个 server 是一个本地子进程，agent 通过 MCP 协议即插即用地拿到它的全部工具。env 里可用 ${VAR} 引用宿主环境变量。加 \"disabled\": true 可临时关掉某个 server 而不删配置。",
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/Users/you/Documents"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "${GITHUB_TOKEN}" }
+    },
+    "memory": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    },
+    "sqlite": {
+      "disabled": true,
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-sqlite", "--db-path", "/path/to/your.db"]
+    }
+  }
+}

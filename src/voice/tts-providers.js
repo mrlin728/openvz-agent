@@ -1,6 +1,7 @@
 // 流式 TTS 服务商接入层
 // 支持: OpenAI TTS / ElevenLabs / 火山引擎 / 豆包（方舟）
 // 统一返回 Node.js Readable stream，供 api.js pipe 到 HTTP 响应
+import '../network-proxy.js'
 import { Readable, Transform } from 'stream'
 
 export const TTS_PROVIDERS = [
@@ -67,8 +68,8 @@ export const TTS_VOICES = {
 export const TTS_PROVIDER_REQUIREMENTS = {
   doubao: {
     label: '豆包（方舟）',
-    groups: [{ keys: ['doubaoAccessKey', 'doubaoKey'], label: 'Access Key 或 API Key' }],
-    guide: '请在「语音设置 → 语音合成」里选择豆包，并填入控制台的语音合成 Access Key（或 API Key）。',
+    groups: [{ keys: ['doubaoKey'], label: 'API Key' }],
+    guide: '请在「语音设置 → 语音合成」里选择豆包，并填入控制台的语音合成 API Key。',
   },
   minimax: {
     label: 'MiniMax',
@@ -193,14 +194,10 @@ async function streamDoubao({
   text,
   voiceId = 'zh_female_xiaohe_uranus_bigtts',
   apiKey,
-  appId,
-  accessKey,
   resourceId,
-  style,
   speechRate,
 }) {
-  const token = accessKey || apiKey
-  if (!token) throw new Error('豆包 TTS: 缺少 API Key/Access Key，请在设置中填写豆包语音凭证')
+  if (!apiKey) throw new Error('豆包 TTS: 缺少 API Key，请在设置中填写豆包语音凭证')
   const speaker = voiceId || 'zh_female_xiaohe_uranus_bigtts'
   const resolvedResourceId = resolveDoubaoResourceId(speaker, resourceId)
   const headers = {
@@ -208,9 +205,7 @@ async function streamDoubao({
     'X-Api-Request-Id': `blm_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     'Content-Type': 'application/json',
   }
-  if (appId) headers['X-Api-App-Id'] = appId
-  if (accessKey) headers['X-Api-Access-Key'] = accessKey
-  if (apiKey) headers['X-Api-Key'] = apiKey
+  headers['X-Api-Key'] = apiKey
   const reqParams = {
     text,
     speaker,
@@ -220,12 +215,6 @@ async function streamDoubao({
   const rate = Number(speechRate)
   if (Number.isFinite(rate) && rate !== 0) {
     reqParams.audio_params.speech_rate = Math.max(-50, Math.min(100, Math.round(rate)))
-  }
-  // 情感风格：自然语言描述（如"用低沉沉稳、情绪饱满带金属感的人工智能管家声音"），
-  // 通过 additions.context_texts 注入。additions 必须是序列化后的 JSON 字符串。
-  const styleText = (style || '').trim()
-  if (styleText) {
-    reqParams.additions = JSON.stringify({ context_texts: [styleText], model_type: 4 })
   }
   const resp = await fetch('https://openspeech.bytedance.com/api/v3/tts/unidirectional', {
     method: 'POST',
@@ -375,10 +364,7 @@ export async function streamTTS({ text, provider, voiceId, keys = {} }) {
         text,
         voiceId,
         apiKey: keys.doubaoKey,
-        appId: keys.doubaoAppId,
-        accessKey: keys.doubaoAccessKey,
         resourceId: keys.doubaoResourceId,
-        style: keys.doubaoStyle,
         speechRate: keys.doubaoSpeechRate,
       })
     case 'minimax':

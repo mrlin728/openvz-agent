@@ -19,11 +19,14 @@ const TOOL_RISK = {
   schedule_reminder: 'medium',
   manage_prefetch_task: 'medium',
   manage_rule: 'medium',
+  ui_set: 'medium',
   ui_show: 'medium',
+  ui_hide: 'low',
   ui_update: 'medium',
-  ui_hide: 'medium',
   ui_patch: 'medium',
-  manage_app: 'medium',
+  ui_register: 'high',
+  capability_demo: 'medium',
+  terminal_stream: 'medium',
   set_tick_interval: 'medium',
   media_mode: 'low',
   hotspot_mode: 'low',
@@ -40,6 +43,7 @@ const TOOL_RISK = {
   find_tool: 'low',
   complete_startup_self_check: 'low',
   delete_file: 'high',
+  install_software: 'high',
   exec_command: 'high',
   exec_quick_command: 'medium',
   exec_task_command: 'high',
@@ -47,17 +51,65 @@ const TOOL_RISK = {
   download_file: 'high',
   kill_process: 'high',
   web_search: 'high',
+  web_read: 'high',
   fetch_url: 'high',
   browser_read: 'high',
+  browser_sessions: 'low',
+  browser_open: 'medium',
+  browser_navigate: 'medium',
+  browser_inspect: 'low',
+  browser_act: 'high',
+  browser_tabs: 'medium',
+  browser_close: 'low',
   speak: 'high',
   generate_lyrics: 'high',
   generate_music: 'high',
   generate_image: 'high',
-  generate_video: 'high',
-  ui_register: 'high',
+  run_capability: 'high',
+  run_api_capability: 'high',
+  analyze_image: 'high',
+  manage_api_capability: 'high',
   set_security: 'high',
+  plan_workflow: 'low',
+  run_workflow: 'high',
+  list_workflows: 'low',
+  replay_workflow: 'high',
 }
+
+// Audit risk and autonomous authority are related but not identical. Several
+// read-only or reversible capabilities (for example web reads and speech) are
+// classified "high" for observability/cost, yet blanket-blocking every high
+// label would make autonomous task progress impossible. General shell tools
+// stay in the explicit-authorization set because their cwd boundary is not an
+// OS sandbox. The rest of this set covers authority changes, installation,
+// destructive state changes, process control, and unbudgeted provider work.
+const AUTONOMOUS_USER_AUTH_REQUIRED = new Set([
+  'delete_file',
+  'install_software',
+  'install_tool',
+  'uninstall_tool',
+  'manage_tool_factory',
+  'set_security',
+  'grant_agent_delegation',
+  'manage_api_capability',
+  'kill_process',
+  'exec_command',
+  'exec_quick_command',
+  'exec_task_command',
+  'exec_background_command',
+  'generate_image',
+  'generate_music',
+  'generate_lyrics',
+  'run_capability',
+  'run_api_capability',
+  'analyze_image',
+  'browser_act',
+  'ui_register',
+  'run_workflow',
+  'replay_workflow',
+])
 export function classifyTool(name) {
+  if (String(name || '').startsWith('mcp__')) return 'high'
   return TOOL_RISK[name] || 'medium'
 }
 
@@ -78,17 +130,45 @@ export function isDangerousShellCommand(command) {
 }
 
 export function evaluateToolPolicy(name, args = {}, context = {}) {
-  const risk = classifyTool(name)
+  const risk = name === 'browser_close' && args.clear_profile === true ? 'high' : classifyTool(name)
   const blockedTools = config.security?.blockedTools || []
-  if (blockedTools.includes(name)) {
+  const canonicalName = ['fetch_url', 'browser_read'].includes(name) ? 'web_read' : name
+  if (blockedTools.includes(canonicalName)) {
     return { allowed: false, risk, reason: `工具 "${name}" 已被安全策略禁用` }
   }
   if (['exec_command', 'exec_quick_command', 'exec_task_command', 'exec_background_command'].includes(name)) {
     const reasons = isDangerousShellCommand(args.command || args.cmd || '')
     if (reasons.length) return { allowed: false, risk, reason: reasons.join('; ') }
   }
-  if (context.autonomous && risk === 'high' && !context.allowHighRiskAutonomy) {
-    return { allowed: false, risk, reason: 'high-risk tool requires an explicit user-driven context' }
+  if (
+    context.autonomous
+    && name === 'manage_rule'
+    && String(args.action || 'list').trim().toLowerCase() !== 'list'
+    && !context.allowHighRiskAutonomy
+  ) {
+    return { allowed: false, risk, reason: 'autonomous Tick may inspect rules, but changing persistent rules requires an explicit user-driven context' }
+  }
+  if (
+    context.autonomous
+    && name === 'browser_open'
+    && (
+      args.visible !== false
+      // HTTP(S) browser opens are persistent by default. Autonomous work must
+      // opt out explicitly in addition to requesting a headless window.
+      || args.persistent !== false
+    )
+    && !context.allowHighRiskAutonomy
+  ) {
+    return { allowed: false, risk, reason: 'an autonomous Tick cannot open a visible or persistent browser profile without explicit user authority' }
+  }
+  if (context.autonomous && name === 'browser_close' && args.clear_profile === true && !context.allowHighRiskAutonomy) {
+    return { allowed: false, risk, reason: 'an autonomous Tick cannot delete saved browser login state without explicit user authority' }
+  }
+  if (context.autonomous && AUTONOMOUS_USER_AUTH_REQUIRED.has(name) && !context.allowHighRiskAutonomy) {
+    return { allowed: false, risk, reason: 'this authority-changing, destructive, or unbudgeted tool requires an explicit user-driven context' }
+  }
+  if (context.autonomous && String(name || '').startsWith('mcp__') && !context.allowHighRiskAutonomy) {
+    return { allowed: false, risk, reason: 'MCP tools require an explicit user-driven context because server authority is externally defined' }
   }
   return { allowed: true, risk, reason: '' }
 }

@@ -104,6 +104,19 @@ export const systemSchemas = {
     }
   },
 
+  connect_feishu: {
+    type: 'function',
+    function: {
+      name: 'connect_feishu',
+      description: 'Show the Feishu (Lark) connection popup so the user can configure the Feishu bot via long-connection mode. The popup contains a step-by-step guide, App ID / App Secret inputs, and a button to open the Feishu open platform — no public callback URL is needed (desktop app). Call ONLY when the user explicitly asks to connect, bind, or set up Feishu/飞书. Do not call speculatively.',
+      parameters: {
+        type: 'object',
+        properties: {},
+        required: []
+      }
+    }
+  },
+
   find_tool: {
     type: 'function',
     function: {
@@ -126,7 +139,7 @@ export const systemSchemas = {
     type: 'function',
     function: {
       name: 'set_security',
-      description: 'Request a sandbox security setting change. Shows a confirmation card to the user — the change only takes effect after explicit user approval. Call ONLY when the user explicitly asks to disable or enable the file sandbox or exec sandbox. Do not call speculatively.',
+      description: 'Request a security setting change. Shows a confirmation card to the user — the change only takes effect after explicit user approval. Call ONLY when the user explicitly asks to change a sandbox setting or grant/revoke browser private-network access. Do not call speculatively.',
       parameters: {
         type: 'object',
         properties: {
@@ -137,6 +150,10 @@ export const systemSchemas = {
           exec_sandbox: {
             type: 'boolean',
             description: 'New value for exec sandbox. false = disable (allow absolute paths and home dir). Omit if not changing.'
+          },
+          browser_private_network: {
+            type: 'boolean',
+            description: 'Grant or revoke the interactive browser\'s access to localhost, loopback, and private-network addresses. Default false. This is independent of backend LAN listening.'
           },
           reason: {
             type: 'string',

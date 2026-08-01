@@ -1,49 +1,284 @@
-name: Release
+name: Desktop release
 
-# 打 tag（v*）时自动构建 macOS(arm64) + Windows(x64) 安装包并发布到 GitHub Release。
-# 也可在 Actions 页面手动触发（workflow_dispatch）先跑一遍构建。
 on:
   push:
-    tags:
-      - 'v*'
+    # Stable releases are always signed. Release candidates are dispatched
+    # manually so unsigned community builds can never masquerade as stable.
+    tags: ['v2.2.0']
   workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v2.2.0 tag to publish
+        required: true
+        default: v2.2.0-rc.1
+      unsigned:
+        description: Publish a clearly labelled unsigned prerelease (RC tags only)
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
 
-jobs:
-  build-mac:
-    runs-on: macos-14
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'   # electron-builder 的 DMG 步骤需要 python
-      - run: npm ci
-      - run: node scripts/build-macos-speech.mjs
-      - run: node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 -a arm64
-      - name: Build & publish macOS arm64 DMG
-        run: node ./node_modules/electron-builder/cli.js --mac --arm64 --publish always
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # 无 Apple 证书 → 走 ad-hoc 签名
+concurrency:
+  group: release-${{ github.ref_name }}-${{ inputs.tag }}
+  cancel-in-progress: false
 
-  build-win:
-    runs-on: windows-latest
+jobs:
+  windows:
+    name: Windows 10/11 x64 · ${{ inputs.unsigned && 'unsigned RC' || 'signed installer' }}
+    runs-on: windows-2025
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      OPENVZ_RELEASE_BUILD: ${{ inputs.unsigned && '0' || '1' }}
+      OPENVZ_BUILD_PLATFORM: win32
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+      OPENVZ_AZURE_PUBLISHER: ${{ vars.AZURE_SIGN_PUBLISHER }}
+      OPENVZ_AZURE_ENDPOINT: ${{ vars.AZURE_SIGN_ENDPOINT }}
+      OPENVZ_AZURE_CERTIFICATE_PROFILE: ${{ vars.AZURE_SIGN_CERTIFICATE_PROFILE }}
+      OPENVZ_AZURE_ACCOUNT_NAME: ${{ vars.AZURE_SIGN_ACCOUNT_NAME }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '24'
+          cache: npm
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Match package metadata to release tag
+        run: node scripts/prepare-release-version.mjs "$env:RELEASE_TAG"
       - run: npm ci
-      - run: node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 -a x64
-      - name: Build & publish Windows x64 installer
-        run: node ./node_modules/electron-builder/cli.js --win nsis --x64 --publish always
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Require Azure Trusted Signing configuration
+        if: ${{ !inputs.unsigned }}
+        run: npm run verify:release-config
+      - name: Build installer and offline Chromium
+        run: npm run build:win
+      - name: Install, launch, upgrade and packaged browser smoke
+        shell: pwsh
+        run: ./scripts/smoke-windows-install.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-windows-x64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/OpenVZ-Agent-Setup.exe
+            dist/OpenVZ-Agent-Setup.exe.blockmap
+            dist/latest.yml
+
+  mac-intel:
+    name: macOS 12+ Intel · ${{ inputs.unsigned && 'unsigned RC' || 'signed and notarized' }}
+    runs-on: macos-15-intel
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      OPENVZ_RELEASE_BUILD: ${{ inputs.unsigned && '0' || '1' }}
+      OPENVZ_BUILD_PLATFORM: darwin
+      MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+      MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Match package metadata to release tag
+        run: node scripts/prepare-release-version.mjs "$RELEASE_TAG"
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Materialize App Store Connect API key
+        if: ${{ !inputs.unsigned }}
+        shell: bash
+        run: |
+          test -n "$APPLE_API_KEY_CONTENT"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+      - name: Require Developer ID and notarization configuration
+        if: ${{ !inputs.unsigned }}
+        run: npm run verify:release-config
+      - name: Build x64 DMG and update ZIP
+        run: npm run build:mac:x64
+      - name: Verify architecture and release security contract
+        run: node scripts/smoke-mac-artifacts.mjs x64
+      - name: Launch bundled offline Chromium from the DMG
+        run: node scripts/smoke-packaged-playwright-mac.mjs x64
+      - name: Copy to temporary Applications and launch
+        run: bash scripts/smoke-mac-launch.sh x64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-x64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/OpenVZ-Agent-mac-x64.dmg
+            dist/OpenVZ-Agent-mac-x64.zip
+            dist/OpenVZ-Agent-mac-x64.zip.blockmap
+            dist/latest-mac.yml
+
+  mac-apple-silicon:
+    name: macOS 12+ Apple Silicon · ${{ inputs.unsigned && 'unsigned RC' || 'signed and notarized' }}
+    runs-on: macos-14
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      OPENVZ_RELEASE_BUILD: ${{ inputs.unsigned && '0' || '1' }}
+      OPENVZ_BUILD_PLATFORM: darwin
+      MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+      MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+      APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY }}
+      APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+      APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Match package metadata to release tag
+        run: node scripts/prepare-release-version.mjs "$RELEASE_TAG"
+      - run: npm ci
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Materialize App Store Connect API key
+        if: ${{ !inputs.unsigned }}
+        shell: bash
+        run: |
+          test -n "$APPLE_API_KEY_CONTENT"
+          printf '%s' "$APPLE_API_KEY_CONTENT" > "$RUNNER_TEMP/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/AuthKey.p8"
+          echo "APPLE_API_KEY=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
+      - name: Require Developer ID and notarization configuration
+        if: ${{ !inputs.unsigned }}
+        run: npm run verify:release-config
+      - name: Build arm64 DMG and update ZIP
+        run: npm run build:mac:arm64
+      - name: Verify architecture and release security contract
+        run: node scripts/smoke-mac-artifacts.mjs arm64
+      - name: Launch bundled offline Chromium from the DMG
+        run: node scripts/smoke-packaged-playwright-mac.mjs arm64
+      - name: Copy to temporary Applications and launch
+        run: bash scripts/smoke-mac-launch.sh arm64
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-macos-arm64
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/OpenVZ-Agent-mac-arm64.dmg
+            dist/OpenVZ-Agent-mac-arm64.zip
+            dist/OpenVZ-Agent-mac-arm64.zip.blockmap
+            dist/latest-mac.yml
+
+  publish:
+    name: Assemble metadata and publish once
+    needs: [windows, mac-intel, mac-apple-silicon]
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+      UNSIGNED_BUILD: ${{ inputs.unsigned && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Validate release mode and version
+        shell: bash
+        run: |
+          if [[ "$UNSIGNED_BUILD" == "1" && ! "$RELEASE_TAG" =~ ^v2\.2\.0-rc\.[0-9]+$ ]]; then
+            echo "Unsigned builds are restricted to v2.2.0-rc.N prerelease tags" >&2
+            exit 1
+          fi
+          node scripts/prepare-release-version.mjs "$RELEASE_TAG"
+      - run: npm ci --ignore-scripts
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: release-input
+      - name: Merge update metadata and checksums
+        shell: bash
+        run: |
+          node scripts/merge-release-metadata.mjs release-input release-output
+          if [[ "$UNSIGNED_BUILD" == "1" ]]; then
+            printf '%s\n' \
+              'UNSIGNED COMMUNITY RELEASE CANDIDATE' \
+              '' \
+              'These Windows and macOS binaries do not have an Authenticode or Apple Developer ID signature.' \
+              'Verify SHA256SUMS.txt and download only from github.com/mrlin728/openvz-agent.' \
+              'See the GitHub Release notes and download page for platform-specific installation steps.' \
+              > release-output/UNSIGNED-BUILD.txt
+          fi
+          node scripts/generate-checksums.mjs release-output
+          node scripts/verify-release-assets.mjs release-output
+      - name: Ensure manual releases point at an existing tag
+        run: git rev-parse --verify "refs/tags/$RELEASE_TAG"
+      - name: Create the GitHub Release and upload all assets
+        shell: bash
+        run: |
+          extra=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then extra+=(--prerelease); fi
+          notes=(--generate-notes)
+          title="OpenVZ Agent $RELEASE_TAG"
+          if [[ "$UNSIGNED_BUILD" == "1" ]]; then
+            cat > unsigned-release-notes.md <<'EOF'
+          > [!WARNING]
+          > This is an **unsigned community release candidate**, not a signed stable release.
+          > Windows SmartScreen and macOS Gatekeeper warnings are expected. Verify
+          > `SHA256SUMS.txt` before opening any download.
+
+          Windows: after verifying SHA-256, open the installer. If SmartScreen appears,
+          choose **More info → Run anyway** only when the file came from this Release.
+          `Get-AuthenticodeSignature` will report `NotSigned` for this RC.
+
+          macOS: after verifying SHA-256, drag the app from the correct Intel/Apple
+          Silicon DMG into Applications. Control-click the app and choose **Open**.
+          If macOS still blocks it, use **System Settings → Privacy & Security → Open
+          Anyway**. Do not disable Gatekeeper globally and do not run downloaded scripts.
+
+          All binaries were built by GitHub-hosted native runners from the tagged source.
+          The release also contains `UNSIGNED-BUILD.txt`; formal `v2.2.0` remains blocked
+          until Apple and Azure signing credentials are configured.
+          EOF
+            notes=(--notes-file unsigned-release-notes.md)
+            title="OpenVZ Agent $RELEASE_TAG (Unsigned Community RC)"
+          fi
+          gh release create "$RELEASE_TAG" release-output/* \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            "${notes[@]}" \
+            --title "$title" \
+            "${extra[@]}"
+      - name: Download the published release and verify SHA-256 again
+        shell: bash
+        run: |
+          mkdir published
+          gh release download "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --dir published
+          cd published
+          sha256sum --check SHA256SUMS.txt

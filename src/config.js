@@ -1,8 +1,29 @@
+import './network-proxy.js'
 import fs from 'fs'
 import path from 'path'
 import { paths } from './paths.js'
 import { nowTimestamp } from './time.js'
-import { encryptSecret, decryptSecret, encryptSecretsDeep, decryptSecretsDeep } from './secure-store.js'
+import { decryptSecretsDeep, encryptSecretsDeep } from './secure-store.js'
+import { prepareUpgradeBackup } from './upgrade-migration.js'
+
+function readSecureJsonFile(file, fallback = null) {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'))
+    if (!parsed || typeof parsed !== 'object') return fallback
+    return decryptSecretsDeep(parsed)
+  } catch {
+    return fallback
+  }
+}
+
+function writeSecureJsonFile(file, value) {
+  const tmp = `${file}.tmp`
+  const stored = encryptSecretsDeep(structuredClone(value || {}))
+  fs.mkdirSync(path.dirname(file), { recursive: true })
+  fs.writeFileSync(tmp, JSON.stringify(stored, null, 2), { encoding: 'utf-8', mode: 0o600 })
+  try { fs.chmodSync(tmp, 0o600) } catch {}
+  fs.renameSync(tmp, file)
+}
 
 export const DEEPSEEK_PROVIDER = 'deepseek'
 export const MINIMAX_PROVIDER = 'minimax'
@@ -14,11 +35,15 @@ export const MIMO_PROVIDER = 'mimo'
 
 export const DEFAULT_DEEPSEEK_MODEL = 'deepseek-v4-pro'
 export const DEFAULT_MINIMAX_MODEL = 'MiniMax-M2.7'
-export const DEFAULT_OPENAI_MODEL = 'gpt-4o-mini'
+export const DEFAULT_OPENAI_MODEL = 'gpt-5.5'
 export const DEFAULT_QWEN_MODEL = 'qwen-turbo'
-export const DEFAULT_MOONSHOT_MODEL = 'moonshot-v1-8k'
+export const DEFAULT_MOONSHOT_MODEL = 'kimi-k2.6'
 export const DEFAULT_ZHIPU_MODEL = 'glm-5.1'
 export const DEFAULT_MIMO_MODEL = 'mimo-v2.5-pro'
+
+export const CONTEXT_MESSAGE_LIMIT_MIN = 1
+export const CONTEXT_MESSAGE_LIMIT_MAX = 40
+export const DEFAULT_CONTEXT_MESSAGE_LIMIT = 10
 
 export const DEEPSEEK_MODELS = [
   {
@@ -58,13 +83,113 @@ export const MINIMAX_MODELS = [
 
 export const OPENAI_MODELS = [
   {
-    id: 'gpt-4o-mini',
-    label: 'gpt-4o-mini',
+    id: 'gpt-5.5',
+    label: 'GPT-5.5',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.5-2026-04-23',
+    label: 'GPT-5.5 (2026-04-23)',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.4',
+    label: 'GPT-5.4',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.4-2026-03-05',
+    label: 'GPT-5.4 (2026-03-05)',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.4-mini',
+    label: 'GPT-5.4 mini',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.4-nano',
+    label: 'GPT-5.4 nano',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.3-chat-latest',
+    label: 'GPT-5.3 Chat latest',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.2',
+    label: 'GPT-5.2',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.2-chat-latest',
+    label: 'GPT-5.2 Chat latest',
+    deprecated: true,
+  },
+  {
+    id: 'gpt-5.1',
+    label: 'GPT-5.1',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5.1-chat-latest',
+    label: 'GPT-5.1 Chat latest',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5',
+    label: 'GPT-5',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5-chat-latest',
+    label: 'GPT-5 Chat latest',
+    deprecated: true,
+  },
+  {
+    id: 'gpt-5-mini',
+    label: 'GPT-5 mini',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-5-nano',
+    label: 'GPT-5 nano',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-4.1',
+    label: 'GPT-4.1',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-4.1-mini',
+    label: 'GPT-4.1 mini',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-4.1-nano',
+    label: 'GPT-4.1 nano',
     deprecated: false,
   },
   {
     id: 'gpt-4o',
-    label: 'gpt-4o',
+    label: 'GPT-4o',
+    deprecated: false,
+  },
+  {
+    id: 'gpt-4o-mini',
+    label: 'GPT-4o mini',
+    deprecated: false,
+  },
+  {
+    id: 'o3',
+    label: 'o3',
+    deprecated: false,
+  },
+  {
+    id: 'o4-mini',
+    label: 'o4-mini',
     deprecated: false,
   },
 ]
@@ -84,14 +209,59 @@ export const QWEN_MODELS = [
 
 export const MOONSHOT_MODELS = [
   {
-    id: 'moonshot-v1-8k',
-    label: 'moonshot-v1-8k',
+    id: 'kimi-k2.7-code',
+    label: 'kimi-k2.7-code',
+    deprecated: false,
+  },
+  {
+    id: 'kimi-k2.7-code-highspeed',
+    label: 'kimi-k2.7-code-highspeed',
+    deprecated: false,
+  },
+  {
+    id: 'kimi-k2.6',
+    label: 'kimi-k2.6',
+    deprecated: false,
+  },
+  {
+    id: 'kimi-k2.5',
+    label: 'kimi-k2.5',
     deprecated: false,
   },
   {
     id: 'moonshot-v1-32k',
     label: 'moonshot-v1-32k',
     deprecated: false,
+  },
+  {
+    id: 'moonshot-v1-128k',
+    label: 'moonshot-v1-128k',
+    deprecated: false,
+  },
+  {
+    id: 'moonshot-v1-8k',
+    label: 'moonshot-v1-8k',
+    deprecated: false,
+  },
+  {
+    id: 'moonshot-v1-8k-vision-preview',
+    label: 'moonshot-v1-8k-vision-preview',
+    deprecated: false,
+  },
+  {
+    id: 'moonshot-v1-32k-vision-preview',
+    label: 'moonshot-v1-32k-vision-preview',
+    deprecated: false,
+  },
+  {
+    id: 'moonshot-v1-128k-vision-preview',
+    label: 'moonshot-v1-128k-vision-preview',
+    deprecated: false,
+  },
+  {
+    id: 'kimi-k2-thinking',
+    label: 'kimi-k2-thinking (deprecated)',
+    deprecated: true,
   },
 ]
 
@@ -250,9 +420,49 @@ const PROBE_TIMEOUT_MS = 12000
 function normalizeModel(model, provider = DEEPSEEK_PROVIDER) {
   const pConfig = PROVIDER_CONFIG[provider] || PROVIDER_CONFIG[DEEPSEEK_PROVIDER]
   const value = String(model || '').trim()
-  const validIds = new Set(pConfig.models.map(m => m.id))
-  if (validIds.has(value)) return value
+  if (value) return value
   return pConfig.defaultModel
+}
+
+function withCurrentModel(models, model) {
+  const value = String(model || '').trim()
+  if (!value || models.some(m => m?.id === value)) return models
+  return [{ id: value, label: `${value} (custom)`, deprecated: false, custom: true }, ...models]
+}
+
+function isMoonshotKimiModel(model) {
+  return String(model || '').trim().toLowerCase().startsWith('kimi-')
+}
+
+function isMoonshotThinkingAlwaysOnModel(model) {
+  const value = String(model || '').trim().toLowerCase()
+  return value === 'kimi-k2.7-code' || value === 'kimi-k2.7-code-highspeed'
+}
+
+function isMoonshotThinkingToggleSupportedModel(model) {
+  const value = String(model || '').trim().toLowerCase()
+  return value === 'kimi-k2.6' || value === 'kimi-k2.5'
+}
+
+export function shouldOmitSamplingForProviderModel(provider, model) {
+  if (provider === OPENAI_PROVIDER && isOpenAIDefaultSamplingModel(model)) return true
+  return provider === MOONSHOT_PROVIDER && isMoonshotKimiModel(model)
+}
+
+function isOpenAIDefaultSamplingModel(model) {
+  const value = String(model || '').trim().toLowerCase()
+  return value.startsWith('gpt-5') || /^o\d/.test(value)
+}
+
+export function shouldUseMaxCompletionTokensForProviderModel(provider, model) {
+  if (provider !== OPENAI_PROVIDER) return false
+  return isOpenAIDefaultSamplingModel(model)
+}
+
+export function shouldSendThinkingDisabledForProviderModel(provider, model) {
+  if (provider === ZHIPU_PROVIDER) return true
+  if (provider !== MOONSHOT_PROVIDER) return false
+  return isMoonshotThinkingToggleSupportedModel(model) && !isMoonshotThinkingAlwaysOnModel(model)
 }
 
 export function getProviderModelFallbacks(provider, model) {
@@ -301,9 +511,15 @@ function buildPingParams(provider, model) {
   const pingParams = {
     model,
     messages: [{ role: 'user', content: 'Reply with exactly: hello' }],
-    max_tokens: 8,
-    temperature: 0,
     stream: false,
+  }
+  if (shouldUseMaxCompletionTokensForProviderModel(provider, model)) {
+    pingParams.max_completion_tokens = 32
+  } else {
+    pingParams.max_tokens = 8
+  }
+  if (!shouldOmitSamplingForProviderModel(provider, model)) {
+    pingParams.temperature = 0
   }
   if (provider === DEEPSEEK_PROVIDER) {
     pingParams.reasoning_effort = 'high'
@@ -381,38 +597,13 @@ function getLlmConfigFile(provider) {
 function readLlmProviderConfig(provider) {
   const file = getLlmConfigFile(provider)
   if (!file) return null
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8'))
-    if (!parsed || typeof parsed !== 'object') return null
-    // 静态密钥解密：新格式把 apiKey 加密后存在 apiKeyEnc；解出来还原成 apiKey，
-    // 下游 resolveLlmRecord 等逻辑照旧读 .apiKey，无需改动。旧的明文 apiKey 直接透传兼容。
-    if (parsed.apiKeyEnc && !parsed.apiKey) {
-      const dec = decryptSecret(parsed.apiKeyEnc)
-      if (dec) parsed.apiKey = dec
-    }
-    return parsed
-  } catch {
-    return null
-  }
+  return readSecureJsonFile(file, null)
 }
 
 function writeLlmProviderConfig(provider, record) {
   const file = getLlmConfigFile(provider)
   if (!file) throw new Error(`Unsupported provider: "${provider}"`)
-  // 写盘前加密 apiKey：safeStorage 可用时存 apiKeyEnc 并抹掉明文；
-  // 不可用（纯 Node 独立后端）时回退明文，保证仍能保存、不破坏激活。
-  const toWrite = { ...record }
-  if (typeof toWrite.apiKey === 'string' && toWrite.apiKey && toWrite.apiKey !== 'none') {
-    const enc = encryptSecret(toWrite.apiKey)
-    if (enc) {
-      toWrite.apiKeyEnc = enc
-      delete toWrite.apiKey
-    }
-  }
-  const tmp = `${file}.tmp`
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-  fs.writeFileSync(tmp, JSON.stringify(toWrite, null, 2), 'utf-8')
-  fs.renameSync(tmp, file)
+  writeSecureJsonFile(file, record)
 }
 
 function resolveLlmRecord(raw, fallbackProvider) {
@@ -437,16 +628,8 @@ function resolveLlmRecord(raw, fallbackProvider) {
 // 不在这里判断 LLM 块是否可用——那是加载逻辑的事，避免"一个字段不合法就丢掉整份文件、
 // 连带把 voice/tts/security 等兄弟字段一起重置"（升级后最常见的"配置全没了"根因）。
 function readParsedConfig() {
-  try {
-    if (!fs.existsSync(paths.configFile)) return null
-    const parsed = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))
-    if (!parsed || typeof parsed !== 'object') return null
-    // 解密静态密钥（voice/tts/search/social 等敏感字段）；旧的明文值原样透传，向后兼容。
-    decryptSecretsDeep(parsed)
-    return parsed
-  } catch {
-    return null
-  }
+  if (!fs.existsSync(paths.configFile)) return null
+  return readSecureJsonFile(paths.configFile, null)
 }
 
 // 判断旧版 config.json 里的 LLM 块能否直接激活（provider/apiKey/custom 三件套齐全）。
@@ -468,18 +651,13 @@ function resolveStoredLlm(parsed) {
 }
 
 function writeStoredConfig(obj) {
-  // 落盘前加密敏感字段。加密副本，不改调用方内存里的明文对象（safeStorage 不可用时回退明文）。
-  const toWrite = encryptSecretsDeep(JSON.parse(JSON.stringify(obj ?? {})))
-  const tmp = paths.configFile + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(toWrite, null, 2), 'utf-8')
-  fs.renameSync(tmp, paths.configFile)
+  writeSecureJsonFile(paths.configFile, obj)
 }
 
 // 读出 config.json 现有内容（失败返回空对象）。
 // activate() 等写操作必须基于它合并，否则会抹掉 voice/tts/security 等其它字段。
 function readExistingStoredConfig() {
-  try { return JSON.parse(fs.readFileSync(paths.configFile, 'utf-8')) || {} }
-  catch { return {} }
+  return readSecureJsonFile(paths.configFile, {}) || {}
 }
 
 // 顶级字段的"读-浅合并-写"一把梭。所有 setter 都该走它（或 readExistingStoredConfig），
@@ -533,6 +711,133 @@ function persistLlmProviderConfig(record) {
     baseURL: undefined,
     activatedAt: record.activatedAt || new Date().toISOString(),
   })
+}
+
+const VOICE_PROVIDER_ALIASES = {
+  macos: 'local',
+  'macos-local': 'local',
+  'local-macos': 'local',
+  mac: 'local',
+  native: 'local',
+  cloud: 'aliyun',
+  dashscope: 'aliyun',
+  bailian: 'aliyun',
+  paraformer: 'aliyun',
+  volcano: 'volcengine',
+  volc: 'volcengine',
+  doubao: 'volcengine',
+  bytedance: 'volcengine',
+  iflytek: 'xunfei',
+}
+const VOICE_PROVIDERS = new Set(['local', 'aliyun', 'volcengine', 'tencent', 'xunfei'])
+const VOICE_PROVIDER_KEYS = {
+  local: ['lang', 'macosRecognitionMode'],
+  aliyun: ['aliyunApiKey', 'aliyunAsrModel'],
+  tencent: ['tencentSecretId', 'tencentSecretKey', 'tencentAppId'],
+  xunfei: ['xunfeiAppId', 'xunfeiApiKey', 'xunfeiApiSecret'],
+  volcengine: ['volcAsrApiKey', 'volcAsrAppKey', 'volcAsrAccessKey', 'volcAsrResourceId'],
+}
+const VOICE_CONFIG_KEYS = [
+  'voiceProvider',
+  ...Object.values(VOICE_PROVIDER_KEYS).flat(),
+]
+const VOICE_KEY_PROVIDER = new Map(
+  Object.entries(VOICE_PROVIDER_KEYS).flatMap(([provider, keys]) => keys.map((key) => [key, provider]))
+)
+
+export function normalizeVoiceProvider(provider, fallback = 'aliyun') {
+  const raw = String(provider || '').trim().toLowerCase()
+  const normalized = VOICE_PROVIDER_ALIASES[raw] || raw
+  return VOICE_PROVIDERS.has(normalized) ? normalized : fallback
+}
+
+function getVoiceActiveFile() {
+  return path.join(paths.voiceConfigDir, 'active.json')
+}
+
+function getVoiceProviderConfigFile(provider) {
+  const p = normalizeVoiceProvider(provider, null)
+  if (!p) return null
+  return path.join(paths.voiceConfigDir, `${p}.json`)
+}
+
+function readJsonObjectFile(file) {
+  return readSecureJsonFile(file, null)
+}
+
+function writeJsonObjectFile(file, record) {
+  writeSecureJsonFile(file, record)
+}
+
+function readVoiceProviderConfig(provider) {
+  const file = getVoiceProviderConfigFile(provider)
+  if (!file) return {}
+  const parsed = readJsonObjectFile(file)
+  return parsed || {}
+}
+
+function writeVoiceProviderConfig(provider, record) {
+  const p = normalizeVoiceProvider(provider, null)
+  const file = getVoiceProviderConfigFile(p)
+  if (!p || !file) throw new Error(`Unsupported voice provider: "${provider}"`)
+  writeJsonObjectFile(file, {
+    ...record,
+    provider: p,
+    updatedAt: new Date().toISOString(),
+  })
+}
+
+function writeActiveVoiceProvider(provider) {
+  const p = normalizeVoiceProvider(provider, 'aliyun')
+  writeJsonObjectFile(getVoiceActiveFile(), {
+    provider: p,
+    updatedAt: new Date().toISOString(),
+  })
+  return p
+}
+
+function readLegacyVoiceBlock(cfg = readExistingStoredConfig()) {
+  return (cfg?.voice && typeof cfg.voice === 'object') ? cfg.voice : {}
+}
+
+function readActiveVoiceProvider(fallback = 'aliyun') {
+  const active = readJsonObjectFile(getVoiceActiveFile())
+  if (active?.provider) return normalizeVoiceProvider(active.provider, fallback)
+  const legacy = readLegacyVoiceBlock()
+  return normalizeVoiceProvider(legacy.voiceProvider || legacy.provider || fallback, fallback)
+}
+
+function stripLegacyVoiceBlock(cfg) {
+  const { voice: _voice, ...rest } = cfg || {}
+  return rest
+}
+
+function persistLegacyVoiceBlock(legacy) {
+  if (!legacy || typeof legacy !== 'object') return
+  const activeProvider = writeActiveVoiceProvider(legacy.voiceProvider || legacy.provider || 'aliyun')
+  const buckets = new Map()
+  for (const [key, value] of Object.entries(legacy)) {
+    if (key === 'voiceProvider' || key === 'provider') continue
+    if (!VOICE_CONFIG_KEYS.includes(key)) continue
+    const trimmed = String(value || '').trim()
+    if (!trimmed) continue
+    const provider = VOICE_KEY_PROVIDER.get(key) || activeProvider
+    const bucket = buckets.get(provider) || { ...readVoiceProviderConfig(provider), provider }
+    bucket[key] = trimmed
+    buckets.set(provider, bucket)
+  }
+  if (!buckets.has(activeProvider)) {
+    buckets.set(activeProvider, { ...readVoiceProviderConfig(activeProvider), provider: activeProvider })
+  }
+  for (const [provider, record] of buckets) {
+    writeVoiceProviderConfig(provider, record)
+  }
+}
+
+function migrateLegacyVoiceConfig(cfg) {
+  const legacy = readLegacyVoiceBlock(cfg)
+  if (Object.keys(legacy).length) persistLegacyVoiceBlock(legacy)
+  return stripLegacyVoiceBlock(cfg)
 }
 
 function shouldAllowEnvFallback() {
@@ -592,7 +897,7 @@ function applyConfig(provider, apiKey, model, customBaseURL) {
 // 跑完写回新版本号。把历史上零散、惰性触发的"一次性迁移"（如 seedance 拆分）收编到这里，
 // 让升级路径确定、可测、可追溯，而不是散落在各 getter 里。
 // 加新迁移：CONFIG_SCHEMA_VERSION 加 1，并在 CONFIG_MIGRATIONS 里补上对应版本号的函数。
-const CONFIG_SCHEMA_VERSION = 2
+const CONFIG_SCHEMA_VERSION = 3
 
 // 每个迁移把传入的 config 对象升一级，返回新对象。允许带幂等副作用（如写独立文件）。
 const CONFIG_MIGRATIONS = {
@@ -623,6 +928,11 @@ const CONFIG_MIGRATIONS = {
     }
     return withoutLegacyLlmFields(cfg)
   },
+  // v2 → v3：ASR 语音识别凭据按厂商拆到 userData/voice/<provider>.json，
+  // config.json 不再承载云端 ASR 密钥，只保留其它通用配置。
+  3(cfg) {
+    return migrateLegacyVoiceConfig(cfg)
+  },
 }
 
 // 启动时执行一次。文件缺失/损坏则跳过（无可迁移）；任一迁移抛错则中止且不写回，
@@ -649,7 +959,12 @@ function runConfigMigrations() {
 }
 
 export const config = {
-  tickInterval: 20 * 60 * 1000,
+  tickInterval: 20 * 60 * 1000, // default idle heartbeat: 20 minutes
+  heartbeat: {
+    enabled: true,
+    defaultIntervalMinutes: 20,
+    updatedAt: null,
+  },
   provider: null,
   model: null,
   apiKey: null,
@@ -660,9 +975,14 @@ export const config = {
   // 默认关闭——只有用户在设置里显式开启才思考。这是「用户显式选择」的开关，
   // 不是 runtime 按难度替模型决定开关 reasoning（那条路 index.js 已注释外掉）。
   thinking: false,
+  contextWindow: {
+    conversationMessageLimit: DEFAULT_CONTEXT_MESSAGE_LIMIT,
+    tickMessageLimit: DEFAULT_CONTEXT_MESSAGE_LIMIT,
+  },
   security: {
     fileSandbox: true,
     execSandbox: true,
+    browserPrivateNetwork: false,
     blockedTools: [],
     updatedAt: null,
   },
@@ -672,6 +992,10 @@ export const config = {
   },
 }
 
+// 任何配置或数据库迁移前先做一次版本化备份。DB 模块会复用同一 prepared 状态，
+// schema 成功后再标记 complete；失败则自动从这份备份恢复。
+prepareUpgradeBackup({ userDir: paths.userDir, configFile: paths.configFile, dbFile: paths.dbFile })
+
 // 迁移必须在下面读取/加载 config.json 之前跑完，确保后续逻辑看到的是已升级的结构。
 runConfigMigrations()
 
@@ -680,6 +1004,9 @@ runConfigMigrations()
 // 也不会连带把沙盒开关、温度等其它配置一起重置——升级后最常见的"配置全没了"根因。
 const parsedConfig = readParsedConfig()
 if (parsedConfig) {
+  try { writeStoredConfig(parsedConfig) } catch (error) { console.warn('[config] 凭据加密迁移失败:', error.message) }
+}
+if (parsedConfig) {
   if (typeof parsedConfig.temperature === 'number' && parsedConfig.temperature >= 0 && parsedConfig.temperature <= 2) {
     config.temperature = parsedConfig.temperature
   }
@@ -687,11 +1014,36 @@ if (parsedConfig) {
   if (typeof parsedConfig.thinking === 'boolean') {
     config.thinking = parsedConfig.thinking
   }
+  if (parsedConfig.contextWindow && typeof parsedConfig.contextWindow === 'object') {
+    const conversationMessageLimit = Number(parsedConfig.contextWindow.conversationMessageLimit)
+    const tickMessageLimit = Number(parsedConfig.contextWindow.tickMessageLimit)
+    if (Number.isInteger(conversationMessageLimit)
+      && conversationMessageLimit >= CONTEXT_MESSAGE_LIMIT_MIN
+      && conversationMessageLimit <= CONTEXT_MESSAGE_LIMIT_MAX) {
+      config.contextWindow.conversationMessageLimit = conversationMessageLimit
+    }
+    if (Number.isInteger(tickMessageLimit)
+      && tickMessageLimit >= CONTEXT_MESSAGE_LIMIT_MIN
+      && tickMessageLimit <= CONTEXT_MESSAGE_LIMIT_MAX) {
+      config.contextWindow.tickMessageLimit = tickMessageLimit
+    }
+  }
+  if (parsedConfig.heartbeat && typeof parsedConfig.heartbeat === 'object') {
+    const heartbeat = parsedConfig.heartbeat
+    if (typeof heartbeat.enabled === 'boolean') config.heartbeat.enabled = heartbeat.enabled
+    const intervalMinutes = Number(heartbeat.defaultIntervalMinutes)
+    if (Number.isFinite(intervalMinutes) && intervalMinutes >= 1 && intervalMinutes <= 1440) {
+      config.heartbeat.defaultIntervalMinutes = Math.round(intervalMinutes)
+      config.tickInterval = config.heartbeat.defaultIntervalMinutes * 60 * 1000
+    }
+    if (typeof heartbeat.updatedAt === 'string') config.heartbeat.updatedAt = heartbeat.updatedAt
+  }
   if (parsedConfig.security && typeof parsedConfig.security === 'object') {
     const s = parsedConfig.security
     if (typeof s.fileSandbox === 'boolean') config.security.fileSandbox = s.fileSandbox
     if (typeof s.execSandbox === 'boolean') config.security.execSandbox = s.execSandbox
-    if (Array.isArray(s.blockedTools)) config.security.blockedTools = s.blockedTools
+    if (typeof s.browserPrivateNetwork === 'boolean') config.security.browserPrivateNetwork = s.browserPrivateNetwork
+    if (Array.isArray(s.blockedTools)) config.security.blockedTools = normalizeBlockedTools(s.blockedTools)
     if (typeof s.updatedAt === 'string') config.security.updatedAt = s.updatedAt
   }
   if (parsedConfig.network && typeof parsedConfig.network === 'object') {
@@ -718,8 +1070,7 @@ if (storedLlm) {
 // At startup, copy social credentials from the config file into process.env so connectors can read them
 ;(function loadSocialEnv() {
   try {
-    const raw = fs.readFileSync(paths.configFile, 'utf-8')
-    const social = JSON.parse(raw)?.social || {}
+    const social = readExistingStoredConfig()?.social || {}
     for (const [key, val] of Object.entries(social)) {
       if (typeof val === 'string' && val && globalThis.process?.env) {
         globalThis.process.env[key] = val
@@ -785,7 +1136,7 @@ export async function prepareActivation({ provider = AUTO_PROVIDER, apiKey, mode
       apiKey: normalizedKey,
       model: detected.model,
       baseURL: undefined,
-      models: detected.pConfig.models,
+      models: withCurrentModel(detected.pConfig.models, detected.model),
     }
   }
 
@@ -805,7 +1156,7 @@ export async function prepareActivation({ provider = AUTO_PROVIDER, apiKey, mode
     apiKey: normalizedKey,
     model: detected.model,
     baseURL: undefined,
-    models: pConfig.models,
+    models: withCurrentModel(pConfig.models, detected.model),
   }
 }
 
@@ -858,7 +1209,7 @@ export function commitPreparedActivation(prepared) {
   return {
     provider: p,
     model: normalizedModel,
-    models: pConfig.models,
+    models: withCurrentModel(pConfig.models, normalizedModel),
   }
 }
 
@@ -875,7 +1226,7 @@ export function getActivationStatus() {
     provider: config.provider,
     model: config.model,
     baseURL: config.provider === 'custom' ? config.baseURL : undefined,
-    models: pConfig ? pConfig.models : customModels,
+    models: pConfig ? withCurrentModel(pConfig.models, config.model) : customModels,
     defaultModel: pConfig ? pConfig.defaultModel : (config.model || DEFAULT_DEEPSEEK_MODEL),
   }
 }
@@ -887,10 +1238,12 @@ export function getProviderSummaries() {
       const stored = resolveStoredLlmForProvider(name)
       return {
       label: pConfig.label || name,
-      models: pConfig.models,
+      models: withCurrentModel(pConfig.models, stored?.model),
       defaultModel: pConfig.defaultModel,
       configured: !!stored,
-      apiKey: stored?.apiKey || '',
+      // Keep the field for older renderers, but never send a stored secret to
+      // the browser. An empty value means "leave the saved credential alone".
+      apiKey: '',
       model: stored?.model ? normalizeModel(stored.model, name) : pConfig.defaultModel,
     }
     })(),
@@ -901,7 +1254,7 @@ export function getProviderSummaries() {
     models: [],
     defaultModel: '',
     configured: !!custom,
-    apiKey: custom?.apiKey || '',
+    apiKey: '',
     model: custom?.model || '',
     baseURL: custom?.baseURL || '',
   }
@@ -984,7 +1337,7 @@ export function switchProviderConfig({ provider, model } = {}) {
   return {
     provider: p,
     model: nextModel,
-    models: PROVIDER_CONFIG[p].models,
+    models: withCurrentModel(PROVIDER_CONFIG[p].models, nextModel),
   }
 }
 
@@ -1033,24 +1386,95 @@ export function setThinking(enabled) {
   return { thinking: v }
 }
 
+export function getContextWindowConfig() {
+  return {
+    conversationMessageLimit: config.contextWindow.conversationMessageLimit,
+    tickMessageLimit: config.contextWindow.tickMessageLimit,
+  }
+}
+
+export function setContextWindowConfig(updates = {}) {
+  const current = getContextWindowConfig()
+  const next = { ...current }
+  for (const key of ['conversationMessageLimit', 'tickMessageLimit']) {
+    if (!Object.prototype.hasOwnProperty.call(updates, key)) continue
+    const value = Number(updates[key])
+    if (!Number.isInteger(value)) throw new Error('上下文消息条数必须是整数')
+    if (value < CONTEXT_MESSAGE_LIMIT_MIN || value > CONTEXT_MESSAGE_LIMIT_MAX) {
+      throw new Error(`上下文消息条数必须在 ${CONTEXT_MESSAGE_LIMIT_MIN} 到 ${CONTEXT_MESSAGE_LIMIT_MAX} 之间`)
+    }
+    next[key] = value
+  }
+  config.contextWindow = next
+  patchConfig({ contextWindow: { ...next } })
+  return getContextWindowConfig()
+}
+
+export function getHeartbeatConfig() {
+  return {
+    enabled: config.heartbeat.enabled !== false,
+    defaultIntervalMinutes: config.heartbeat.defaultIntervalMinutes,
+    defaultIntervalMs: config.tickInterval,
+    updatedAt: config.heartbeat.updatedAt || null,
+  }
+}
+
+export function setHeartbeatConfig(updates = {}) {
+  const before = getHeartbeatConfig()
+  const next = {
+    enabled: config.heartbeat.enabled,
+    defaultIntervalMinutes: config.heartbeat.defaultIntervalMinutes,
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'enabled')) {
+    if (typeof updates.enabled !== 'boolean') throw new Error('心跳开关必须是布尔值')
+    next.enabled = updates.enabled
+  }
+
+  if (Object.prototype.hasOwnProperty.call(updates, 'defaultIntervalMinutes')) {
+    const raw = Number(updates.defaultIntervalMinutes)
+    if (!Number.isInteger(raw)) throw new Error('默认心跳间隔必须是整数分钟')
+    if (raw < 1 || raw > 1440) throw new Error('默认心跳间隔必须在 1 到 1440 分钟之间')
+    next.defaultIntervalMinutes = raw
+  }
+
+  const changed = before.enabled !== next.enabled
+    || before.defaultIntervalMinutes !== next.defaultIntervalMinutes
+  config.heartbeat.enabled = next.enabled
+  config.heartbeat.defaultIntervalMinutes = next.defaultIntervalMinutes
+  config.tickInterval = next.defaultIntervalMinutes * 60 * 1000
+  if (changed) config.heartbeat.updatedAt = nowTimestamp()
+  patchConfig({ heartbeat: { ...config.heartbeat } })
+  return getHeartbeatConfig()
+}
+
 export function getSecurity() {
   return {
     fileSandbox: config.security.fileSandbox,
     execSandbox: config.security.execSandbox,
+    browserPrivateNetwork: config.security.browserPrivateNetwork === true,
     blockedTools: [...config.security.blockedTools],
     updatedAt: config.security.updatedAt || null,
   }
+}
+
+function normalizeBlockedTools(values = []) {
+  return [...new Set(values
+    .filter(value => typeof value === 'string')
+    .map(value => ['fetch_url', 'browser_read'].includes(value) ? 'web_read' : value))]
 }
 
 export function setSecurity(updates) {
   const before = getSecurity()
   if (typeof updates.fileSandbox === 'boolean') config.security.fileSandbox = updates.fileSandbox
   if (typeof updates.execSandbox === 'boolean') config.security.execSandbox = updates.execSandbox
+  if (typeof updates.browserPrivateNetwork === 'boolean') config.security.browserPrivateNetwork = updates.browserPrivateNetwork
   if (Array.isArray(updates.blockedTools)) {
-    config.security.blockedTools = updates.blockedTools.filter(t => typeof t === 'string')
+    config.security.blockedTools = normalizeBlockedTools(updates.blockedTools)
   }
   const changed = before.fileSandbox !== config.security.fileSandbox
     || before.execSandbox !== config.security.execSandbox
+    || before.browserPrivateNetwork !== config.security.browserPrivateNetwork
     || JSON.stringify(before.blockedTools) !== JSON.stringify(config.security.blockedTools)
   if (changed) config.security.updatedAt = nowTimestamp()
   patchConfig({ security: { ...config.security } })
@@ -1079,11 +1503,8 @@ export function setNetworkConfig(updates) {
 }
 
 export function getMinimaxKey() {
-  try {
-    const raw = fs.readFileSync(paths.configFile, 'utf-8')
-    const parsed = JSON.parse(raw)
-    return typeof parsed?.minimax_api_key === 'string' ? parsed.minimax_api_key : null
-  } catch { return null }
+  const parsed = readExistingStoredConfig()
+  return typeof parsed?.minimax_api_key === 'string' ? parsed.minimax_api_key : null
 }
 
 export function setMinimaxKey(key) {
@@ -1105,13 +1526,10 @@ const SEEDANCE_DEFAULT_MODEL = 'doubao-seedance-2-0-260128'
 
 // seedance.json 读写（独立文件，只放 seedance 配置，谁都不会全量覆盖它）
 function readSeedanceFile() {
-  try { return JSON.parse(fs.readFileSync(paths.seedanceConfigFile, 'utf-8')) || {} }
-  catch { return {} }
+  return readSecureJsonFile(paths.seedanceConfigFile, {}) || {}
 }
 function writeSeedanceFile(obj) {
-  const tmp = paths.seedanceConfigFile + '.tmp'
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2), 'utf-8')
-  fs.renameSync(tmp, paths.seedanceConfigFile)
+  writeSecureJsonFile(paths.seedanceConfigFile, obj)
 }
 
 // 一次性迁移：旧版把 seedance 存在 config.json 里。若独立文件尚无、而 config.json 里还有，
@@ -1119,7 +1537,8 @@ function writeSeedanceFile(obj) {
 function migrateLegacySeedance() {
   if (fs.existsSync(paths.seedanceConfigFile)) return
   let mainCfg
-  try { mainCfg = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8')) } catch { return }
+  mainCfg = readSecureJsonFile(paths.configFile, null)
+  if (!mainCfg) return
   const legacy = mainCfg?.seedance
   if (!legacy || typeof legacy !== 'object') return
   try {
@@ -1177,11 +1596,8 @@ const SOCIAL_ENV_KEYS = [
 // ── WeChat ClawBot credentials (written automatically after QR scan, not exposed in SOCIAL_ENV_KEYS) ──
 
 export function getClawbotCredentials() {
-  try {
-    const stored = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))
-    const c = stored?.clawbot
-    return (c?.accountId && c?.botToken) ? c : null
-  } catch { return null }
+  const c = readExistingStoredConfig()?.clawbot
+  return (c?.accountId && c?.botToken) ? c : null
 }
 
 export function setClawbotCredentials({ accountId, botToken, baseUrl }) {
@@ -1194,8 +1610,7 @@ export function clearClawbotCredentials() {
 }
 
 export function getSocialConfig() {
-  let stored = {}
-  try { stored = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))?.social || {} } catch {}
+  const stored = readExistingStoredConfig()?.social || {}
   const result = {}
   for (const key of SOCIAL_ENV_KEYS) {
     const val = stored[key] || globalThis.process?.env?.[key] || ''
@@ -1208,7 +1623,7 @@ export function setSocialConfig(updates) {
   const existing = readExistingStoredConfig()
   const current = existing.social || {}
   const next = { ...current }
-  for (const [key, val] of Object.entries(updates)) {
+  for (const [key, val] of Object.entries(updates || {})) {
     if (!SOCIAL_ENV_KEYS.includes(key)) continue
     const trimmed = String(val || '').trim()
     if (trimmed) {
@@ -1221,14 +1636,6 @@ export function setSocialConfig(updates) {
   }
   writeStoredConfig({ ...existing, social: next })
 }
-
-const VOICE_CONFIG_KEYS = [
-  'voiceProvider',
-  'aliyunApiKey',
-  'tencentSecretId', 'tencentSecretKey', 'tencentAppId',
-  'xunfeiAppId', 'xunfeiApiKey', 'xunfeiApiSecret',
-  'volcAsrApiKey', 'volcAsrAppKey', 'volcAsrAccessKey', 'volcAsrResourceId',
-]
 
 function isValidAliyunAsrKey(value) {
   return /^sk-[A-Za-z0-9_\-.]{20,}$/.test(String(value || '').trim())
@@ -1244,29 +1651,52 @@ const CHAT_PROVIDERS_WITH_AMBIGUOUS_SK_KEYS = new Set([
 ])
 
 export function getVoiceConfig() {
-  let stored = {}
-  try { stored = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))?.voice || {} } catch {}
-  const result = { voiceProvider: stored.voiceProvider || 'aliyun' }
+  const result = { voiceProvider: readActiveVoiceProvider('aliyun') }
   for (const key of VOICE_CONFIG_KEYS) {
     if (key === 'voiceProvider') continue
-    result[key] = { configured: !!(stored[key]) }
+    const provider = VOICE_KEY_PROVIDER.get(key) || result.voiceProvider
+    const stored = readVoiceProviderConfig(provider)
+    result[key] = { configured: !!stored[key] }
     if (key === 'aliyunApiKey' && stored[key]) {
       result[key] = {
         configured: isValidAliyunAsrKey(stored[key]),
         invalidFormat: !isValidAliyunAsrKey(stored[key]),
       }
     }
+    if (key === 'volcAsrApiKey' && stored[key]) {
+      result[key] = { configured: true }
+    }
   }
   return result
 }
 
+export function getVoiceRuntimeConfig(providerHint = null) {
+  const provider = readActiveVoiceProvider(providerHint || 'aliyun')
+  const stored = readVoiceProviderConfig(provider)
+  return {
+    ...stored,
+    voiceProvider: provider,
+    provider,
+  }
+}
+
 export function setVoiceConfig(updates) {
   const existing = readExistingStoredConfig()
-  const current = existing.voice || {}
-  const next = { ...current }
+  const { voice: legacyVoice, ...baseConfig } = existing
+  let activeProvider = readActiveVoiceProvider(legacyVoice?.voiceProvider || legacyVoice?.provider || 'aliyun')
+  const requestedProvider = updates?.voiceProvider ?? updates?.provider
+  if (requestedProvider !== undefined) {
+    activeProvider = normalizeVoiceProvider(requestedProvider, activeProvider)
+  }
+  activeProvider = writeActiveVoiceProvider(activeProvider)
+  const changedProviders = new Map()
   for (const [key, val] of Object.entries(updates)) {
+    if (key === 'provider') continue
     if (!VOICE_CONFIG_KEYS.includes(key)) continue
     const trimmed = String(val || '').trim()
+    if (key === 'voiceProvider') {
+      continue
+    }
     if (key === 'aliyunApiKey' && trimmed && !isValidAliyunAsrKey(trimmed)) {
       console.warn('[voice-config] Ignoring invalid Aliyun ASR key format; expected DashScope sk-* API key')
       continue
@@ -1281,34 +1711,39 @@ export function setVoiceConfig(updates) {
       console.warn('[voice-config] Ignoring Aliyun ASR key because it matches the active chat provider API key')
       continue
     }
-    if (trimmed) next[key] = trimmed
-    else delete next[key]
+    const provider = VOICE_KEY_PROVIDER.get(key) || activeProvider
+    const record = changedProviders.get(provider) || { ...readVoiceProviderConfig(provider), provider }
+    if (trimmed) record[key] = trimmed
+    else delete record[key]
+    changedProviders.set(provider, record)
   }
-  writeStoredConfig({ ...existing, voice: next })
+  for (const [provider, record] of changedProviders) {
+    writeVoiceProviderConfig(provider, record)
+  }
+  writeStoredConfig({
+    ...baseConfig,
+    schemaVersion: CONFIG_SCHEMA_VERSION,
+  })
 }
 
 // TTS config
 const TTS_CONFIG_KEYS = [
   'ttsProvider', 'ttsVoiceId',
   'minimaxKey',
-  'doubaoKey', 'doubaoAppId', 'doubaoAccessKey', 'doubaoResourceId', 'doubaoStyle', 'doubaoSpeechRate',
+  'doubaoKey', 'doubaoResourceId', 'doubaoSpeechRate',
   'openaiTtsKey', 'openaiTtsBaseURL',
   'elevenLabsKey',
   'volcanoAppId', 'volcanoToken',
 ]
 
 export function getTTSConfig() {
-  let stored = {}
-  try { stored = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))?.tts || {} } catch {}
+  const stored = readExistingStoredConfig()?.tts || {}
   return {
     ttsProvider:     stored.ttsProvider  || 'doubao',
     ttsVoiceId:      stored.ttsVoiceId   || 'zh_female_xiaohe_uranus_bigtts',
     minimaxKey:      { configured: !!(stored.minimaxKey || process.env.MINIMAX_API_KEY || getMinimaxKey()) },
     doubaoKey:       { configured: !!(stored.doubaoKey) },
-    doubaoAppId:     { configured: !!(stored.doubaoAppId), value: stored.doubaoAppId || '' },
-    doubaoAccessKey: { configured: !!(stored.doubaoAccessKey) },
     doubaoResourceId: stored.doubaoResourceId || '',
-    doubaoStyle:     stored.doubaoStyle || '',
     doubaoSpeechRate: Number(stored.doubaoSpeechRate || 0) || 0,
     openaiTtsBaseURL: stored.openaiTtsBaseURL || '',
     openaiTtsKey:    { configured: !!(stored.openaiTtsKey) },
@@ -1320,16 +1755,12 @@ export function getTTSConfig() {
 
 // Read plaintext TTS credentials (backend use only — not exposed to frontend)
 export function getTTSCredentials() {
-  let stored = {}
-  try { stored = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))?.tts || {} } catch {}
+  const stored = readExistingStoredConfig()?.tts || {}
   return {
     provider:       stored.ttsProvider  || 'doubao',
     voiceId:        stored.ttsVoiceId   || 'zh_female_xiaohe_uranus_bigtts',
     doubaoKey:      stored.doubaoKey    || process.env.DOUBAO_TTS_API_KEY || '',
-    doubaoAppId:    stored.doubaoAppId  || process.env.DOUBAO_TTS_APP_ID || '',
-    doubaoAccessKey: stored.doubaoAccessKey || process.env.DOUBAO_TTS_ACCESS_KEY || '',
     doubaoResourceId: stored.doubaoResourceId || process.env.DOUBAO_TTS_RESOURCE_ID || '',
-    doubaoStyle:    stored.doubaoStyle || process.env.DOUBAO_TTS_STYLE || '',
     doubaoSpeechRate: Number(stored.doubaoSpeechRate ?? process.env.DOUBAO_TTS_SPEECH_RATE ?? 0) || 0,
     minimaxKey:     process.env.MINIMAX_API_KEY || stored.minimaxKey || getMinimaxKey() || (config.provider === 'minimax' ? config.apiKey : '') || '',
     openaiKey:      stored.openaiTtsKey  || '',
@@ -1354,24 +1785,28 @@ export function setTTSConfig(updates) {
 }
 
 // ── Embedding config ──────────────────────────────────────────────────────────
-// Embedding 与 chat provider 完全独立。DeepSeek/Moonshot 没 embedding API，
-// 所以必须分开存。结构：config.json 的 "embedding" 块。
-//
-// 字段：
-//   provider:   'openai' | 'qwen' | 'zhipu' | 'minimax' | 'custom'
-//   model:      模型名（参考 EMBEDDING_PROVIDER_PRESETS）
-//   apiKey:     凭证（明文存储，与现有 chat apiKey 一样）
-//   baseURL:    custom 时必填；其他 provider 留空走预设
-//   dimensions: 可选，仅 OpenAI text-embedding-3-* 系列支持显式指定
+// 记忆向量召回只用本地离线模型（transformers.js + onnxruntime-node 跑 ONNX），不依赖任何云端 API。
+// 零配置开箱即用：config.json 的 "embedding" 块可不存在；存在时仅 model / timeoutMs 有意义。
+//   model:     本地 ONNX 模型 HF 仓库 id（缺省走 LOCAL_DEFAULT_MODEL）
+//   timeoutMs: 可选，覆盖向量召回硬超时（默认 1500ms）
+// 首次运行会下载 ~330MB 中文嵌入模型到 userData/data/models，之后离线可用。
 
-const EMBEDDING_CONFIG_KEYS = ['provider', 'model', 'apiKey', 'baseURL', 'dimensions']
+const EMBEDDING_CONFIG_KEYS = ['model', 'timeoutMs']
 
+// 本地默认模型：中文为主、量化后体积/速度均衡的小型 ONNX 模型。
+const LOCAL_DEFAULT_MODEL = 'Xenova/bge-large-zh-v1.5'
+const LOCAL_DEFAULT_DIMS = 1024
+
+// 解析有效本地模型名：只认 HF 仓库 id 形态（owner/name），过滤掉残留的云端模型名
+// （如 'text-embedding-3-small'），避免拿云端名当本地模型加载导致召回静默失效。
+function resolveLocalModel(stored) {
+  const m = typeof stored?.model === 'string' ? stored.model.trim() : ''
+  return /^[^/\s]+\/[^/\s]+$/.test(m) ? m : LOCAL_DEFAULT_MODEL
+}
+
+// 仅保留 local 预设（云端 provider 已移除）。供 api 的 /settings/embedding 视图使用。
 export const EMBEDDING_PROVIDER_PRESETS = {
-  openai:  { baseURL: 'https://api.openai.com/v1',                          defaultModel: 'text-embedding-3-small', defaultDims: 1536 },
-  qwen:    { baseURL: 'https://dashscope.aliyuncs.com/compatible-mode/v1',  defaultModel: 'text-embedding-v2',      defaultDims: 1536 },
-  zhipu:   { baseURL: 'https://open.bigmodel.cn/api/paas/v4',               defaultModel: 'embedding-3',            defaultDims: 2048 },
-  minimax: { baseURL: 'https://api.minimax.chat/v1',                        defaultModel: 'embo-01',                defaultDims: 1536 },
-  custom:  { baseURL: '',                                                   defaultModel: '',                       defaultDims: 1536 },
+  local: { baseURL: '', defaultModel: LOCAL_DEFAULT_MODEL, defaultDims: LOCAL_DEFAULT_DIMS, local: true },
 }
 
 let _embeddingBlockCache = null
@@ -1392,7 +1827,7 @@ function readEmbeddingBlock() {
 
   let block = {}
   try {
-    const raw = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))
+    const raw = readExistingStoredConfig()
     if (raw?.embedding && typeof raw.embedding === 'object') {
       block = raw.embedding
     }
@@ -1405,31 +1840,25 @@ function readEmbeddingBlock() {
   return block
 }
 
-// 前端可见视图：不暴露 apiKey 明文，只暴露 configured 布尔
+// 前端可见视图。provider 恒为 'local'，model 缺省走默认，永远 configured=true（零配置）。
 export function getEmbeddingConfig() {
   const stored = readEmbeddingBlock()
-  const provider = typeof stored.provider === 'string' ? stored.provider : ''
-  const model    = typeof stored.model === 'string'    ? stored.model    : ''
-  const baseURL  = typeof stored.baseURL === 'string'  ? stored.baseURL  : ''
-  const dimensions = Number.isFinite(stored.dimensions) ? stored.dimensions : null
-  const configured = !!(stored.apiKey && model)
-  return { provider, model, baseURL, dimensions, configured }
+  const model = resolveLocalModel(stored)
+  const timeoutMs = Number.isFinite(stored.timeoutMs) ? stored.timeoutMs : null
+  return { provider: 'local', model, dimensions: LOCAL_DEFAULT_DIMS, timeoutMs, configured: true }
 }
 
-// Backend-only：读明文 apiKey。供 src/embedding.js 内部用，不要给前端。
+// Backend-only：供 src/embedding.js 内部用。强制本地，忽略任何残留的云端字段。
 export function getEmbeddingCredentials() {
   const stored = readEmbeddingBlock()
-  const provider = typeof stored.provider === 'string' ? stored.provider : ''
-  let baseURL = typeof stored.baseURL === 'string' && stored.baseURL ? stored.baseURL : ''
-  if (!baseURL && provider && EMBEDDING_PROVIDER_PRESETS[provider]) {
-    baseURL = EMBEDDING_PROVIDER_PRESETS[provider].baseURL || ''
-  }
+  const model = resolveLocalModel(stored)
   return {
-    provider,
-    model:      typeof stored.model === 'string'  ? stored.model  : '',
-    apiKey:     typeof stored.apiKey === 'string' ? stored.apiKey : '',
-    baseURL,
-    dimensions: Number.isFinite(stored.dimensions) ? stored.dimensions : null,
+    provider: 'local',
+    model,
+    apiKey: '',
+    baseURL: '',
+    dimensions: LOCAL_DEFAULT_DIMS,
+    timeoutMs: Number.isFinite(stored.timeoutMs) ? stored.timeoutMs : null,
   }
 }
 
@@ -1439,10 +1868,10 @@ export function setEmbeddingConfig(updates) {
   const next = { ...current }
   for (const [key, val] of Object.entries(updates || {})) {
     if (!EMBEDDING_CONFIG_KEYS.includes(key)) continue
-    if (key === 'dimensions') {
+    if (key === 'dimensions' || key === 'timeoutMs') {
       const n = Number(val)
-      if (Number.isFinite(n) && n > 0) next.dimensions = n
-      else delete next.dimensions
+      if (Number.isFinite(n) && n > 0) next[key] = n
+      else delete next[key]
       continue
     }
     const trimmed = String(val || '').trim()
@@ -1465,7 +1894,7 @@ const WEB_SEARCH_KEY_MAP = {
 
 function readWebSearchBlock() {
   try {
-    const raw = JSON.parse(fs.readFileSync(paths.configFile, 'utf-8'))
+    const raw = readExistingStoredConfig()
     return {
       serperKey:  typeof raw.serper_api_key === 'string' ? raw.serper_api_key : '',
       searxngUrl: typeof raw.searxng_url    === 'string' ? raw.searxng_url    : '',
@@ -1544,5 +1973,8 @@ export const __internals = {
   getProviderModelFallbacks,
   normalizeModel,
   isThinkingEnabledForModel,
+  shouldOmitSamplingForProviderModel,
+  shouldSendThinkingDisabledForProviderModel,
+  shouldUseMaxCompletionTokensForProviderModel,
   buildPingParams,
 }

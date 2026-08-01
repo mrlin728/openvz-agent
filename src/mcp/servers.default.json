@@ -1,0 +1,10 @@
+{
+  "_comment": "随安装包内置的默认 MCP server 配置。App 启动时先加载这里，再叠加用户的 mcp.servers.json（用户配置同名覆盖，可 disabled 关掉）。runtime:'node' 的 server 由 App 自带的运行时拉起，下载者无需安装 Node/npx，纯离线可用。",
+  "mcpServers": {
+    "utility": {
+      "runtime": "node",
+      "script": "src/mcp/servers/utility.mjs",
+      "builtin": true
+    }
+  }
+}

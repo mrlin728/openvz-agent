@@ -14,6 +14,7 @@ const TOOL_ZH = {
   kill_process: "终止进程",
   list_processes: "列出进程",
   web_search: "搜索网页",
+  web_read: "读取网页",
   fetch_url: "抓取网页",
   browser_read: "浏览器读取网页",
   search_memory: "检索记忆",
@@ -29,12 +30,7 @@ const TOOL_ZH = {
   generate_lyrics: "生成歌词",
   generate_music: "生成音乐",
   generate_image: "生成图片",
-  ui_show: "推送卡片",
-  ui_update: "更新卡片",
-  ui_hide: "关闭卡片",
-  ui_patch: "微调卡片",
-  ui_register: "注册组件",
-  manage_app: "管理应用",
+  ui_set: "投影界面",
   focus_banner: "专注横幅",
   set_task: "启动任务",
   complete_task: "完成任务",
@@ -49,9 +45,11 @@ const TOOL_ZH = {
   grant_agent_delegation: "授权代理",
   complete_startup_self_check: "完成自检",
   install_tool: "安装工具",
+  install_software: "安装软件",
   uninstall_tool: "卸载工具",
   list_tools: "列出工具",
   connect_wechat: "连接微信",
+  connect_feishu: "连接飞书",
   media_mode: "媒体模式",
   hotspot_mode: "热点模式",
   open_doc_panel: "打开文档",
@@ -71,6 +69,7 @@ const TOOL_ICON = {
   kill_process: "🛑",
   list_processes: "📋",
   web_search: "🔎",
+  web_read: "🌐",
   fetch_url: "🌐",
   browser_read: "🧭",
   search_memory: "🔍",
@@ -86,12 +85,7 @@ const TOOL_ICON = {
   generate_lyrics: "🎵",
   generate_music: "🎼",
   generate_image: "🎨",
-  ui_show: "🎴",
-  ui_update: "🔄",
-  ui_hide: "🫥",
-  ui_patch: "🩹",
-  ui_register: "📌",
-  manage_app: "📦",
+  ui_set: "🎴",
   focus_banner: "🎯",
   set_task: "📋",
   complete_task: "✅",
@@ -106,9 +100,11 @@ const TOOL_ICON = {
   grant_agent_delegation: "🤝",
   complete_startup_self_check: "🩺",
   install_tool: "🔧",
+  install_software: "⬇️",
   uninstall_tool: "🔧",
   list_tools: "🧰",
   connect_wechat: "🔗",
+  connect_feishu: "🪶",
   media_mode: "🎬",
   hotspot_mode: "🔥",
   open_doc_panel: "📖",
@@ -171,7 +167,9 @@ export class ThoughtStream {
     this.curLine = document.createElement("div");
     this.curLine.className = "stream-line";
 
-    const color = this.readCSSVar(`--${this.color}`);
+    // 保留对主题变量的引用，不把当前主题的解析色值固化到内联样式。
+    // 否则从浅色切回暗色后，历史记录仍会残留浅色主题的深色文字。
+    const color = `var(--${this.color})`;
     const timeLabel = options.time || this.tStamp();
 
     const header = document.createElement("div");
@@ -270,7 +268,7 @@ export class ThoughtStream {
     if (this.thinkingEl) return;
     const el = document.createElement("div");
     el.className = "line-thinking";
-    el.style.color = this.readCSSVar(`--${this.color}`);
+    el.style.color = `var(--${this.color})`;
     el.innerHTML = `<span class="dot"></span><span class="dot"></span><span class="dot"></span>`;
     this.curLine.appendChild(el);
     this.thinkingEl = el;
@@ -392,6 +390,7 @@ export class ThoughtStream {
         return a.pid ? `pid ${a.pid}` : "";
       case "web_search":
         return this.compactText(a.query || parsed?.query || "", 60);
+      case "web_read":
       case "fetch_url":
       case "browser_read":
         return this.hostFromUrl(a.url || parsed?.url) || this.compactText(a.url || "", 60);
@@ -412,14 +411,8 @@ export class ThoughtStream {
         return this.compactText(a.prompt || "", 50);
       case "set_tick_interval":
         return a.seconds ? `${a.seconds}s · ttl ${a.ttl || 10}` : "";
-      case "ui_show":
-      case "ui_register":
-        return a.component || a.component_name || "";
-      case "ui_update":
-      case "ui_hide":
-      case "ui_patch":
-        // id 形如 selfcheckstepcard-1779294241845-692795；取首段（组件名小写形态）
-        return this.compactText(String(a.id || "").split("-")[0] || "", 30);
+      case "ui_set":
+        return this.compactText(String(a.id || a.surface?.kind || ""), 30);
       case "focus_banner":
         return a.action ? `${a.action}${a.task ? " · " + this.compactText(a.task, 30) : ""}` : "";
       case "set_task":
@@ -439,10 +432,10 @@ export class ThoughtStream {
       case "install_tool":
       case "uninstall_tool":
         return this.compactText(a.tool_name || a.name || "", 40);
+      case "install_software":
+        return this.compactText(a.software || a.brew_name || a.url || "", 50);
       case "music":
         return this.compactText(a.title || a.action || "", 40);
-      case "manage_app":
-        return this.compactText(a.action || "", 30);
       case "media_mode":
       case "hotspot_mode":
       case "person_card_mode":
@@ -494,17 +487,6 @@ export class ThoughtStream {
     return `权限被拒绝（${riskLabel}）：${reason}`;
   }
 
-  formatUIShowDetail(payload, name) {
-    if (payload?.ok === false) {
-      return payload.error ? this.compactText(payload.error, 160) : "";
-    }
-    if (payload?.ok) {
-      if (name === "ui_show") return ""; // subject 已经说明 component
-      if (name === "ui_register") return "组件已注册到 ACUI。";
-    }
-    return "";
-  }
-
   formatSearchMemoryDetail(payload) {
     if (payload?.ok === false) return this.compactText(payload.error || "检索失败", 120);
     const hits = Array.isArray(payload?.hits) ? payload.hits
@@ -549,6 +531,7 @@ export class ThoughtStream {
 
     // Web tools 保留原有人类化格式器
     if (parsed?.tool === "web_search" || name === "web_search") return this.formatWebSearchDetail(parsed || {});
+    if (parsed?.tool === "web_read" || name === "web_read") return this.formatFetchUrlDetail(parsed || {});
     if (parsed?.tool === "fetch_url" || name === "fetch_url") return this.formatFetchUrlDetail(parsed || {});
     if (parsed?.tool === "browser_read" || name === "browser_read") return this.formatBrowserReadDetail(parsed || {});
 
@@ -561,13 +544,6 @@ export class ThoughtStream {
       if (parsed) return this.formatExecCommandDetail(parsed);
       // JSON 残缺时不展示原文，给个通用兜底
       return "命令已执行（结果过长未展开）。";
-    }
-
-    if (name === "ui_show" || name === "ui_update" || name === "ui_hide" || name === "ui_patch" || name === "ui_register") {
-      // 错误是裸字符串，例如 "错误：组件未注册"
-      const raw = String(result || "").trim();
-      if (!parsed && raw.startsWith("错误")) return this.compactText(raw, 160);
-      return this.formatUIShowDetail(parsed, name);
     }
 
     if (name === "search_memory") {
@@ -638,7 +614,7 @@ export class ThoughtStream {
 
     const toolEl = document.createElement("div");
     toolEl.className = `line-tool done tool-${statusCls}`;
-    toolEl.style.color = this.readCSSVar(`--${this.color}`);
+    toolEl.style.color = `var(--${this.color})`;
 
     const iconSpan = document.createElement("span");
     iconSpan.className = "tool-icon";
@@ -705,7 +681,7 @@ export class ThoughtStream {
     const toolEl = document.createElement("div");
     const statusCls = this.toolFailed ? "failed" : "ended";
     toolEl.className = `line-tool done tool-${statusCls}`;
-    toolEl.style.color = this.readCSSVar(`--${this.color}`);
+    toolEl.style.color = `var(--${this.color})`;
 
     const iconSpan = document.createElement("span");
     iconSpan.className = "tool-icon";

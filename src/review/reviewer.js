@@ -45,7 +45,7 @@ You are given three things, and only these (you deliberately cannot see the doer
 // 审视分身可用的工具：只读验证 + 结论回传。绝不给写/删/装类工具——它是来核对的，不是来改的。
 // exec_command 在其中，但 prompt 明确约束只跑非破坏性的验证命令（跑测试 / 打印 / lint），
 // 且仍受沙箱策略（evaluateToolPolicy）约束。
-const REVIEWER_TOOLS = ['read_file', 'list_dir', 'exec_command', 'web_search', 'fetch_url', 'search_memory', 'review_verdict']
+const REVIEWER_TOOLS = ['read_file', 'list_dir', 'exec_command', 'web_search', 'web_read', 'search_memory', 'review_verdict']
 
 // 把主 Agent 本轮的工具调用日志压成审视分身能读的证据块。复用 recognizer 的思路：
 // 工具名 + 参数 + 结果摘要，但更看重"成功/失败"信号——审视的核心就是看声称与证据是否一致。
@@ -99,7 +99,6 @@ function deriveArtifactsFromLog(turnToolLog) {
     else if (e.name === 'delete_file' && a.path) out.push(`file deleted: ${a.path}`)
     else if (e.name === 'exec_command' && a.command) out.push(`command run: ${String(a.command).slice(0, 120)}`)
     else if (e.name === 'generate_image' && (a.prompt || a.path)) out.push(`image generated`)
-    else if (e.name === 'generate_video') out.push(`video generated`)
   }
   return out
 }

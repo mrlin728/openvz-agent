@@ -1,94 +1,172 @@
-// secure-store.js — 用 Electron safeStorage（走系统钥匙串 / Keychain）加密静态密钥。
-//
-// 背景：后端由 electron/main.cjs 通过 `import()` 拉进【同一个 Electron 主进程】运行，
-// 所以这里能直接拿到 electron 的 safeStorage。若以纯 Node 方式独立运行后端
-// （npm run start:backend），electron 模块不可用 → 自动回退为“明文透传”，行为与旧版一致，
-// 保证密钥仍能保存、应用不会因为缺少加密而无法激活。
-//
-// 存储格式：加密后写成 `v1:<base64>`，解密时按前缀识别；非本前缀的一律当明文旧数据处理。
+// Unified OpenVZ credential storage.
+// Packaged Electron uses safeStorage (`v1:`); pure Node uses a local
+// AES-256-GCM master key with mode 0600 (`v2:`). Plain legacy values are
+// accepted on read and are encrypted the next time their containing file is written.
 
+import crypto from 'node:crypto'
+import fs from 'node:fs'
+import path from 'node:path'
 import { createRequire } from 'node:module'
+import { paths } from './paths.js'
 
 const require = createRequire(import.meta.url)
+const SAFE_PREFIX = 'v1:'
+const AES_PREFIX = 'v2:'
+export const SAFE_STORAGE_SCHEME = 'electron-safe-storage'
+export const FALLBACK_SCHEME = 'aes-256-gcm'
+export const PLAIN_SCHEME = 'plain'
 
-let safeStorage = null
-try {
-  // electron 是 CJS 模块，用 createRequire 引最稳妥；纯 Node 下会抛错，被 catch 吞掉。
-  safeStorage = require('electron').safeStorage || null
-} catch {
-  safeStorage = null
-}
-
-const PREFIX = 'v1:'
-
-export function isSecureStoreAvailable() {
+function getSafeStorage() {
+  if (!process.versions?.electron) return null
   try {
-    return !!(safeStorage && safeStorage.isEncryptionAvailable())
+    const safeStorage = require('electron')?.safeStorage
+    return safeStorage?.isEncryptionAvailable?.() ? safeStorage : null
   } catch {
-    return false
+    return null
   }
 }
 
-// 明文 → `v1:<base64>`；不可用或失败时返回 null（调用方据此回退为明文存储）。
-export function encryptSecret(plain) {
-  if (typeof plain !== 'string' || !plain) return null
+function fallbackMasterKey() {
   try {
-    if (safeStorage && safeStorage.isEncryptionAvailable()) {
-      return PREFIX + safeStorage.encryptString(plain).toString('base64')
+    const key = Buffer.from(fs.readFileSync(paths.secretKeyFile, 'utf-8').trim(), 'base64')
+    if (key.length === 32) return key
+  } catch {}
+
+  const key = crypto.randomBytes(32)
+  fs.mkdirSync(path.dirname(paths.secretKeyFile), { recursive: true })
+  fs.writeFileSync(paths.secretKeyFile, key.toString('base64'), { encoding: 'utf-8', mode: 0o600 })
+  try { fs.chmodSync(paths.secretKeyFile, 0o600) } catch {}
+  return key
+}
+
+function fallbackMasterKeysForDecrypt() {
+  const keys = [fallbackMasterKey()]
+  try {
+    const legacy = Buffer.from(fs.readFileSync(paths.apiCapabilitySecretKeyFile, 'utf-8').trim(), 'base64')
+    if (legacy.length >= 32 && !legacy.subarray(0, 32).equals(keys[0])) keys.push(legacy.subarray(0, 32))
+  } catch {}
+  return keys
+}
+
+export function isSecureStoreAvailable() {
+  return Boolean(getSafeStorage())
+}
+
+export function encryptSecretRecord(value) {
+  const text = String(value || '')
+  const safeStorage = getSafeStorage()
+  if (safeStorage) {
+    return { scheme: SAFE_STORAGE_SCHEME, value: safeStorage.encryptString(text).toString('base64') }
+  }
+
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv(FALLBACK_SCHEME, fallbackMasterKey(), iv)
+  const encrypted = Buffer.concat([cipher.update(text, 'utf-8'), cipher.final()])
+  return {
+    scheme: FALLBACK_SCHEME,
+    iv: iv.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+    value: encrypted.toString('base64'),
+  }
+}
+
+export function decryptSecretRecord(record) {
+  if (!record || typeof record !== 'object') return null
+  try {
+    if (record.scheme === SAFE_STORAGE_SCHEME) {
+      const safeStorage = getSafeStorage()
+      if (!safeStorage) return null
+      return safeStorage.decryptString(Buffer.from(String(record.value || ''), 'base64'))
     }
+    if (record.scheme === FALLBACK_SCHEME) {
+      for (const key of fallbackMasterKeysForDecrypt()) {
+        try {
+          const decipher = crypto.createDecipheriv(FALLBACK_SCHEME, key, Buffer.from(String(record.iv || ''), 'base64'))
+          decipher.setAuthTag(Buffer.from(String(record.tag || ''), 'base64'))
+          return Buffer.concat([
+            decipher.update(Buffer.from(String(record.value || ''), 'base64')),
+            decipher.final(),
+          ]).toString('utf-8')
+        } catch {}
+      }
+      return null
+    }
+    if (record.scheme === PLAIN_SCHEME) return String(record.value || '')
   } catch {}
   return null
 }
 
-// `v1:<base64>` → 明文；非本格式或解密失败返回 null。
-export function decryptSecret(enc) {
-  if (typeof enc !== 'string' || !enc.startsWith(PREFIX)) return null
-  try {
-    if (safeStorage && safeStorage.isEncryptionAvailable()) {
-      return safeStorage.decryptString(Buffer.from(enc.slice(PREFIX.length), 'base64'))
+export function encryptSecret(plain) {
+  if (typeof plain !== 'string' || !plain) return null
+  const record = encryptSecretRecord(plain)
+  if (record.scheme === SAFE_STORAGE_SCHEME) return SAFE_PREFIX + record.value
+  return AES_PREFIX + Buffer.from(JSON.stringify(record), 'utf-8').toString('base64')
+}
+
+export function decryptSecret(encoded) {
+  if (typeof encoded !== 'string') return null
+  if (encoded.startsWith(SAFE_PREFIX)) {
+    return decryptSecretRecord({ scheme: SAFE_STORAGE_SCHEME, value: encoded.slice(SAFE_PREFIX.length) })
+  }
+  if (encoded.startsWith(AES_PREFIX)) {
+    try {
+      const record = JSON.parse(Buffer.from(encoded.slice(AES_PREFIX.length), 'base64').toString('utf-8'))
+      return decryptSecretRecord(record)
+    } catch {
+      return null
     }
-  } catch {}
+  }
   return null
 }
 
 export function isEncrypted(value) {
-  return typeof value === 'string' && value.startsWith(PREFIX)
+  return typeof value === 'string' && (value.startsWith(SAFE_PREFIX) || value.startsWith(AES_PREFIX))
 }
 
-// 字段名以 key / secret / token / password 结尾（大小写不敏感）视为敏感字段。
-// 这样能覆盖 volcAsrApiKey / doubaoKey / botToken / appSecret / xunfeiApiSecret /
-// serper_api_key / jina_api_key / verificationToken 等驼峰与下划线两种命名，
-// 又不会误伤 resourceId / voiceId / appId / url 之类非密字段。
-const SECRET_NAME_RE = /(?:key|secret|token|password)$/i
+const SECRET_NAME_RE = /(?:key|secret|token|password|credential)$/i
 
 export function isSecretFieldName(name) {
-  return typeof name === 'string' && SECRET_NAME_RE.test(name)
+  return typeof name === 'string' && SECRET_NAME_RE.test(name.replace(/[^a-z0-9]/gi, ''))
 }
 
-// 递归就地加密：对敏感字段名、且值为非空明文字符串的项加密。已加密（v1:）跳过，幂等。
 export function encryptSecretsDeep(obj) {
   if (!obj || typeof obj !== 'object') return obj
-  for (const [k, v] of Object.entries(obj)) {
-    if (v && typeof v === 'object') {
-      encryptSecretsDeep(v)
-    } else if (typeof v === 'string' && v && isSecretFieldName(k) && !isEncrypted(v)) {
-      const enc = encryptSecret(v)
-      if (enc) obj[k] = enc // safeStorage 不可用时保持明文，不破坏保存
+  for (const [key, value] of Object.entries(obj)) {
+    if (value && typeof value === 'object') encryptSecretsDeep(value)
+    else if (typeof value === 'string' && value && isSecretFieldName(key) && !isEncrypted(value)) {
+      obj[key] = encryptSecret(value) || value
     }
   }
   return obj
 }
 
-// 递归就地解密：把任何 v1: 前缀的字符串还原成明文（不按字段名筛，安全）。
 export function decryptSecretsDeep(obj) {
   if (!obj || typeof obj !== 'object') return obj
-  for (const [k, v] of Object.entries(obj)) {
-    if (v && typeof v === 'object') {
-      decryptSecretsDeep(v)
-    } else if (isEncrypted(v)) {
-      const dec = decryptSecret(v)
-      if (dec != null) obj[k] = dec
+  for (const [key, value] of Object.entries(obj)) {
+    if (value && typeof value === 'object') decryptSecretsDeep(value)
+    else if (isEncrypted(value)) {
+      const plain = decryptSecret(value)
+      if (plain != null) obj[key] = plain
     }
   }
   return obj
+}
+
+export function redactSecretsDeep(value) {
+  if (Array.isArray(value)) return value.map(redactSecretsDeep)
+  if (!value || typeof value !== 'object') return value
+  const out = {}
+  for (const [key, item] of Object.entries(value)) {
+    out[key] = isSecretFieldName(key)
+      ? { configured: Boolean(item) }
+      : redactSecretsDeep(item)
+  }
+  return out
+}
+
+export const __internal = {
+  AES_PREFIX,
+  SAFE_PREFIX,
+  fallbackMasterKey,
+  fallbackMasterKeysForDecrypt,
 }

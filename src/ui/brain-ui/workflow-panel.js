@@ -118,7 +118,24 @@ export function initWorkflowPanel() {
     }
   }
 
-  window.addEventListener('bailongma:workflow', (e) => { try { handle(e.detail); } catch (_) {} });
+  // SceneStore is the only UI state source. The panel is a dedicated view over
+  // the same `openvz-workflow-active` surface rendered by scene-shell.
+  window.addEventListener('openvz:scene', (event) => {
+    try {
+      const surface = event.detail?.surfaces?.find((item) => item.id === 'openvz-workflow-active');
+      const workflow = surface?.data?.workflow;
+      if (!workflow) return;
+      goalEl.textContent = workflow.goal || '';
+      steps = new Map((workflow.steps || []).map((step) => [step.id, step]));
+      renderSteps();
+      if (typeof workflow.overallScore === 'number') {
+        overallEl.hidden = false;
+        overallEl.className = `wf-overall ${scoreClass(workflow.overallScore)}`;
+        overallEl.textContent = `总分 ${workflow.overallScore}`;
+      }
+      if (workflow.status === 'active') open();
+    } catch (_) {}
+  });
 
   async function loadSaved() {
     const list = $('wf-saved-list');

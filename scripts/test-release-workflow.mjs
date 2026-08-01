@@ -1,0 +1,23 @@
+#!/usr/bin/env node
+
+import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+
+const root = path.resolve(import.meta.dirname, '..')
+const release = fs.readFileSync(path.join(root, '.github', 'workflows', 'release.yml'), 'utf8')
+const smoke = fs.readFileSync(path.join(root, 'scripts', 'smoke-windows-install.ps1'), 'utf8')
+const versionScript = fs.readFileSync(path.join(root, 'scripts', 'prepare-release-version.mjs'), 'utf8')
+
+assert.match(release, /tags: \['v2\.2\.0'\]/, 'only the signed stable tag may auto-publish')
+assert.match(release, /unsigned:\s*\n\s+description: Publish a clearly labelled unsigned prerelease/)
+assert.match(release, /\^v2\\\.2\\\.0-rc\\\.\[0-9\]\+\$/, 'unsigned releases must be restricted to v2.2.0-rc.N')
+assert.match(release, /OPENVZ_RELEASE_BUILD: \$\{\{ inputs\.unsigned && '0' \|\| '1' \}\}/)
+assert.match(release, /UNSIGNED-BUILD\.txt/)
+assert.match(release, /--prerelease/)
+assert.match(release, /prepare-release-version\.mjs/)
+assert.match(smoke, /\$RequireSignature = \$env:OPENVZ_RELEASE_BUILD -eq '1'/)
+assert.match(smoke, /'NotSigned', 'Valid'/)
+assert.ok(versionScript.includes('/^v2\\.2\\.0(?:-rc\\.[0-9]+)?$/'), 'version metadata must accept stable and RC tags only')
+
+console.log('Signed stable and guarded unsigned RC workflow contract: OK')

@@ -1,11 +1,11 @@
-# BaiLongma 安全重构提示词
+# OpenVZ Agent 安全重构提示词
 
 用途：后续每次让 AI 或人工代理执行模块拆分时，先使用这份提示词，确保目标是“拆结构，不改行为”。
 
 ## 通用提示词
 
 ```text
-你正在 BaiLongma 项目的 `refactor/module-split` 分支上做代码模块拆分重构。
+你正在 OpenVZ Agent 项目的 `refactor/module-split` 分支上做代码模块拆分重构。
 
 最高优先级目标：在不改变现有功能、运行行为、工具协议、API 响应结构、数据库语义、UI 交互和启动路径的前提下，把大文件拆成更细粒度的功能模块。
 
@@ -58,7 +58,7 @@
 ## 单步重构任务模板
 
 ```text
-请在 BaiLongma 的 `refactor/module-split` 分支上执行一次小步安全重构。
+请在 OpenVZ Agent 的 `refactor/module-split` 分支上执行一次小步安全重构。
 
 本次目标：[填写一个非常具体的目标，例如：从 `src/capabilities/executor.js` 抽出 UI 工具域到 `src/capabilities/tools/ui.js`]
 
@@ -87,7 +87,7 @@
 ## 下一会话接手提示词
 
 ```text
-你正在 BaiLongma 项目的 `refactor/module-split` 分支继续做安全模块拆分重构。
+你正在 OpenVZ Agent 项目的 `refactor/module-split` 分支继续做安全模块拆分重构。
 
 当前状态：
 - 已完成基础 helper 拆分：`tool-policy.js`、`tool-audit.js`、`tool-utils.js`、`abort-utils.js`、`sandbox.js`。

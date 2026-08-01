@@ -5,9 +5,12 @@ import { buildSystemPrompt, buildContextBlock } from './prompt.js'
 import { runRecognizer } from './memory/recognizer.js'
 import { runInjector, formatMemoriesForPrompt } from './memory/injector.js'
 import { getDB, getConfig, setConfig } from './db.js'
-import { pushMessage, popMessage, hasMessages } from './queue.js'
+import { pushMessage } from './inbound-message.js'
+import { popMessage, hasMessages } from './queue.js'
 import { formatTick, nowTimestamp } from './time.js'
 import { parseMarkers } from './runtime/markers.js'
+import { buildLLMMessages } from './runtime/messages.js'
+import { buildAutonomousTickDirections } from './runtime/tick-policy.js'
 
 getDB()
 
@@ -32,20 +35,27 @@ async function process(input, label) {
 
   const injection = await runInjector({ message: input, state })
   const memoriesText = formatMemoriesForPrompt(injection.memories)
-  const directionsText = injection.directions.join('\n')
+  const isTick = /^TICK\s/i.test(String(input || '').trim())
+  const directions = [...(injection.directions || [])]
+  if (isTick) directions.unshift(buildAutonomousTickDirections())
+  const directionsText = directions.join('\n')
   const persona = getConfig('persona') || ''
   const systemPrompt = buildSystemPrompt({ persona })
   const contextBlock = buildContextBlock({ memories: memoriesText, directions: directionsText })
-  // For the standalone test runner we don't have buildLLMMessages plumbing, so
-  // prepend the context to the user message directly — matches what the main
-  // loop does to the current user message in production.
-  const finalUserMessage = contextBlock ? `${contextBlock}\n\n${input}` : input
+  const messages = buildLLMMessages({
+    systemPrompt,
+    contextBlock,
+    conversationWindow: injection.conversationWindow || [],
+    input,
+    isTick,
+  })
 
   let response
   try {
     response = await callLLM({
       systemPrompt,
-      message: finalUserMessage,
+      message: input,
+      messages,
       tools: injection.tools || ['send_message']
     })
     console.log('\nJarvis 回应：')

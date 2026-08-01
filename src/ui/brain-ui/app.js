@@ -1,18 +1,29 @@
 ﻿import { renderBrainUiApp } from "./app-shell.js";
 import { API } from "./api-client.js";
-import { bootstrapACUI } from "./acui/bootstrap.js";
+import { bootstrapScene } from "../scene-shell/bootstrap.js";
 import { initChat, friendlyChannelLabel } from "./chat.js";
 import { initPanelCollapse } from "./panel-collapse.js";
 import { ThoughtStream } from "./thought-stream.js";
 import { initVoicePanel } from "./voice-panel.js";
 import { initHotspot, toggleHotspot, setHotspotMode, moveVoicePanelToBody, restoreVoicePanel } from "./hotspot.js";
-import { initWorkflowPanel } from "./workflow-panel.js";
 import { initWorldcup, toggleWorldcup, setWorldcupMode } from "./worldcup.js";
+import { initTyphoon, toggleTyphoon, setTyphoonMode } from "./typhoon.js";
 import { enrichVisiblePersonCardFromText, initPersonCard, setPersonCardMode, showPersonCardByName } from "./person-card.js";
 import { initDocPanel, setDocPanelMode } from "./doc.js";
 import { initWechatPopup, showWechatPopup } from "./wechat-popup.js";
+import { initFeishuPopup, showFeishuPopup } from "./feishu-popup.js";
+import { initWorkflowPanel } from "./workflow-panel.js";
 import { attachJarvisAudioGraph, attachJarvisFx, isFxEnabledForVoice, setFxEnabledForVoice, getJarvisFxParams, setJarvisFxParams, resetJarvisFxParams, isFxUnlocked, tryUnlockFx } from "./tts-fx.js";
 import { initAudioOutputRouting, applyOutputSink, listOutputDevices, getOutputPreference, setOutputPreference } from "./audio-output.js";
+const hasWindowsTitleBarOverlay = window.bailongma?.isElectron && window.bailongma?.platform === "win32";
+document.documentElement.classList.toggle("windows-titlebar-overlay", Boolean(hasWindowsTitleBarOverlay));
+if (hasWindowsTitleBarOverlay) {
+  const setFullScreenClass = (fullscreen) => {
+    document.documentElement.classList.toggle("window-fullscreen", Boolean(fullscreen));
+  };
+  window.bailongma.onFullScreenChange?.(setFullScreenClass);
+  window.bailongma.isFullScreen?.().then(setFullScreenClass).catch(() => {});
+}
 renderBrainUiApp(document.body);
 const THEME_KEY = "jarvis-brain-ui-theme";
 const PHYSICS_STORAGE_KEY = "jarvis-brain-ui-physics";
@@ -147,9 +158,8 @@ function initUiZoom() {
 function setAgentName(nextName) {
   const normalized = String(nextName || "").trim() || DEFAULT_AGENT_NAME;
   agentName = normalized;
-  // Header stays the fixed product identity ("OpenVZ Agent · Your Personal AI Agent OS");
-  // the persona name only drives chat labels, the input placeholder and the graph aria-label.
-  document.title = "OpenVZ Agent · Your Personal AI Agent OS";
+  document.title = `${normalized} · Cognitive Surface`;
+  if (brandNameEl) brandNameEl.textContent = `${normalized} AI Agent`;
   if (graphEl) graphEl.setAttribute("aria-label", `${normalized} memory graph`);
   const input = document.getElementById("msg-input");
   if (input && !chat?.isComposerLocked?.() && document.activeElement === input) input.placeholder = defaultInputPlaceholder();
@@ -228,6 +238,9 @@ function refreshThemeColors() {
 function applyTheme(theme) {
   document.body.dataset.theme = theme;
   try { localStorage.setItem(THEME_KEY, theme); } catch {}
+  if (hasWindowsTitleBarOverlay) {
+    window.bailongma?.setTitleBarTheme?.(theme).catch(() => {});
+  }
   document.querySelectorAll(".theme-dot").forEach(el => {
     el.classList.toggle("active", el.dataset.t === theme);
   });
@@ -242,8 +255,8 @@ function applyTheme(theme) {
 }
 
 (function initTheme() {
-  let saved = "openvz";
-  try { saved = localStorage.getItem(THEME_KEY) || "openvz"; } catch {}
+  let saved = "midnight";
+  try { saved = localStorage.getItem(THEME_KEY) || "midnight"; } catch {}
   applyTheme(saved);
 })();
 
@@ -1018,6 +1031,436 @@ const L2 = new ThoughtStream("si-l2", "warm", {
   toolDetailLength: 220,
 });
 
+// ── L2 意识观测：心跳图、行动日志、实时认知状态 ────────────────
+// 波形表达真实的意识活动：L2 Tick / 用户消息触发大跳，工具调用触发小跳；
+// 底部计数仍只统计 L2 Tick，SSE 是否在线则由右上角状态灯单独表达。
+// 行动日志只存工具动作的人类可读摘要；完整参数/结果不写入浏览器存储。
+const ACTION_LOG_KEY = "bailongma-action-log-v1";
+const HEARTBEAT_COUNT_KEY = "bailongma-heartbeat-count-v1";
+const ACTION_LOG_LIMIT = 58;
+const ACTION_LOG_IGNORED_TOOLS = new Set(["send_message", "ui_set"]);
+const heartbeatMonitorEl = document.querySelector(".heartbeat-monitor");
+const heartbeatWaveEl = document.getElementById("heartbeat-wave");
+const heartbeatAreaEl = document.getElementById("heartbeat-area");
+const heartbeatStateEl = document.getElementById("heartbeat-state");
+const heartbeatStateLabelEl = document.getElementById("heartbeat-state-label");
+const heartbeatCountEl = document.getElementById("heartbeat-count");
+const heartbeatLastEl = document.getElementById("heartbeat-last");
+const actionLogEl = document.getElementById("action-log");
+const cognitionStateEl = document.getElementById("cognition-state");
+const cognitionEmptyEl = document.getElementById("cognition-empty");
+
+function readHeartbeatStorage(key, fallback) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key));
+    return value == null ? fallback : value;
+  } catch {
+    return fallback;
+  }
+}
+
+let actionLog = readHeartbeatStorage(ACTION_LOG_KEY, []);
+if (!Array.isArray(actionLog)) actionLog = [];
+actionLog = actionLog
+  .filter(entry => (
+    entry
+    && entry.kind !== "failed"
+    && !ACTION_LOG_IGNORED_TOOLS.has(entry.tool)
+    && typeof entry.text === "string"
+    && Number.isFinite(Number(entry.ts))
+  ))
+  .slice(-ACTION_LOG_LIMIT);
+let heartbeatCount = Math.max(0, Number(readHeartbeatStorage(HEARTBEAT_COUNT_KEY, 0)) || 0);
+let lastHeartbeatAt = 0;
+let activeHeartbeatRound = false;
+let heartbeatConnectionState = "waiting";
+let defaultHeartbeatIntervalMinutes = 20;
+
+function heartbeatClock(ts) {
+  return new Date(Number(ts) || Date.now()).toLocaleTimeString("zh-CN", {
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function renderActionLog() {
+  if (!actionLogEl) return;
+  actionLogEl.replaceChildren();
+  const visibleEntries = actionLog.slice();
+  if (visibleEntries.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "action-log-empty";
+    empty.id = "action-log-empty";
+    empty.textContent = "Agent 最近执行的文件、命令和工具动作会显示在这里";
+    actionLogEl.appendChild(empty);
+  } else {
+    for (const entry of visibleEntries) {
+      const row = document.createElement("div");
+      row.className = "action-log-entry";
+      row.dataset.kind = entry.kind || "action";
+      const dot = document.createElement("span");
+      dot.className = "action-log-dot";
+      const textEl = document.createElement("span");
+      textEl.className = "action-log-text";
+      textEl.textContent = entry.text;
+      textEl.title = entry.text;
+      const timeEl = document.createElement("time");
+      timeEl.className = "action-log-time";
+      timeEl.dateTime = new Date(entry.ts).toISOString();
+      timeEl.textContent = heartbeatClock(entry.ts);
+      row.append(dot, textEl, timeEl);
+      actionLogEl.appendChild(row);
+    }
+    actionLogEl.scrollTop = actionLogEl.scrollHeight;
+  }
+}
+
+function describeAction(name, args = {}, result = "") {
+  const parsedResult = L2.parseJsonResult(result);
+  const label = L2.toolLabel(name || "tool");
+  const subject = L2.formatToolSubject(name, args, parsedResult);
+  return subject ? `${label} · ${subject}` : label;
+}
+
+function addActionLogEntry(name, args = {}, result = "", ok = true, ts = Date.now()) {
+  if (ok === false || ACTION_LOG_IGNORED_TOOLS.has(name)) return;
+  actionLog.push({
+    text: describeAction(name, args, result),
+    kind: "action",
+    tool: String(name || "tool"),
+    ts: Number(ts) || Date.now(),
+  });
+  actionLog = actionLog.slice(-ACTION_LOG_LIMIT);
+  try { localStorage.setItem(ACTION_LOG_KEY, JSON.stringify(actionLog)); } catch {}
+  renderActionLog();
+}
+
+function beginHeartbeatRound(ts = Date.now()) {
+  activeHeartbeatRound = true;
+  lastHeartbeatAt = Number(ts) || Date.now();
+  heartbeatCount += 1;
+  try { localStorage.setItem(HEARTBEAT_COUNT_KEY, JSON.stringify(heartbeatCount)); } catch {}
+  updateHeartbeatFacts();
+  triggerHeartbeatPulse(1);
+}
+
+function finishHeartbeatRound() {
+  if (!activeHeartbeatRound) return;
+  activeHeartbeatRound = false;
+}
+
+function rebuildActionLogFromHistory(events) {
+  return events
+    .filter(event => (
+      event?.type === "tool_call"
+      && event?.data?.name
+      && event.data.ok !== false
+      && !ACTION_LOG_IGNORED_TOOLS.has(event.data.name)
+    ))
+    .map(event => ({
+      text: describeAction(event.data.name, event.data.args, event.data.result),
+      kind: "action",
+      tool: String(event.data.name),
+      ts: Date.parse(event.ts) || Date.now(),
+    }))
+    .slice(-ACTION_LOG_LIMIT);
+}
+
+function updateHeartbeatFacts() {
+  if (heartbeatCountEl) heartbeatCountEl.textContent = String(heartbeatCount);
+  if (!heartbeatLastEl) return;
+  if (!lastHeartbeatAt) {
+    heartbeatLastEl.textContent = "等待首次 Tick";
+    return;
+  }
+  const elapsed = Math.max(0, Date.now() - lastHeartbeatAt);
+  if (elapsed < 60_000) heartbeatLastEl.textContent = "刚刚发生";
+  else if (elapsed < 3_600_000) heartbeatLastEl.textContent = `${Math.floor(elapsed / 60_000)} 分钟前`;
+  else if (elapsed < 86_400_000) heartbeatLastEl.textContent = `${Math.floor(elapsed / 3_600_000)} 小时前`;
+  else heartbeatLastEl.textContent = `${Math.floor(elapsed / 86_400_000)} 天前`;
+}
+
+function formatHeartbeatInterval(minutes = defaultHeartbeatIntervalMinutes) {
+  const value = Number(minutes);
+  return Number.isInteger(value) && value > 0 ? `${value} 分钟` : "默认间隔";
+}
+
+function applyHeartbeatConfig(heartbeat = {}) {
+  const intervalMinutes = Number(heartbeat.defaultIntervalMinutes);
+  if (Number.isInteger(intervalMinutes) && intervalMinutes > 0) {
+    defaultHeartbeatIntervalMinutes = intervalMinutes;
+  }
+  if (heartbeatConnectionState === "alive") {
+    setHeartbeatConnection("alive", formatHeartbeatInterval());
+  }
+}
+
+async function loadHeartbeatMonitorSettings() {
+  try {
+    const response = await fetch(`${API}/settings/heartbeat`, { cache: "no-store" });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.error || "读取失败");
+    applyHeartbeatConfig(data.heartbeat);
+  } catch (err) {
+    console.warn("[brain-ui] heartbeat settings unavailable:", err?.message || err);
+  }
+}
+
+function setHeartbeatConnection(state, label) {
+  heartbeatConnectionState = state;
+  if (heartbeatStateEl) heartbeatStateEl.dataset.state = state;
+  if (heartbeatStateLabelEl) heartbeatStateLabelEl.textContent = label;
+  if (heartbeatStateEl) {
+    heartbeatStateEl.title = state === "alive"
+      ? `默认心跳间隔：${formatHeartbeatInterval()}`
+      : label;
+  }
+}
+
+function setCognitionState(label, state = "idle") {
+  if (!cognitionStateEl) return;
+  cognitionStateEl.textContent = label;
+  cognitionStateEl.dataset.state = state;
+}
+
+function setVoiceThinking(active) {
+  const thinking = Boolean(active);
+  document.body.classList.toggle("model-thinking", thinking);
+  window.bailongmaVoice?.setThinking?.(thinking);
+}
+
+function revealCognitionStream() {
+  if (cognitionEmptyEl?.parentElement) cognitionEmptyEl.remove();
+}
+
+function restoreUserStreamHistory(events) {
+  const history = Array.isArray(events) ? events.slice(-120) : [];
+  if (history.length === 0 || !L1.el) return;
+
+  L1.beginRound();
+  L1.el.replaceChildren();
+  let roundActive = false;
+
+  for (const event of history) {
+    const type = event?.type;
+    const data = event?.data || {};
+    switch (type) {
+      case "message_received": {
+        roundActive = true;
+        L1.beginRound();
+        const parsed = parseUserMessageInput(data.input);
+        L1.newLine("user message received", {
+          content: parsed.content,
+          time: parsed.time || heartbeatClock(Date.parse(event.ts) || Date.now()),
+        });
+        L1.startThinkingSession();
+        break;
+      }
+      case "stream_start":
+        if (roundActive) L1.startThinkingSession();
+        break;
+      case "stream_end":
+        if (roundActive) L1.stopThinking();
+        break;
+      case "tool_preparing": {
+        if (!roundActive) break;
+        const label = data.name ? L1.toolLabel(data.name) : "工具";
+        L1.setStatus(`准备调用 ${label}…`, "busy");
+        break;
+      }
+      case "tool_executing": {
+        if (!roundActive) break;
+        const label = data.name ? L1.toolLabel(data.name) : "工具";
+        L1.setStatus(`正在执行 ${label}…`, "busy");
+        break;
+      }
+      case "tool_call":
+        if (roundActive) L1.tool(data.name, data.args, data.result, data.ok);
+        break;
+      case "response":
+        if (roundActive) L1.end();
+        roundActive = false;
+        break;
+      case "processing_preempted":
+      case "message_dropped":
+      case "protocol_violation":
+      case "error":
+        if (roundActive) L1.end();
+        roundActive = false;
+        break;
+      case "llm_retry":
+      case "message_requeued":
+        if (roundActive) L1.setStatus("等待重试…", "busy");
+        break;
+    }
+  }
+
+  if (roundActive) {
+    L1.stopThinking();
+    L1.setStatus("上次会话未完成", "failed");
+  }
+}
+
+function restoreCognitionHistory(events) {
+  const history = Array.isArray(events) ? events.slice(-120) : [];
+  if (history.length === 0 || !L2.el) return;
+
+  L2.beginRound();
+  L2.el.replaceChildren();
+  let roundActive = false;
+  let lastSettledState = "idle";
+
+  for (const event of history) {
+    const type = event?.type;
+    const data = event?.data || {};
+    switch (type) {
+      case "tick":
+        roundActive = true;
+        L2.beginRound();
+        L2.newLine("heartbeat tick", { time: heartbeatClock(Date.parse(event.ts) || Date.now()) });
+        L2.startThinkingSession();
+        lastSettledState = "thinking";
+        break;
+      case "stream_start":
+        if (roundActive) L2.startThinkingSession();
+        break;
+      case "stream_end":
+        if (roundActive) L2.stopThinking();
+        break;
+      case "tool_preparing": {
+        if (!roundActive) break;
+        const label = data.name ? L2.toolLabel(data.name) : "工具";
+        L2.setStatus(`准备调用 ${label}…`, "busy");
+        lastSettledState = "tool";
+        break;
+      }
+      case "tool_executing": {
+        if (!roundActive) break;
+        const label = data.name ? L2.toolLabel(data.name) : "工具";
+        L2.setStatus(`正在执行 ${label}…`, "busy");
+        lastSettledState = "tool";
+        break;
+      }
+      case "tool_call":
+        if (roundActive) {
+          L2.tool(data.name, data.args, data.result, data.ok);
+          lastSettledState = "tool";
+        }
+        break;
+      case "response":
+        if (roundActive) L2.end();
+        roundActive = false;
+        lastSettledState = "done";
+        break;
+      case "processing_preempted":
+      case "message_dropped":
+      case "protocol_violation":
+      case "error":
+        if (roundActive) L2.end();
+        roundActive = false;
+        lastSettledState = "interrupted";
+        break;
+      case "llm_retry":
+      case "message_requeued":
+        if (roundActive) L2.setStatus("等待重试…", "busy");
+        break;
+    }
+  }
+
+  if (roundActive) {
+    L2.stopThinking();
+    L2.clearStatus();
+    setCognitionState("上次未完成", "idle");
+  } else if (lastSettledState === "done") {
+    setCognitionState("最近一轮完成", "done");
+  } else if (lastSettledState === "interrupted") {
+    setCognitionState("最近一轮中止", "idle");
+  }
+}
+
+async function loadBrainUiHistory() {
+  try {
+    const response = await fetch(`${API}/events/history?path=all&limit=240`, { cache: "no-store" });
+    const payload = await response.json();
+    if (!response.ok || !payload.ok || !Array.isArray(payload.events)) throw new Error(payload.error || "历史读取失败");
+
+    const l1Events = payload.events.filter(event => event?.path === "l1");
+    const l2Events = payload.events.filter(event => !event?.path || event.path === "l2");
+    actionLog = rebuildActionLogFromHistory(payload.events);
+    heartbeatCount = Math.max(0, Number(payload.heartbeatCount) || 0);
+    lastHeartbeatAt = l2Events.filter(event => event?.type === "tick").at(-1)?.ts || 0;
+    if (lastHeartbeatAt) lastHeartbeatAt = Date.parse(lastHeartbeatAt) || 0;
+    try {
+      localStorage.setItem(ACTION_LOG_KEY, JSON.stringify(actionLog));
+      localStorage.setItem(HEARTBEAT_COUNT_KEY, JSON.stringify(heartbeatCount));
+    } catch {}
+    renderActionLog();
+    updateHeartbeatFacts();
+    restoreUserStreamHistory(l1Events);
+    restoreCognitionHistory(l2Events);
+  } catch (err) {
+    // 旧后端或临时不可用时继续使用 localStorage 快照；实时 SSE 仍然照常连接。
+    console.warn("[brain-ui] heartbeat history unavailable:", err?.message || err);
+  }
+}
+
+const HEARTBEAT_SAMPLE_COUNT = 64;
+const HEARTBEAT_FRAME_INTERVAL_MS = 120;
+const HEARTBEAT_PULSE_SHAPE = [0.02, 0.08, -0.08, 0.2, 0.92, -0.4, 0.34, 0.1, 0.02];
+const HEARTBEAT_MAJOR_STRENGTH = 1;
+const HEARTBEAT_TOOL_STRENGTH = 0.8;
+const heartbeatSamples = Array.from({ length: HEARTBEAT_SAMPLE_COUNT }, () => 0);
+let heartbeatPulseQueue = [];
+let heartbeatBeatTimer = null;
+
+function renderHeartbeatWave() {
+  if (!heartbeatWaveEl || !heartbeatAreaEl) return;
+  const width = 320;
+  const baseline = 36;
+  const amplitude = 28;
+  const points = heartbeatSamples.map((sample, index) => {
+    const x = index * width / (HEARTBEAT_SAMPLE_COUNT - 1);
+    const y = baseline - sample * amplitude;
+    return `${x.toFixed(1)} ${y.toFixed(1)}`;
+  });
+  const line = `M${points.join(" L")}`;
+  heartbeatWaveEl.setAttribute("d", line);
+  heartbeatAreaEl.setAttribute("d", `${line} L320 ${baseline} L0 ${baseline} Z`);
+}
+
+function triggerHeartbeatPulse(strength = HEARTBEAT_MAJOR_STRENGTH, kind = "major") {
+  const numericStrength = Number(strength);
+  const s = Number.isFinite(numericStrength) ? Math.max(0.2, Math.min(1.4, numericStrength)) : 1;
+  heartbeatPulseQueue.push(...HEARTBEAT_PULSE_SHAPE.map(sample => sample * s));
+  if (!heartbeatMonitorEl) return;
+  if (heartbeatBeatTimer) clearTimeout(heartbeatBeatTimer);
+  heartbeatMonitorEl.removeAttribute("data-beat");
+  void heartbeatMonitorEl.offsetWidth;
+  heartbeatMonitorEl.dataset.beat = kind;
+  heartbeatBeatTimer = setTimeout(() => {
+    heartbeatMonitorEl?.removeAttribute("data-beat");
+    heartbeatBeatTimer = null;
+  }, 760);
+}
+
+function advanceHeartbeatWave() {
+  // 没有真实消息、Tick 或工具活动时回到平直基线；不用随机噪声伪造心跳。
+  const next = heartbeatPulseQueue.length
+    ? heartbeatPulseQueue.shift()
+    : 0;
+  heartbeatSamples.push(next);
+  heartbeatSamples.shift();
+  renderHeartbeatWave();
+}
+
+renderActionLog();
+updateHeartbeatFacts();
+renderHeartbeatWave();
+setInterval(advanceHeartbeatWave, HEARTBEAT_FRAME_INTERVAL_MS);
+setInterval(updateHeartbeatFacts, 30_000);
+
 // L1 = processing flow triggered by user messages; L2 = processing flow triggered by TICK.
 // stream_*/tool_call events emitted by the backend carry no path tag;
 // routing to the correct panel is determined by the most recent message_received / tick event.
@@ -1053,9 +1496,9 @@ const AI_TOOL_GROUPS = {
   "扫描文件": new Set(["read_file", "list_dir"]),
   "改动文件": new Set(["write_file", "make_dir", "delete_file"]),
   "执行命令": new Set(["exec_command", "exec_quick_command", "exec_task_command", "exec_background_command", "download_file", "kill_process", "list_processes"]),
-  "上网": new Set(["fetch_url", "web_search", "browser_read"]),
+  "上网": new Set(["web_search", "web_read"]),
   "调取记忆": new Set(["search_memory", "recall_memory", "probe_memory", "upsert_memory", "merge_memories", "downgrade_memory"]),
-  "推送界面": new Set(["ui_show", "ui_update", "ui_hide", "ui_patch", "ui_register", "focus_banner"]),
+  "推送界面": new Set(["ui_set", "focus_banner"]),
   "处理多媒体": new Set(["speak", "generate_lyrics", "generate_music", "generate_image", "music", "media_mode"]),
   "回复用户": new Set(["send_message", "express"]),
 };
@@ -1255,9 +1698,13 @@ function flashFocusCompressed() {
 
 function connectSSE() {
   setConnectionState("连接中", true);
+  setHeartbeatConnection("waiting", "连接中");
   const es = new EventSource(`${API}/events`);
 
-  es.onopen = () => setConnectionState("已连接", true);
+  es.onopen = () => {
+    setConnectionState("已连接", true);
+    setHeartbeatConnection("alive", formatHeartbeatInterval());
+  };
 
   es.onmessage = event => {
     try { handle(JSON.parse(event.data)); } catch (_) {}
@@ -1265,6 +1712,7 @@ function connectSSE() {
 
   es.onerror = () => {
     setConnectionState("重连中", false);
+    setHeartbeatConnection("offline", "连接中断");
     es.close();
     setTimeout(connectSSE, 3000);
   };
@@ -1276,10 +1724,20 @@ function extractNids(memList) {
     .filter(Boolean);
 }
 
-function handle({ type, data = {} }) {
+function handle({ type, data = {}, ts = null }) {
   switch (type) {
+    case "heartbeat_settings_updated":
+      applyHeartbeatConfig(data);
+      break;
     case "message_received": {
+      // L1 也是一次真实意识唤醒：只驱动波形，不累加 L2 心跳计数。
+      triggerHeartbeatPulse(HEARTBEAT_MAJOR_STRENGTH, "major");
+      if (activeHeartbeatRound) {
+        finishHeartbeatRound("interrupted", "收到用户消息，心跳让路");
+        setCognitionState("已让路", "idle");
+      }
       currentPath = "l1";
+      setVoiceThinking(true);
       // 兜底：上一轮若被打断、message/response 均未到达，实时气泡会成孤儿、流式会话可能还挂着麦克风
       // ——定稿气泡、收尾流式会话（恢复麦克风）、复位状态，再开新一轮。
       if (sttsActive) endStreamingTTS();
@@ -1300,11 +1758,20 @@ function handle({ type, data = {} }) {
     }
     case "tick":
       currentPath = "l2";
+      setVoiceThinking(true);
+      revealCognitionStream();
+      beginHeartbeatRound(Date.parse(ts) || Date.now());
+      setCognitionState("正在思考", "thinking");
       L2.beginRound();
       L2.newLine("heartbeat tick");
       L2.startThinkingSession();
       break;
     case "stream_start":
+      setVoiceThinking(true);
+      if (currentPath === "l2") {
+        revealCognitionStream();
+        setCognitionState("正在思考", "thinking");
+      }
       currentStream().startThinkingSession();
       // 正文流（plainReply）：把 token 实时打进聊天气泡。一轮可能有多段正文（正文→工具→正文），
       // 只在尚未开始时建气泡，后续段累积进同一个。speak 轮（语音）额外开启逐句流式合成。
@@ -1331,32 +1798,54 @@ function handle({ type, data = {} }) {
       break;
     case "stream_end":
       currentStream().stopThinking();
+      setVoiceThinking(false);
+      if (currentPath === "l2" && activeHeartbeatRound) setCognitionState("判断下一步", "thinking");
       // 正文段结束：把残句先送去合成，降低尾句延迟（不结束会话，可能还有后续正文段）
       if (data.mode === "text" && sttsActive) flushStreamingTTSBuf();
       break;
     case "tool_preparing": {
+      setVoiceThinking(false);
       // 思考动画已停，但工具尚未真正执行 —— 给一个占位状态避免 UI 死寂
       const stream = currentStream();
       const label = data.name ? stream.toolLabel(data.name) : "";
+      if (currentPath === "l2") {
+        revealCognitionStream();
+        setCognitionState(label ? `准备 · ${label}` : "准备工具", "tool");
+      }
       stream.setStatus(label ? `准备调用 ${label}…` : "准备工具调用…", "busy");
       break;
     }
     case "tool_executing": {
+      setVoiceThinking(false);
+      // 工具开始执行时给一次小跳；tool_call 是完成事件，不再重复入队。
+      triggerHeartbeatPulse(HEARTBEAT_TOOL_STRENGTH, "minor");
       const stream = currentStream();
       const label = data.name ? stream.toolLabel(data.name) : "工具";
+      if (currentPath === "l2") setCognitionState(`执行 · ${label}`, "tool");
       stream.setTimedStatus(`正在执行 ${label}…`, "busy", {
         staleAfterMs: 45000,
         staleText: `执行 ${label} 时间偏长，仍在等结果…`,
       });
       break;
     }
-    case "tool_call":
-      currentStream().tool(data.name, data.args, data.result, data.ok);
+    case "tool_call": {
+      const stream = currentStream();
+      if (currentPath === "l2") {
+        setCognitionState(`${data.ok === false ? "未完成" : "完成"} · ${stream.toolLabel(data.name)}`, "tool");
+      }
+      addActionLogEntry(data.name, data.args, data.result, data.ok, Date.parse(ts) || Date.now());
+      stream.tool(data.name, data.args, data.result, data.ok);
       recordAiActivity(data.name);
       break;
+    }
     case "response":
       // Round complete — stop all animations
       currentStream().end();
+      setVoiceThinking(false);
+      if (currentPath === "l2") {
+        finishHeartbeatRound("complete");
+        setCognitionState("本轮完成", "done");
+      }
       // 兜底：本轮结束时（response 必在 message 之后发）若流式合成会话仍开着——极少见，模型只调了工具
       // 没产出可投递正文、message 未到达——标记正文已尽让队列放完即恢复麦克风，避免麦克风一直挂起。
       // 正常情况 message 已 finalize 过，此处幂等无副作用，不会打断仍在播放的尾句。
@@ -1366,8 +1855,14 @@ function handle({ type, data = {} }) {
       break;
     case "processing_preempted":
       currentStream().end();
+      setVoiceThinking(false);
+      if (currentPath === "l2") {
+        finishHeartbeatRound("interrupted");
+        setCognitionState("已中止", "idle");
+      }
       break;
     case "llm_retry": {
+      setVoiceThinking(true);
       currentStream().startThinkingSession();
       const nextAttempt = Number(data.nextAttempt || 2);
       const delayText = formatRetryDelay(Number(data.delayMs || 0));
@@ -1375,26 +1870,43 @@ function handle({ type, data = {} }) {
       break;
     }
     case "message_requeued": {
+      setVoiceThinking(true);
       currentStream().startThinkingSession();
       const retryCount = Number(data.retryCount || 1);
       currentStream().setStatus("LLM 繁忙，已入队重试 " + retryCount + "/3", "busy");
       break;
     }
     case "message_dropped":
+      setVoiceThinking(false);
       currentStream().startThinkingSession();
       currentStream().setStatus("LLM 繁忙，重试次数已达上限", "failed");
+      if (currentPath === "l2") {
+        finishHeartbeatRound("interrupted", "心跳处理未完成 · 重试已用尽");
+        setCognitionState("未完成", "idle");
+      }
       break;
     case "error":
       if (isBusyErrorMessage(data.error)) {
+        setVoiceThinking(true);
         currentStream().startThinkingSession();
         currentStream().setStatus("LLM 繁忙，请稍后重试", "busy");
       } else {
+        setVoiceThinking(false);
         currentStream().stopThinking();
         currentStream().setStatus(data.error || "处理失败", "failed");
+        if (currentPath === "l2") {
+          finishHeartbeatRound("interrupted", "心跳处理遇到异常");
+          setCognitionState("异常", "idle");
+        }
       }
       break;
     case "protocol_violation":
       currentStream().end();
+      setVoiceThinking(false);
+      if (currentPath === "l2") {
+        finishHeartbeatRound("interrupted", "心跳协议校验未通过");
+        setCognitionState("未完成", "idle");
+      }
       break;
     case "injector_result": {
       const nids = [...extractNids(data.matchedMemories), ...extractNids(data.recallMemories)];
@@ -1440,18 +1952,22 @@ function handle({ type, data = {} }) {
     case "message":
       if (data.from === "consciousness") {
         lastJarvisContent = data.content;
+        const shouldSpeakMessage = data.speak === true;
         const viaLabel = friendlyChannelLabel(data.channel);
         const content = viaLabel ? `_→ ${viaLabel}_  \n${data.content}` : data.content;
+        const messageId = data.conversation_id || data.conversationId || "";
         // 若本轮正文已流式进了实时气泡：用权威全文定稿同一个气泡，避免新建重复气泡
         if (chat.hasLiveJarvisMsg()) {
-          chat.finalizeLiveJarvisMsg(content);
+          chat.finalizeLiveJarvisMsg(content, { messageId });
         } else {
-          addMsg("jarvis", content);
+          addMsg("jarvis", content, { messageId });
         }
         // 语音轮的 TTS 收尾：逐句会话进行中 → flush 尾句并收尾；若未走逐句（流式合成关闭）→ 整段播一次
         if (liveTurnSpeak) {
           if (sttsActive) finalizeStreamingTTS();
           else playTTSReply(toPlainSpeech(data.content));
+        } else if (shouldSpeakMessage) {
+          playTTSReplyIfReadable(data.content);
         }
         liveReplyActive = false;
         liveRawText = "";
@@ -1468,7 +1984,7 @@ function handle({ type, data = {} }) {
         || (data.from_id && /^(wechat|discord|feishu|wecom):/i.test(data.from_id));
       if (isExternal) {
         const label = friendlyChannelLabel(data.channel) || data.from_id || "External";
-        addMsg("external", data.content, { label, alert: false });
+        addMsg("external", data.content, { label, alert: false, messageId: data.conversation_id || data.conversationId || "" });
         openChat(true);
       }
       break;
@@ -1482,14 +1998,14 @@ function handle({ type, data = {} }) {
     case "aivideo_mode":
       window.dispatchEvent(new CustomEvent("bailongma:aivideo", { detail: data }));
       break;
-    case "workflow_progress":
-      window.dispatchEvent(new CustomEvent("bailongma:workflow", { detail: data }));
-      break;
     case "hotspot_mode":
       setHotspotMode(!!data.active || data.action === "show" || data.action === "open", { source: "agent_event" });
       break;
     case "worldcup_mode":
       setWorldcupMode(!!data.active || data.action === "show" || data.action === "open", { source: "agent_event" });
+      break;
+    case "typhoon_mode":
+      setTyphoonMode(!!data.active || data.action === "show" || data.action === "open", { source: "agent_event" });
       break;
     case "doc_panel_mode":
       setDocPanelMode(!!data.active || data.action === "open", { topicId: data.topic || null, source: "agent_event" });
@@ -1502,6 +2018,9 @@ function handle({ type, data = {} }) {
       break;
     case "show_wechat_popup":
       showWechatPopup();
+      break;
+    case "show_feishu_popup":
+      showFeishuPopup();
       break;
     case "audio_created":
       if (data.autoPlay && data.path) {
@@ -1518,78 +2037,8 @@ function handle({ type, data = {} }) {
       chat.deleteLastUserMsg();
       if (data.service === 'tts' && data.ttsText) playTTSReply(data.ttsText);
       break;
-    case "startup_self_check_started":
-      playJarvisStartupSound();
-      setTimeout(() => playTTSReply("系统启动中，正在运行自检"), 1500);
-      break;
     default:
       break;
-  }
-}
-
-// ── Jarvis-style startup self-check sound ────────────────────────────────────
-function playJarvisStartupSound() {
-  try {
-    const ctx = new (window.AudioContext || window.webkitAudioContext)();
-    if (ctx.state === "suspended") ctx.resume();
-    const t = ctx.currentTime;
-
-    // Layer 1: low-frequency mechanical hum (sawtooth, simulates power-on)
-    const drone = ctx.createOscillator();
-    const droneGain = ctx.createGain();
-    const droneFilter = ctx.createBiquadFilter();
-    drone.type = "sawtooth";
-    drone.frequency.setValueAtTime(50, t);
-    drone.frequency.linearRampToValueAtTime(90, t + 0.5);
-    droneFilter.type = "lowpass";
-    droneFilter.frequency.value = 350;
-    droneFilter.Q.value = 3;
-    droneGain.gain.setValueAtTime(0, t);
-    droneGain.gain.linearRampToValueAtTime(0.09, t + 0.06);
-    droneGain.gain.linearRampToValueAtTime(0.06, t + 0.4);
-    droneGain.gain.linearRampToValueAtTime(0, t + 0.65);
-    drone.connect(droneFilter);
-    droneFilter.connect(droneGain);
-    droneGain.connect(ctx.destination);
-    drone.start(t);
-    drone.stop(t + 0.7);
-
-    // Layer 2: system-online frequency sweep (sine, low to high)
-    const sweep = ctx.createOscillator();
-    const sweepGain = ctx.createGain();
-    sweep.type = "sine";
-    sweep.frequency.setValueAtTime(280, t + 0.12);
-    sweep.frequency.exponentialRampToValueAtTime(2800, t + 1.0);
-    sweepGain.gain.setValueAtTime(0, t + 0.12);
-    sweepGain.gain.linearRampToValueAtTime(0.13, t + 0.22);
-    sweepGain.gain.exponentialRampToValueAtTime(0.001, t + 1.05);
-    sweep.connect(sweepGain);
-    sweepGain.connect(ctx.destination);
-    sweep.start(t + 0.12);
-    sweep.stop(t + 1.1);
-
-    // Layer 3: three confirmation beeps (square wave, self-check passed)
-    [[880, 1.15], [1100, 1.28], [1320, 1.41]].forEach(([freq, bt]) => {
-      const beep = ctx.createOscillator();
-      const beepGain = ctx.createGain();
-      const beepFilter = ctx.createBiquadFilter();
-      beep.type = "square";
-      beep.frequency.value = freq;
-      beepFilter.type = "bandpass";
-      beepFilter.frequency.value = freq;
-      beepFilter.Q.value = 8;
-      beepGain.gain.setValueAtTime(0.14, t + bt);
-      beepGain.gain.exponentialRampToValueAtTime(0.001, t + bt + 0.075);
-      beep.connect(beepFilter);
-      beepFilter.connect(beepGain);
-      beepGain.connect(ctx.destination);
-      beep.start(t + bt);
-      beep.stop(t + bt + 0.09);
-    });
-
-    setTimeout(() => ctx.close().catch(() => {}), 2500);
-  } catch (_) {
-    // silently ignore if browser does not support AudioContext
   }
 }
 
@@ -1916,6 +2365,11 @@ function toPlainSpeech(md) {
     .trim();
 }
 
+function playTTSReplyIfReadable(text) {
+  const plain = toPlainSpeech(text);
+  if (plain && sttsHasReadable(plain)) playTTSReply(plain);
+}
+
 // ── 逐句流式 TTS 队列 ──────────────────────────────────────────────────────────
 function beginStreamingTTS() {
   // 停掉上一段仍在进行的单段播放 / 流读取
@@ -2138,6 +2592,10 @@ chat = initChat({
       toggleWorldcup();
       return;
     }
+    if (document.body.classList.contains('typhoon-mode') && /关闭|退出|关掉|隐藏/.test(text)) {
+      toggleTyphoon();
+      return;
+    }
     if (document.body.classList.contains('person-card-mode') && /关闭|退出|关掉|隐藏/.test(text)) {
       setPersonCardMode(false, { source: 'chat_input' });
       return;
@@ -2147,6 +2605,9 @@ chat = initChat({
     }
     if (/世界杯/.test(text) && !document.body.classList.contains('worldcup-mode')) {
       toggleWorldcup();
+    }
+    if (/台风|热带气旋/.test(text) && !document.body.classList.contains('typhoon-mode')) {
+      toggleTyphoon();
     }
     const personQuery = extractPersonCardQuery(text);
     if (personQuery) {
@@ -2162,16 +2623,19 @@ if (MEMORY_GRAPH_ENABLED) {
     loadMemories();
   }, 5 * 60 * 1000);
 }
-connectSSE();
+loadHeartbeatMonitorSettings();
+loadBrainUiHistory().finally(connectSSE);
 loadAgentProfile();
 initPersonCard();
 initDocPanel().catch((err) => console.warn('[DocPanel] init failed:', err));
 chat.restoreChatHistory();
 chat.unlockAudioOnFirstGesture();
 
-bootstrapACUI();
+bootstrapScene();  // Scene 架构 shell(/scene):声明式 Agent-UI 投影层。
+initWorkflowPanel();
 initPanelCollapse();
 initWechatPopup();
+initFeishuPopup();
 
 // ── TTS settings panel init ───────────────────────────────────────────────────
 function initTTSSettings() {
@@ -2180,7 +2644,20 @@ function initTTSSettings() {
   const testBtn     = document.getElementById("tts-test-btn");
   const testStatus  = document.getElementById("tts-test-status");
   const fxToggle    = document.getElementById("tts-fx-toggle");
+  const doubaoKeyInput = document.getElementById("tts-doubao-key");
+  const doubaoKeyToggle = document.getElementById("tts-doubao-key-toggle");
   if (!providerSel) return;
+
+  let doubaoKeyVisible = false;
+  function setDoubaoKeyVisible(visible) {
+    doubaoKeyVisible = Boolean(visible);
+    if (doubaoKeyInput) doubaoKeyInput.type = doubaoKeyVisible ? "text" : "password";
+    if (doubaoKeyToggle) {
+      doubaoKeyToggle.setAttribute("aria-label", doubaoKeyVisible ? "隐藏 API Key" : "显示 API Key");
+      doubaoKeyToggle.title = doubaoKeyVisible ? "隐藏 API Key" : "显示 API Key";
+    }
+  }
+  doubaoKeyToggle?.addEventListener("click", () => setDoubaoKeyVisible(!doubaoKeyVisible));
 
   // 流式合成开关（默认开）：纯播放行为，存在 localStorage
   const streamingToggle = document.getElementById("tts-streaming-toggle");
@@ -2320,12 +2797,9 @@ function initTTSSettings() {
     activeTTSVoiceId = voiceSel?.value || tts?.ttsVoiceId || null;
     const appidEl = document.getElementById("tts-volcano-appid");
     if (appidEl && tts?.volcanoAppId?.value) appidEl.value = tts.volcanoAppId.value;
-    const doubaoAppIdEl = document.getElementById("tts-doubao-appid");
-    if (doubaoAppIdEl && tts?.doubaoAppId?.value) doubaoAppIdEl.value = tts.doubaoAppId.value;
+    if (doubaoKeyInput) doubaoKeyInput.value = typeof tts?.doubaoKey?.value === "string" ? tts.doubaoKey.value : "";
     const doubaoResourceEl = document.getElementById("tts-doubao-resource");
     if (doubaoResourceEl && tts?.doubaoResourceId) doubaoResourceEl.value = tts.doubaoResourceId;
-    const doubaoStyleEl = document.getElementById("tts-doubao-style");
-    if (doubaoStyleEl && tts?.doubaoStyle) doubaoStyleEl.value = tts.doubaoStyle;
     const rateEl = document.getElementById("tts-doubao-rate");
     if (rateEl) {
       const r = Number(tts?.doubaoSpeechRate || 0) || 0;
@@ -2352,14 +2826,8 @@ function initTTSSettings() {
       if (doubaoKey) ttsBody.doubaoKey = doubaoKey;
       const doubaoResource = document.getElementById("tts-doubao-resource")?.value?.trim();
       if (doubaoResource) ttsBody.doubaoResourceId = doubaoResource;
-      const doubaoStyleEl2 = document.getElementById("tts-doubao-style");
-      if (doubaoStyleEl2) ttsBody.doubaoStyle = doubaoStyleEl2.value.trim(); // 空＝清除（回中性）
       const rateEl2 = document.getElementById("tts-doubao-rate");
       if (rateEl2) ttsBody.doubaoSpeechRate = rateEl2.value;
-      const doubaoAppId = document.getElementById("tts-doubao-appid")?.value?.trim();
-      if (doubaoAppId) ttsBody.doubaoAppId = doubaoAppId;
-      const doubaoAccessKey = document.getElementById("tts-doubao-access-key")?.value?.trim();
-      if (doubaoAccessKey) ttsBody.doubaoAccessKey = doubaoAccessKey;
       const openaiKey = document.getElementById("tts-openai-key")?.value?.trim();
       if (openaiKey) ttsBody.openaiTtsKey = openaiKey;
       const baseURL = document.getElementById("tts-openai-baseurl")?.value?.trim();
@@ -2376,7 +2844,7 @@ function initTTSSettings() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(ttsBody),
       }).then(() => {
-        ["tts-minimax-key", "tts-doubao-key", "tts-doubao-access-key", "tts-openai-key", "tts-elevenlabs-key", "tts-volcano-token"].forEach(id => {
+        ["tts-minimax-key", "tts-openai-key", "tts-elevenlabs-key", "tts-volcano-token"].forEach(id => {
           const el = document.getElementById(id);
           if (el) el.value = "";
         });
@@ -2398,14 +2866,8 @@ function initTTSSettings() {
         if (doubaoKey) preBody.doubaoKey = doubaoKey;
         const doubaoResource = document.getElementById("tts-doubao-resource")?.value?.trim();
         if (doubaoResource) preBody.doubaoResourceId = doubaoResource;
-        const doubaoStyleEl3 = document.getElementById("tts-doubao-style");
-        if (doubaoStyleEl3) preBody.doubaoStyle = doubaoStyleEl3.value.trim();
         const rateEl3 = document.getElementById("tts-doubao-rate");
         if (rateEl3) preBody.doubaoSpeechRate = rateEl3.value;
-        const doubaoAppId = document.getElementById("tts-doubao-appid")?.value?.trim();
-        if (doubaoAppId) preBody.doubaoAppId = doubaoAppId;
-        const doubaoAccessKey = document.getElementById("tts-doubao-access-key")?.value?.trim();
-        if (doubaoAccessKey) preBody.doubaoAccessKey = doubaoAccessKey;
         const openaiKey = document.getElementById("tts-openai-key")?.value?.trim();
         if (openaiKey) preBody.openaiTtsKey = openaiKey;
         const elevenKey = document.getElementById("tts-elevenlabs-key")?.value?.trim();
@@ -2461,6 +2923,7 @@ function initTTSSettings() {
   const closeBtn        = document.getElementById("settings-close");
   const providerSelect  = document.getElementById("settings-provider-select");
   const modelSelect     = document.getElementById("settings-model-select");
+  const officialCustomModelInput = document.getElementById("settings-official-custom-model");
   const llmKeyInput     = document.getElementById("settings-llm-key");
   const llmKeyToggle    = document.getElementById("settings-llm-key-toggle");
   const saveLlmBtn      = document.getElementById("settings-save-llm");
@@ -2474,6 +2937,12 @@ function initTTSSettings() {
   const tempFeedback    = document.getElementById("settings-temperature-feedback");
   const thinkingToggle  = document.getElementById("settings-thinking");
   const thinkingFeedback = document.getElementById("settings-thinking-feedback");
+  const conversationContextSlider = document.getElementById("settings-conversation-context-limit");
+  const conversationContextVal = document.getElementById("settings-conversation-context-limit-val");
+  const tickContextSlider = document.getElementById("settings-tick-context-limit");
+  const tickContextVal = document.getElementById("settings-tick-context-limit-val");
+  const saveContextWindowBtn = document.getElementById("settings-save-context-window");
+  const contextWindowFeedback = document.getElementById("settings-context-window-feedback");
   const minimaxKeyInput = document.getElementById("settings-minimax-key");
   const saveMinimaxBtn  = document.getElementById("settings-save-minimax");
   const minimaxFeedback = document.getElementById("settings-minimax-feedback");
@@ -2489,13 +2958,28 @@ function initTTSSettings() {
   const voiceOutputSelect    = document.getElementById("voice-output-select");
   const voiceRefreshOutputsBtn = document.getElementById("voice-refresh-outputs");
   const voiceOutputStatus    = document.getElementById("voice-output-status");
+  const volcAsrKeyInput      = document.getElementById("voice-volc-apikey");
+  const volcAsrKeyToggle     = document.getElementById("voice-volc-apikey-toggle");
+  const mapKeyInput          = document.getElementById("settings-amap-key");
+  const mapSecurityInput     = document.getElementById("settings-amap-security");
+  const saveMapBtn           = document.getElementById("settings-save-map");
+  const clearMapBtn          = document.getElementById("settings-clear-map");
+  const mapFeedback          = document.getElementById("settings-map-feedback");
+  const heartbeatToggle      = document.getElementById("settings-heartbeat-enabled");
+  const heartbeatInterval    = document.getElementById("settings-heartbeat-interval");
+  const saveHeartbeatBtn     = document.getElementById("settings-save-heartbeat");
+  const heartbeatFeedback    = document.getElementById("settings-heartbeat-feedback");
 
   if (!settingsBtn || !overlay) return;
 
   let cachedProviders = null;
   let cachedLlm = null;
   let llmKeyVisible = false;
+  let volcAsrKeyVisible = false;
+  let volcAsrSaveTimer = null;
+  let volcAsrSaveRequest = 0;
   const agentNameRe = /^[一-龥A-Za-z0-9 _-]+$/;
+  const CUSTOM_MODEL_VALUE = "__custom_model__";
 
   overlay.querySelectorAll(".settings-nav-item").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -2507,6 +2991,10 @@ function initTTSSettings() {
       if (tab === "social") loadSocialSettings();
       if (tab === "security") loadSecuritySettings();
       if (tab === "web-search") loadWebSearchSettings();
+      if (tab === "advanced") {
+        loadHeartbeatSettings();
+        loadMapSettings();
+      }
       if (tab === "update") loadUpdateSettings();
     });
   });
@@ -2536,12 +3024,38 @@ function initTTSSettings() {
     }
   }
 
+  function escapeHtml(text) {
+    return String(text ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function syncOfficialCustomModelRow() {
+    const customRow = document.getElementById("settings-official-custom-model-row");
+    if (!customRow || !modelSelect) return;
+    customRow.style.display = modelSelect.value === CUSTOM_MODEL_VALUE ? "" : "none";
+  }
+
   function populateModelSelect(models, current) {
     if (!modelSelect || !models) return;
-    modelSelect.innerHTML = models
-      .map(m => `<option value="${m.id}"${m.deprecated ? " data-deprecated" : ""}>${m.label}</option>`)
+    const list = Array.isArray(models) ? models.filter(m => m?.id) : [];
+    const currentModel = String(current || "").trim();
+    const hasCurrent = currentModel && list.some(m => m.id === currentModel);
+    modelSelect.innerHTML = list
+      .map(m => `<option value="${escapeHtml(m.id)}"${m.deprecated ? " data-deprecated" : ""}>${escapeHtml(m.label || m.id)}</option>`)
+      .concat(`<option value="${CUSTOM_MODEL_VALUE}">手动输入模型名…</option>`)
       .join("");
-    if (current) modelSelect.value = current;
+    if (hasCurrent) {
+      modelSelect.value = currentModel;
+      if (officialCustomModelInput) officialCustomModelInput.value = "";
+    } else if (currentModel) {
+      modelSelect.value = CUSTOM_MODEL_VALUE;
+      if (officialCustomModelInput) officialCustomModelInput.value = currentModel;
+    }
+    syncOfficialCustomModelRow();
   }
 
   function populateProviderSelect(providers, current) {
@@ -2550,7 +3064,7 @@ function initTTSSettings() {
     const options = [`<option value="auto">Auto-detect</option>`]
       .concat(Object.entries(providers).map(([id, provider]) => {
         const label = provider.label || id;
-        return `<option value="${id}">${label}</option>`;
+        return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
       }));
     providerSelect.innerHTML = options.join("");
     providerSelect.value = providers[selected] || selected === "auto" ? selected : "auto";
@@ -2584,9 +3098,11 @@ function initTTSSettings() {
     const providerCfg = getProviderConfigForUI(provider, typeof providerOrLlm === "object" ? providerOrLlm : cachedLlm);
     const customSection = document.getElementById("settings-custom-llm-section");
     const modelRow = document.getElementById("settings-model-row");
+    const officialCustomModelRow = document.getElementById("settings-official-custom-model-row");
     if (provider === "auto") {
       if (customSection) customSection.style.display = "none";
       if (modelRow) modelRow.style.display = "none";
+      if (officialCustomModelRow) officialCustomModelRow.style.display = "none";
       if (llmKeyInput) llmKeyInput.value = "";
       setLlmKeyVisible(false);
       return;
@@ -2594,6 +3110,7 @@ function initTTSSettings() {
     if (provider === "custom") {
       if (customSection) customSection.style.display = "";
       if (modelRow) modelRow.style.display = "none";
+      if (officialCustomModelRow) officialCustomModelRow.style.display = "none";
       const baseUrlEl = document.getElementById("settings-custom-baseurl");
       const modelEl = document.getElementById("settings-custom-model");
       if (baseUrlEl) baseUrlEl.value = providerCfg.baseURL || "";
@@ -2628,6 +3145,13 @@ function initTTSSettings() {
         if (tempVal) tempVal.textContent = llm.temperature.toFixed(2);
       }
       if (thinkingToggle) thinkingToggle.checked = llm.thinking === true;
+      const contextWindow = llm.contextWindow || {};
+      const conversationMessageLimit = Number(contextWindow.conversationMessageLimit) || 10;
+      const tickMessageLimit = Number(contextWindow.tickMessageLimit) || 10;
+      if (conversationContextSlider) conversationContextSlider.value = String(conversationMessageLimit);
+      if (conversationContextVal) conversationContextVal.textContent = `${conversationMessageLimit} 条`;
+      if (tickContextSlider) tickContextSlider.value = String(tickMessageLimit);
+      if (tickContextVal) tickContextVal.textContent = `${tickMessageLimit} 条`;
     } catch {}
   }
 
@@ -2897,6 +3421,43 @@ function initTTSSettings() {
     });
   }
 
+  if (conversationContextSlider && conversationContextVal) {
+    conversationContextSlider.addEventListener("input", () => {
+      conversationContextVal.textContent = `${conversationContextSlider.value} 条`;
+    });
+  }
+  if (tickContextSlider && tickContextVal) {
+    tickContextSlider.addEventListener("input", () => {
+      tickContextVal.textContent = `${tickContextSlider.value} 条`;
+    });
+  }
+  if (saveContextWindowBtn) {
+    saveContextWindowBtn.addEventListener("click", async () => {
+      const body = {
+        conversationMessageLimit: Number(conversationContextSlider?.value || 10),
+        tickMessageLimit: Number(tickContextSlider?.value || 10),
+      };
+      saveContextWindowBtn.disabled = true;
+      try {
+        const res = await fetch(`${API}/settings/context-window`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (data.ok) {
+          showFeedback(contextWindowFeedback, "已保存 — 下一轮生效");
+        } else {
+          showFeedback(contextWindowFeedback, data.error || "保存失败", true);
+        }
+      } catch {
+        showFeedback(contextWindowFeedback, "请求失败", true);
+      } finally {
+        saveContextWindowBtn.disabled = false;
+      }
+    });
+  }
+
   const VOICE_LANG_KEY       = "bailongma-voice-lang";
   const VOICE_AUTO_SEND_KEY  = "bailongma-voice-auto-send";
   const VOICE_AUTO_MIC_KEY   = "bailongma-voice-auto-mic";
@@ -2936,7 +3497,6 @@ function initTTSSettings() {
         provider: "volcengine",
         label: "火山豆包 ASR",
         fieldId: "voice-volc-apikey",
-        defaults: { "voice-volc-resourceid": "volc.bigasr.sauc.duration" },
       };
     }
     return null;
@@ -3105,6 +3665,174 @@ function initTTSSettings() {
     });
   }
 
+  async function loadMapSettings() {
+    const status = document.getElementById("settings-map-status");
+    const dot = document.getElementById("settings-map-status-dot");
+    try {
+      const data = await fetch(`${API}/settings/map`).then(r => r.json());
+      const map = data?.map || {};
+      if (status) {
+        status.textContent = map.configured
+          ? "高德地图 · 已配置"
+          : `高德地图 · Key ${map.keyConfigured ? "已配置" : "未配置"} / 安全密钥 ${map.securityConfigured ? "已配置" : "未配置"}`;
+      }
+      if (dot) {
+        dot.textContent = "●";
+        dot.className = `settings-config-dot ${map.configured ? "active" : "inactive"}`;
+      }
+    } catch {
+      if (status) status.textContent = "读取配置失败";
+      if (dot) dot.className = "settings-config-dot inactive";
+    }
+  }
+
+  function syncHeartbeatControls() {
+    if (heartbeatInterval) {
+      heartbeatInterval.setAttribute(
+        "aria-label",
+        heartbeatToggle?.checked === false ? "重新启用心跳后使用的默认间隔（分钟）" : "默认心跳间隔（分钟）",
+      );
+    }
+  }
+
+  async function loadHeartbeatSettings() {
+    try {
+      const response = await fetch(`${API}/settings/heartbeat`);
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "读取失败");
+      const heartbeat = data.heartbeat || {};
+      applyHeartbeatConfig(heartbeat);
+      if (heartbeatToggle) heartbeatToggle.checked = heartbeat.enabled !== false;
+      if (heartbeatInterval) heartbeatInterval.value = String(heartbeat.defaultIntervalMinutes || 20);
+      syncHeartbeatControls();
+    } catch (err) {
+      showFeedback(heartbeatFeedback, err.message || "读取心跳设置失败", true);
+    }
+  }
+
+  heartbeatToggle?.addEventListener("change", syncHeartbeatControls);
+
+  saveHeartbeatBtn?.addEventListener("click", async () => {
+    const defaultIntervalMinutes = Number(heartbeatInterval?.value);
+    if (!Number.isInteger(defaultIntervalMinutes) || defaultIntervalMinutes < 1 || defaultIntervalMinutes > 1440) {
+      showFeedback(heartbeatFeedback, "请输入 1–1440 之间的整数分钟", true);
+      return;
+    }
+    saveHeartbeatBtn.disabled = true;
+    try {
+      const response = await fetch(`${API}/settings/heartbeat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: heartbeatToggle?.checked !== false,
+          defaultIntervalMinutes,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error(data.error || "保存失败");
+      applyHeartbeatConfig(data.heartbeat);
+      showFeedback(heartbeatFeedback, data.heartbeat?.enabled ? "心跳设置已生效" : "心跳已关闭");
+      syncHeartbeatControls();
+    } catch (err) {
+      showFeedback(heartbeatFeedback, err.message || "保存失败", true);
+    } finally {
+      saveHeartbeatBtn.disabled = false;
+    }
+  });
+
+  if (saveMapBtn) {
+    saveMapBtn.addEventListener("click", async () => {
+      const jsKey = mapKeyInput?.value?.trim() || "";
+      const securityCode = mapSecurityInput?.value?.trim() || "";
+      if (!jsKey && !securityCode) {
+        showFeedback(mapFeedback, "请输入 Key 或安全密钥", true);
+        return;
+      }
+      saveMapBtn.disabled = true;
+      try {
+        const response = await fetch(`${API}/settings/map`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jsKey, securityCode }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || "保存失败");
+        if (mapKeyInput) mapKeyInput.value = "";
+        if (mapSecurityInput) mapSecurityInput.value = "";
+        showFeedback(mapFeedback, data.map?.configured ? "地图服务已启用" : "已保存，请补全配置");
+        loadMapSettings();
+      } catch (err) {
+        showFeedback(mapFeedback, err.message || "保存失败", true);
+      } finally {
+        saveMapBtn.disabled = false;
+      }
+    });
+  }
+
+  if (clearMapBtn) {
+    clearMapBtn.addEventListener("click", async () => {
+      clearMapBtn.disabled = true;
+      try {
+        const response = await fetch(`${API}/settings/map`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ clear: true }),
+        });
+        const data = await response.json();
+        if (!response.ok || !data.ok) throw new Error(data.error || "清除失败");
+        if (mapKeyInput) mapKeyInput.value = "";
+        if (mapSecurityInput) mapSecurityInput.value = "";
+        showFeedback(mapFeedback, "地图配置已清除");
+        loadMapSettings();
+      } catch (err) {
+        showFeedback(mapFeedback, err.message || "清除失败", true);
+      } finally {
+        clearMapBtn.disabled = false;
+      }
+    });
+  }
+
+  function setVolcAsrKeyVisible(visible) {
+    volcAsrKeyVisible = Boolean(visible);
+    if (volcAsrKeyInput) volcAsrKeyInput.type = volcAsrKeyVisible ? "text" : "password";
+    if (volcAsrKeyToggle) {
+      volcAsrKeyToggle.setAttribute("aria-label", volcAsrKeyVisible ? "隐藏 API Key" : "显示 API Key");
+      volcAsrKeyToggle.title = volcAsrKeyVisible ? "隐藏 API Key" : "显示 API Key";
+    }
+  }
+
+  async function saveVolcAsrKeyAutomatically() {
+    if (!volcAsrKeyInput) return;
+    const apiKey = volcAsrKeyInput.value.trim();
+    const request = ++volcAsrSaveRequest;
+    try {
+      const resp = await fetch("http://127.0.0.1:3721/settings/voice", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ voiceProvider: "volcengine", volcAsrApiKey: apiKey }),
+      });
+      if (!resp.ok) throw new Error("保存失败");
+      if (request !== volcAsrSaveRequest) return;
+      volcAsrKeyInput.value = apiKey;
+      localStorage.setItem(VOICE_PROVIDER_KEY, "volcengine");
+      showFeedback(voiceFeedback, apiKey ? "已自动保存" : "已清除");
+    } catch {
+      if (request === volcAsrSaveRequest) showFeedback(voiceFeedback, "自动保存失败", true);
+    }
+  }
+
+  volcAsrKeyToggle?.addEventListener("click", () => {
+    setVolcAsrKeyVisible(!volcAsrKeyVisible);
+  });
+
+  volcAsrKeyInput?.addEventListener("input", () => {
+    if (volcAsrSaveTimer) clearTimeout(volcAsrSaveTimer);
+    volcAsrSaveTimer = setTimeout(() => {
+      volcAsrSaveTimer = null;
+      saveVolcAsrKeyAutomatically();
+    }, 500);
+  });
+
   voiceRefreshMicsBtn?.addEventListener("click", () => {
     loadMicrophoneDevices({ requestPermission: true });
   });
@@ -3138,6 +3866,8 @@ function initTTSSettings() {
         savedProvider = data.voice.voiceProvider;
         localStorage.setItem(VOICE_PROVIDER_KEY, savedProvider);
       }
+      const savedVolcAsrKey = data?.voice?.volcAsrApiKey?.value;
+      if (volcAsrKeyInput) volcAsrKeyInput.value = typeof savedVolcAsrKey === "string" ? savedVolcAsrKey : "";
     } catch {}
     if (voiceProviderSelect) voiceProviderSelect.value = savedProvider;
     applyVoiceProviderUI(savedProvider);
@@ -3186,12 +3916,6 @@ function initTTSSettings() {
       if (xunfeiApikey) body.xunfeiApiKey = xunfeiApikey;
       const volcApiKey = document.getElementById("voice-volc-apikey")?.value?.trim();
       if (volcApiKey) body.volcAsrApiKey = volcApiKey;
-      const volcResourceId = document.getElementById("voice-volc-resourceid")?.value?.trim();
-      if (volcResourceId) body.volcAsrResourceId = volcResourceId;
-      const volcAppKey = document.getElementById("voice-volc-appkey")?.value?.trim();
-      if (volcAppKey) body.volcAsrAppKey = volcAppKey;
-      const volcAccessKey = document.getElementById("voice-volc-accesskey")?.value?.trim();
-      if (volcAccessKey) body.volcAsrAccessKey = volcAccessKey;
 
       if (Object.keys(body).length > 0) {
         try {
@@ -3208,9 +3932,6 @@ function initTTSSettings() {
             "voice-tencent-sid",
             "voice-tencent-skey",
             "voice-xunfei-apikey",
-            "voice-volc-apikey",
-            "voice-volc-appkey",
-            "voice-volc-accesskey",
           ].forEach(id => {
             const el = document.getElementById(id);
             if (el) el.value = "";
@@ -3254,6 +3975,10 @@ function initTTSSettings() {
       });
       if (tab === "social") loadSocialSettings();
       if (tab === "web-search") loadWebSearchSettings();
+      if (tab === "advanced") {
+        loadHeartbeatSettings();
+        loadMapSettings();
+      }
       if (tab === "update") loadUpdateSettings();
     }
   }
@@ -3276,6 +4001,10 @@ function initTTSSettings() {
     providerSelect.addEventListener("change", () => {
       applyCustomProviderUI(providerSelect.value);
     });
+  }
+
+  if (modelSelect) {
+    modelSelect.addEventListener("change", syncOfficialCustomModelRow);
   }
 
   saveAgentNameBtn?.addEventListener("click", async () => {
@@ -3339,7 +4068,16 @@ function initTTSSettings() {
         }
         body.apiKey = apiKey;
       } else {
-        body.model = modelSelect.value;
+        if (modelSelect.value === CUSTOM_MODEL_VALUE) {
+          body.model = officialCustomModelInput?.value?.trim();
+          if (!body.model) {
+            showFeedback(llmFeedback, "请填入模型名称", true);
+            saveLlmBtn.disabled = false;
+            return;
+          }
+        } else {
+          body.model = modelSelect.value;
+        }
         if (apiKey && apiKey !== (selectedCfg.apiKey || "")) body.apiKey = apiKey;
       }
 
@@ -3645,6 +4383,8 @@ initVoicePanel({
   canvasId:   "voice-canvas",
   statusId:   "voice-status",
   transcriptId: "voice-transcript",
+  compactTranscriptId: "compact-voice-transcript",
+  compactPanelId: "compact-voice-strip",
   getChatInput:  () => document.getElementById("msg-input"),
   getSendBtn:    () => document.getElementById("send-btn"),
   getSendMessage: (options) => chat?.send?.(options),
@@ -3658,14 +4398,12 @@ initVoicePanel({
 // 完全无设备时弹一键修复横幅。getCurrentAudioEl 回传当前在播 TTS 元素。
 initAudioOutputRouting({ getCurrentAudioEl: () => ttsAudioEl });
 
-// ── Workflow engine panel ──
-try { initWorkflowPanel(); } catch (err) { console.warn('[Workflow] init failed:', err); }
-
 // ── Hotspot mode ──
 initHotspot().catch((err) => console.warn('[Hotspot] init failed:', err));
 
 // ── Worldcup mode ──
 initWorldcup().catch((err) => console.warn('[Worldcup] init failed:', err));
+initTyphoon();
 
 // ── Media modes (video / image) ──
 (function initMediaModes() {
@@ -4279,6 +5017,7 @@ initWorldcup().catch((err) => console.warn('[Worldcup] init failed:', err));
       if (e.repeat) return;
       if (pttHeld) return;
       pttHeld = true;
+      document.body.classList.add("ptt-active");
       // 不论是否在播，stopTTS 内部已做 no-op 守卫
       try { window.stopTTS?.(); } catch {}
       window.bailongmaVoice?.pttStart?.();
@@ -4288,6 +5027,7 @@ initWorldcup().catch((err) => console.warn('[Worldcup] init failed:', err));
       if (!isSpace(e)) return;
       if (!pttHeld) return;
       pttHeld = false;
+      document.body.classList.remove("ptt-active");
       e.preventDefault();
       window.bailongmaVoice?.pttEnd?.();
     }, { capture: true });
@@ -4297,6 +5037,7 @@ initWorldcup().catch((err) => console.warn('[Worldcup] init failed:', err));
     window.addEventListener("blur", () => {
       if (!pttHeld) return;
       pttHeld = false;
+      document.body.classList.remove("ptt-active");
       window.bailongmaVoice?.pttEnd?.({ send: false });
     });
   })();
@@ -4498,7 +5239,7 @@ initWorldcup().catch((err) => console.warn('[Worldcup] init failed:', err));
   function openPanel(configured){
     setActive(true);
     hydrateHistory();   // 每次打开都拉一次历史，重建之前生成的视频队列
-    if(configured===false){ composeErr.textContent="尚未配置火山方舟（Seedance）API Key —— 把 key 发给OpenVZ即可（例如「火山视频 你的APIKey」），配置后就能在这里生成。"; composeErr.hidden=false; }
+    if(configured===false){ composeErr.textContent="尚未配置火山方舟（Seedance）API Key —— 可在设置中填写，或把 key 发给 OpenVZ（例如「火山视频 你的APIKey」），配置后即可生成。"; composeErr.hidden=false; }
     else composeErr.hidden=true;
     setTimeout(function(){ try{ promptInput.focus(); }catch(e){} },60);
   }

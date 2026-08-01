@@ -56,7 +56,7 @@ function findTtsProvider(infos, provider) {
   const volc = findAsrProvider(infos, 'volcengine')
   assert(!!volc, 'explicit Volcengine ASR key is detected')
   assert(volc.configUpdates?.voiceProvider === 'volcengine', 'Volcengine ASR auto-config sets voice provider')
-  assert(volc.configUpdates?.volcAsrResourceId === 'volc.bigasr.sauc.duration', 'Volcengine ASR auto-config sets default resource')
+  assert(volc.configUpdates?.volcAsrResourceId === 'volc.seedasr.sauc.duration', 'Volcengine ASR auto-config sets ASR 2.0 as default resource')
 }
 
 {

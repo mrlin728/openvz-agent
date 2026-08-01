@@ -18,6 +18,35 @@ export function nowTimestamp() {
     `T${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}${offsetStr}`
 }
 
+function parseTime(value) {
+  if (!value) return null
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? null : date
+}
+
+function pad2(n) {
+  return String(n).padStart(2, '0')
+}
+
+export function formatLocalClock(value) {
+  const date = parseTime(value)
+  if (date) return `${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+
+  const fallback = String(value || '').match(/(?:T|\s)(\d{2}):(\d{2})/)
+  return fallback ? `${fallback[1]}:${fallback[2]}` : ''
+}
+
+export function formatLocalDateMinute(value) {
+  const date = parseTime(value)
+  if (date) {
+    return `${date.getFullYear()}-${pad2(date.getMonth() + 1)}-${pad2(date.getDate())} ${pad2(date.getHours())}:${pad2(date.getMinutes())}`
+  }
+
+  const text = String(value || '')
+  if (!text) return ''
+  return text.slice(0, 16).replace('T', ' ')
+}
+
 export function formatTick() {
   const now = new Date()
   const ts = nowTimestamp()
