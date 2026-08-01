@@ -19,7 +19,7 @@
     "start:backend:lan": "powershell -ExecutionPolicy Bypass -File scripts/start-lan.ps1 backend",
     "dev": "node --env-file=.env --watch src/index.js",
     "build": "node scripts/prebuild-clean.mjs && node scripts/prepare-playwright-browsers.mjs && node scripts/build-macos-speech.mjs && node scripts/rebuild-native.mjs && node ./node_modules/electron-builder/cli.js --config electron-builder.config.cjs",
-    "build:win": "node scripts/prebuild-clean.mjs && node scripts/prepare-playwright-browsers.mjs --platform=win32 --arch=x64 && node scripts/build-macos-speech.mjs && node scripts/rebuild-native.mjs --arch=x64 && node ./node_modules/electron-builder/cli.js --config electron-builder.config.cjs --win nsis --x64",
+    "build:win": "node scripts/prebuild-clean.mjs && node scripts/prepare-playwright-browsers.mjs --platform=win32 --arch=x64 && node scripts/build-macos-speech.mjs && node scripts/rebuild-native.mjs --arch=x64 && node ./node_modules/electron-builder/cli.js --config electron-builder.config.cjs --win nsis --x64 --publish never",
     "build:mac": "node scripts/build-mac.mjs",
     "build:mac:x64": "node scripts/build-mac.mjs x64",
     "build:mac:arm64": "node scripts/build-mac.mjs arm64",
