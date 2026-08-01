@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -23,6 +23,8 @@ assert.equal(pkg.dependencies.playwright, '1.59.1')
 assert.equal(pkg.dependencies['playwright-core'], '1.59.1')
 assert.equal(pkg.devDependencies.playwright, undefined)
 assert.equal(pkg.dependencies['better-sqlite3'], '13.0.2')
+assert.equal(pkg.devDependencies['7zip-bin'], '5.2.0')
+assert.ok(existsSync(path.join(root, 'node_modules', '7zip-bin', 'win', 'x64', '7za.exe')), 'NSIS repair extractor must be installed explicitly')
 assert.ok(builderConfig.asarUnpack.includes('**/node_modules/better-sqlite3/prebuilds/*.node'))
 assert.match(mainSource, /prebuilds.*\$\{PLATFORM\}-\$\{process\.arch\}\.node/)
 assert.match(installerSource, /better-sqlite3\\prebuilds\\win32-x64\.node/)
