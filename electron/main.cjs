@@ -28,6 +28,7 @@ const { autoUpdater } = require('electron-updater')
 const wakeWord = require('./wake-word.cjs')
 const devLight = require('./dev-board-light.cjs')
 const { configurePackagedPlaywright } = require('./playwright-runtime.cjs')
+const { resolvePreferredPort } = require('./port-config.cjs')
 
 const IS_DEV = !app.isPackaged
 configurePackagedPlaywright({ isPackaged: !IS_DEV })
@@ -1446,7 +1447,7 @@ app.whenReady().then(async () => {
 
   try {
     emitStartupProgress({ id: 'port', status: 'running', message: '正在准备本地端口' })
-    backendPort = await findFreePort(3721)
+    backendPort = await findFreePort(resolvePreferredPort())
     emitStartupProgress({ id: 'port', status: 'done', detail: `本地端口 ${backendPort} 已准备` })
 
     emitStartupProgress({ id: 'core', status: 'running', message: '正在启动本地核心' })

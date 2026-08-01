@@ -60,7 +60,7 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' }}
         shell: bash
         run: |
-          base='https://github.com/mrlin728/openvz-agent/releases/download/v2.2.0-rc.10'
+          base='https://github.com/mrlin728/openvz-agent/releases/download/v2.2.0-rc.11'
           for asset in \
             OpenVZ-Agent-Setup.exe \
             OpenVZ-Agent-mac-arm64.dmg \
