@@ -10,7 +10,7 @@ on:
       tag:
         description: Existing v2.2.0 tag to publish
         required: true
-        default: v2.2.0-rc.4
+        default: v2.2.0-rc.5
       unsigned:
         description: Publish a clearly labelled unsigned prerelease (RC tags only)
         required: true
@@ -61,6 +61,7 @@ jobs:
       - name: Build installer and offline Chromium
         run: npm run build:win
       - name: Install, launch, upgrade and packaged browser smoke
+        timeout-minutes: 20
         shell: pwsh
         run: ./scripts/smoke-windows-install.ps1
       - uses: actions/upload-artifact@v4
