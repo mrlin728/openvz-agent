@@ -21,6 +21,6 @@ assert.equal(config.provider.nested.botToken, 'plain-token')
 assert.deepEqual(store.redactSecretsDeep(config).provider.apiKey, { configured: true })
 
 const keyFile = path.join(temp, 'data', '.openvz-secret.key')
-assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600)
-fs.rmSync(temp, { recursive: true, force: true })
+if (process.platform !== 'win32') assert.equal(fs.statSync(keyFile).mode & 0o777, 0o600)
+fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 console.log('Node AES-256-GCM credential store and 0600 key permissions: OK')

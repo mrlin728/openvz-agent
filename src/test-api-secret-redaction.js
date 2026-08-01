@@ -64,5 +64,5 @@ try {
 
   console.log('Settings API, tool events and audit records do not expose stored credentials: OK')
 } finally {
-  fs.rmSync(temp, { recursive: true, force: true })
+  fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 }
