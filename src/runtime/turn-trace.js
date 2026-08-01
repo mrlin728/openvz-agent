@@ -67,6 +67,7 @@ function sanitizeMeta(meta = {}) {
     silentSignal: !!meta.silentSignal,
     localReply: !!meta.localReply,
     mustReply: !!meta.mustReply,
+    outputContract: pick(meta.outputContract, 40),
     tools: Array.isArray(meta.tools) ? meta.tools.slice(0, 80) : [],
   }
 }

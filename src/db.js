@@ -1,9 +1,15 @@
-import Database from 'better-sqlite3'
-import { paths } from './paths.js'
+import { getDB, closeDBForTest } from './db/connection.js'
+import { CANONICAL_USER_ID, normalizeConversationPartyId } from './db/utils.js'
 
-const DB_PATH = paths.dbFile
+export { getDB, closeDBForTest }
+export { normalizeConversationPartyId }
+export * from './db/repositories/reminders.js'
+export * from './db/repositories/prefetch.js'
+export * from './db/repositories/media-library.js'
+export * from './db/repositories/audits.js'
+export * from './db/repositories/brain-ui-events.js'
+export * from './db/repositories/thread-state.js'
 
-const CANONICAL_USER_ID = 'ID:000001'
 const CANONICAL_AGENT_ENTITY = 'agent:jarvis'
 const CANONICAL_USER_ROOT_MEM_ID = 'person_000001'
 const CANONICAL_AGENT_ROOT_MEM_ID = 'agent_jarvis_identity'
@@ -20,539 +26,6 @@ const USER_ROOT_ALIASES = new Set([
   'user_000001_profile',
 ])
 const AUTO_CANONICAL_IDENTITY_ROOTS = false
-
-let db
-
-export function getDB() {
-  if (!db) {
-    db = new Database(DB_PATH)
-    db.pragma('journal_mode = WAL')
-    initSchema()
-  }
-  return db
-}
-
-export function closeDBForTest() {
-  if (!db) return
-  db.close()
-  db = null
-}
-
-function initSchema() {
-  // 迁移：添加 parent_id 字段（已存在时跳过）
-  try { db.exec(`ALTER TABLE memories ADD COLUMN parent_id INTEGER REFERENCES memories(id)`) } catch {}
-  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_parent_id ON memories(parent_id)`) } catch {}
-  // 迁移：新增 title / mem_id / links 字段
-  try { db.exec(`ALTER TABLE memories ADD COLUMN title TEXT DEFAULT ''`) } catch {}
-  try { db.exec(`ALTER TABLE memories ADD COLUMN mem_id TEXT`) } catch {}
-  try { db.exec(`ALTER TABLE memories ADD COLUMN links TEXT DEFAULT '[]'`) } catch {}
-  try { db.exec(`ALTER TABLE memories ADD COLUMN salience INTEGER DEFAULT 3`) } catch {}
-  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_memories_mem_id ON memories(mem_id) WHERE mem_id IS NOT NULL`) } catch {}
-  // 迁移：visibility 软隐藏三件套（动态上下文记忆池：剔除=软隐藏，不硬删除）
-  //   visibility  : 1=可见、0=软隐藏。所有读路径默认 WHERE visibility = 1。
-  //   hidden_at   : 软隐藏时间戳（ISO 8601），便于回溯与第3步专注帧恢复路径。
-  //   merged_into : 因 merge_memories 被隐藏时，记录 keep 的 mem_id，形成可追踪链路。
-  // FTS5 索引不动：所有 SELECT 已 JOIN memories 过滤 visibility=1，无需 trigger 改动。
-  // 已存在行 visibility 默认取 1（向后兼容，无需 backfill）。
-  try { db.exec(`ALTER TABLE memories ADD COLUMN visibility INTEGER NOT NULL DEFAULT 1`) } catch {}
-  try { db.exec(`ALTER TABLE memories ADD COLUMN hidden_at TEXT`) } catch {}
-  try { db.exec(`ALTER TABLE memories ADD COLUMN merged_into TEXT`) } catch {}
-  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_visibility ON memories(visibility)`) } catch {}
-  // 迁移：conversations 加 channel 列
-  try { db.exec(`ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT ''`) } catch {}
-  // 迁移：conversations 加 external_party_id 列（保留外部渠道原始 ID，供回送投递）
-  try { db.exec(`ALTER TABLE conversations ADD COLUMN external_party_id TEXT DEFAULT ''`) } catch {}
-
-  // 迁移：FTS5 tokenizer 从默认 unicode61 升级到 trigram。
-  // 默认 tokenizer 把中文整段当成一个 token（"咖啡偏好"被存为一个整体），
-  // 搜 "咖啡" 完全不命中。trigram 把字符串切成 3 字符滑动窗口，对中文子串可搜。
-  // 注意：trigram 要求查询至少 3 字符；2 字符查询走 LIKE fallback（见 searchMemories）。
-  //
-  // 数据安全性：只 DROP virtual 索引表 memories_fts 和 3 个 trigger；
-  // memories 真数据表完全不动。下文 schema 重建 memories_fts + trigger，
-  // 末尾 line ~280 的 rebuild 命令把 memories 全表重新索引化。
-  // 整段 try-catch；失败时回到老行为（FTS5 中文召回不工作但程序不崩）。
-  try {
-    const ftsRow = db.prepare(`SELECT sql FROM sqlite_master WHERE name='memories_fts'`).get()
-    const ftsSql = String(ftsRow?.sql || '')
-    const needsFtsRebuild = ftsRow && (
-      !/trigram/i.test(ftsSql)
-      || !/\btitle\b/i.test(ftsSql)
-      || !/\bmem_id\b/i.test(ftsSql)
-    )
-    if (needsFtsRebuild) {
-      const memCountBefore = (() => { try { return db.prepare('SELECT COUNT(*) AS c FROM memories').get().c } catch { return -1 } })()
-      console.log(`[DB migration] Upgrading memories_fts: trigram + title/mem_id searchable columns. memories rows=${memCountBefore}. memories table itself is NOT touched.`)
-      db.exec(`
-        DROP TRIGGER IF EXISTS memories_ai;
-        DROP TRIGGER IF EXISTS memories_au;
-        DROP TRIGGER IF EXISTS memories_ad;
-        DROP TABLE IF EXISTS memories_fts;
-      `)
-      // memories 行数应该保持不变（DROP 只动 fts 虚拟表）
-      const memCountAfter = (() => { try { return db.prepare('SELECT COUNT(*) AS c FROM memories').get().c } catch { return -1 } })()
-      if (memCountBefore !== memCountAfter) {
-        console.error(`[DB migration] WARN memories row count changed during drop: ${memCountBefore} → ${memCountAfter} (this should never happen, please report)`)
-      } else {
-        console.log(`[DB migration] DROP complete, memories rows preserved (${memCountAfter}). Schema will recreate memories_fts with trigram + rebuild index below.`)
-      }
-    }
-  } catch (err) {
-    console.warn('[DB migration] FTS5 tokenizer migration check failed:', err.message, '— program continues, FTS5 remains in previous state')
-  }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS conversations (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      role        TEXT    NOT NULL,  -- 'user' | 'jarvis'
-      from_id     TEXT    NOT NULL,  -- 发送者 ID
-      to_id       TEXT,              -- 接收者 ID（jarvis 发出时有值）
-      content     TEXT    NOT NULL,
-      channel     TEXT    NOT NULL DEFAULT '',
-      timestamp   TEXT    NOT NULL,
-      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_conv_timestamp ON conversations(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_conv_from_id   ON conversations(from_id);
-  `)
-  try { db.exec(`ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT ''`) } catch {}
-  try { db.exec(`ALTER TABLE conversations ADD COLUMN external_party_id TEXT DEFAULT ''`) } catch {}
-  // 迁移：focus_absorbed 标记（动态上下文记忆池 3.5 「主线深化时剔除残留噪声」）。
-  //   focus_absorbed=1 表示这条对话所属的专注帧已被压缩回填吸收（focus_conclusion 已写入仓库），
-  //   下一轮主线注入对话窗口时默认 WHERE focus_absorbed=0 把它隐去。
-  // 关键：absorbed != deleted。对话物理仍在 conversations 表，admin 端点 / 显式 includeAbsorbed=true
-  //   仍可拿到；这跟 memories.visibility 是平行的「软隐藏」概念。
-  // 已存在行默认 0（向后兼容，无需 backfill）。
-  try { db.exec(`ALTER TABLE conversations ADD COLUMN focus_absorbed INTEGER NOT NULL DEFAULT 0`) } catch {}
-  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_conv_focus_absorbed ON conversations(focus_absorbed)`) } catch {}
-
-  // 迁移：P0-1 给每条对话打上"当时的焦点话题"标签。
-  //   conversationWindow 注入 LLM 时，每条 user/jarvis 消息的 marker 里带上这个 topic，
-  //   让模型在做代词消解时能看到话题边界（"那个/这个/现在"才不会跨段乱钩）。
-  //   写入时机：insertConversation 自动读 db 内部 currentFocusTopic 变量；
-  //   index.js 在 updateFocusFrame 之后 setCurrentFocusTopic(栈顶 topic)，
-  //   并对本轮触发判定的 user 消息做一次 UPDATE 回填（push 时 focus 尚未算）。
-  try { db.exec(`ALTER TABLE conversations ADD COLUMN focus_topic TEXT DEFAULT ''`) } catch {}
-
-  // 迁移：线索模型（DynamicMemoryPool.md 第 8 章）——写时归属。
-  //   每条对话在写入时由行动者声明归属到哪条线索（thread_id）。这是"episode 是因果链
-  //   不是时间段"的落地：减法（读时选择）按 thread_id 算，不再按时间区间圈地。
-  //   focus_topic 列保留（话题边界标注仍有用），thread_id 是归属、focus_topic 是标注。
-  try { db.exec(`ALTER TABLE conversations ADD COLUMN thread_id TEXT DEFAULT ''`) } catch {}
-  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_conv_thread_id ON conversations(thread_id)`) } catch {}
-
-  // 迁移：P0-2 标记 agent 自己留下的"未答悬念"（follow-up question）。
-  //   open_question=1 表示这条 jarvis 消息末尾留了一个非澄清型问号悬念。
-  //   conversationWindow 渲染时：若该悬念在 N 轮内未被用户接茬 / 话题已切换，
-  //   marker 末尾追加 "[expired follow-up — ignore]"，避免模糊代词被钩到这里。
-  try { db.exec(`ALTER TABLE conversations ADD COLUMN open_question INTEGER NOT NULL DEFAULT 0`) } catch {}
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS memories (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      event_type  TEXT    NOT NULL,
-      content     TEXT    NOT NULL,
-      detail      TEXT    NOT NULL,
-      title       TEXT    DEFAULT '',
-      mem_id      TEXT,
-      entities    TEXT    DEFAULT '[]',
-      concepts    TEXT    DEFAULT '[]',
-      tags        TEXT    DEFAULT '[]',
-      links       TEXT    DEFAULT '[]',
-      salience    INTEGER DEFAULT 3,
-      source_ref  TEXT,
-      timestamp   TEXT    NOT NULL,
-      parent_id   INTEGER REFERENCES memories(id),
-      embedding   BLOB,
-      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_memories_timestamp  ON memories(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_memories_event_type ON memories(event_type);
-    CREATE INDEX IF NOT EXISTS idx_memories_parent_id  ON memories(parent_id);
-
-    CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
-      title, mem_id, content, detail, entities, concepts, tags,
-      content='memories', content_rowid='id',
-      tokenize='trigram'
-    );
-
-    CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
-      INSERT INTO memories_fts(rowid, title, mem_id, content, detail, entities, concepts, tags)
-      VALUES (new.id, new.title, new.mem_id, new.content, new.detail, new.entities, new.concepts, new.tags);
-    END;
-
-    CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, title, mem_id, content, detail, entities, concepts, tags)
-      VALUES ('delete', old.id, old.title, old.mem_id, old.content, old.detail, old.entities, old.concepts, old.tags);
-    END;
-
-    CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
-      INSERT INTO memories_fts(memories_fts, rowid, title, mem_id, content, detail, entities, concepts, tags)
-      VALUES ('delete', old.id, old.title, old.mem_id, old.content, old.detail, old.entities, old.concepts, old.tags);
-      INSERT INTO memories_fts(rowid, title, mem_id, content, detail, entities, concepts, tags)
-      VALUES (new.id, new.title, new.mem_id, new.content, new.detail, new.entities, new.concepts, new.tags);
-    END;
-
-    CREATE TABLE IF NOT EXISTS config (
-      key         TEXT    PRIMARY KEY,
-      value       TEXT    NOT NULL,
-      updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS entities (
-      id          TEXT    PRIMARY KEY,
-      label       TEXT,
-      last_seen   TEXT    NOT NULL,
-      created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS user_profiles (
-      user_id                  TEXT PRIMARY KEY,
-      summary                  TEXT NOT NULL DEFAULT '',
-      roles_json               TEXT NOT NULL DEFAULT '[]',
-      domains_json             TEXT NOT NULL DEFAULT '[]',
-      expertise_json           TEXT NOT NULL DEFAULT '[]',
-      projects_json            TEXT NOT NULL DEFAULT '[]',
-      preferences_json         TEXT NOT NULL DEFAULT '[]',
-      communication_style_json TEXT NOT NULL DEFAULT '[]',
-      evidence_json            TEXT NOT NULL DEFAULT '[]',
-      confidence               REAL NOT NULL DEFAULT 0,
-      updated_at               TEXT NOT NULL
-    );
-  `)
-
-  // 迁移：memories 表添加 embedding BLOB 列（向量语义召回用，与 FTS5 双路融合）。
-  // 用 PRAGMA table_info 检查，保证幂等：已有 embedding 列时彻底 no-op。
-  try {
-    const cols = db.prepare(`PRAGMA table_info(memories)`).all()
-    const hasEmbedding = cols.some(c => c.name === 'embedding')
-    if (!hasEmbedding) {
-      db.exec(`ALTER TABLE memories ADD COLUMN embedding BLOB`)
-    }
-  } catch {}
-
-  // 迁移（兜底）：visibility / hidden_at / merged_into 三件套。
-  // 上文 line ~51 已经尝试过这三个 ALTER，但顺序在 CREATE TABLE memories 之前——
-  // 全新安装时 memories 表不存在，ALTER 会失败被吞掉，导致新建的 memories 表缺这三列，
-  // 后续 insertMemory 里 `WHERE visibility = 1` 立刻崩。这里在 CREATE TABLE 之后再补一次，
-  // 用 PRAGMA table_info 做幂等检查（与上面 embedding 同模式），不会重复加列。
-  try {
-    const cols = db.prepare(`PRAGMA table_info(memories)`).all()
-    const have = new Set(cols.map(c => c.name))
-    if (!have.has('visibility'))   db.exec(`ALTER TABLE memories ADD COLUMN visibility INTEGER NOT NULL DEFAULT 1`)
-    if (!have.has('hidden_at'))    db.exec(`ALTER TABLE memories ADD COLUMN hidden_at TEXT`)
-    if (!have.has('merged_into'))  db.exec(`ALTER TABLE memories ADD COLUMN merged_into TEXT`)
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_visibility ON memories(visibility)`)
-  } catch (err) {
-    // 这一步真的失败的话后续 SELECT visibility 会全崩——日志告警让用户知道
-    console.error('[DB migration] critical: visibility column migration failed:', err.message)
-  }
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS action_logs (
-      id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT    NOT NULL,
-      tool      TEXT    NOT NULL,
-      summary   TEXT    NOT NULL,
-      detail    TEXT    NOT NULL DEFAULT ''
-    );
-    CREATE INDEX IF NOT EXISTS idx_action_logs_timestamp ON action_logs(timestamp);
-  `)
-  try { db.exec(`ALTER TABLE action_logs ADD COLUMN status TEXT NOT NULL DEFAULT 'ok'`) } catch {}
-  try { db.exec(`ALTER TABLE action_logs ADD COLUMN risk TEXT NOT NULL DEFAULT 'medium'`) } catch {}
-  try { db.exec(`ALTER TABLE action_logs ADD COLUMN args_json TEXT NOT NULL DEFAULT '{}'`) } catch {}
-  try { db.exec(`ALTER TABLE action_logs ADD COLUMN result_preview TEXT NOT NULL DEFAULT ''`) } catch {}
-  try { db.exec(`ALTER TABLE action_logs ADD COLUMN error TEXT NOT NULL DEFAULT ''`) } catch {}
-  try { db.exec(`ALTER TABLE action_logs ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0`) } catch {}
-  try { db.exec(`ALTER TABLE action_logs ADD COLUMN source TEXT NOT NULL DEFAULT ''`) } catch {}
-  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_action_logs_status ON action_logs(status)`) } catch {}
-  try { db.exec(`CREATE INDEX IF NOT EXISTS idx_action_logs_risk ON action_logs(risk)`) } catch {}
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS reminders (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      user_id           TEXT    NOT NULL,
-      due_at            TEXT    NOT NULL,
-      task              TEXT    NOT NULL,
-      system_message    TEXT    NOT NULL,
-      status            TEXT    NOT NULL DEFAULT 'pending',
-      created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
-      fired_at          TEXT,
-      cancelled_at      TEXT,
-      source            TEXT    DEFAULT '',
-      recurrence_type   TEXT,
-      recurrence_config TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_reminders_due_at ON reminders(status, due_at);
-  `)
-  // 迁移：老库补上周期提醒字段
-  try { db.exec(`ALTER TABLE reminders ADD COLUMN recurrence_type TEXT`) } catch {}
-  try { db.exec(`ALTER TABLE reminders ADD COLUMN recurrence_config TEXT`) } catch {}
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS prefetch_tasks (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      source      TEXT    NOT NULL UNIQUE,
-      label       TEXT    NOT NULL,
-      url         TEXT    NOT NULL,
-      ttl_minutes INTEGER NOT NULL DEFAULT 60,
-      tags        TEXT    DEFAULT '[]',
-      enabled     INTEGER NOT NULL DEFAULT 1,
-      created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-      updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_prefetch_tasks_enabled ON prefetch_tasks(enabled);
-  `)
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS prefetch_cache (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      source     TEXT    NOT NULL,
-      content    TEXT    NOT NULL,
-      fetched_at TEXT    NOT NULL,
-      expires_at TEXT    NOT NULL,
-      tags       TEXT    DEFAULT '[]',
-      created_at TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_prefetch_expires ON prefetch_cache(expires_at);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_prefetch_source ON prefetch_cache(source);
-  `)
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS ui_signals (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      type       TEXT    NOT NULL,
-      target     TEXT,
-      payload    TEXT    NOT NULL DEFAULT '{}',
-      ts         INTEGER NOT NULL,
-      consumed   INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_ui_signals_unconsumed ON ui_signals(consumed, ts);
-  `)
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS media_history (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      kind       TEXT    NOT NULL,
-      url        TEXT    NOT NULL,
-      title      TEXT    NOT NULL DEFAULT '',
-      video_id   TEXT,
-      platform   TEXT,
-      played_at  TEXT    NOT NULL DEFAULT (datetime('now')),
-      created_at TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_media_history_played_at ON media_history(played_at);
-  `)
-  try { db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_media_history_url ON media_history(url)`) } catch {}
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS music_library (
-      id         INTEGER PRIMARY KEY AUTOINCREMENT,
-      title      TEXT    NOT NULL DEFAULT '',
-      artist     TEXT    NOT NULL DEFAULT '',
-      album      TEXT    NOT NULL DEFAULT '',
-      file_path  TEXT    NOT NULL UNIQUE,
-      duration   INTEGER NOT NULL DEFAULT 0,
-      lrc        TEXT    NOT NULL DEFAULT '',
-      cover      TEXT    NOT NULL DEFAULT '',
-      source_url TEXT    NOT NULL DEFAULT '',
-      added_at   TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE INDEX IF NOT EXISTS idx_music_title  ON music_library(title);
-    CREATE INDEX IF NOT EXISTS idx_music_artist ON music_library(artist);
-    CREATE INDEX IF NOT EXISTS idx_music_added  ON music_library(added_at);
-  `)
-
-  // known_agents 表：记录启动时发现的本地 AI Agent
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS known_agents (
-      id                TEXT PRIMARY KEY,
-      name              TEXT NOT NULL,
-      description       TEXT NOT NULL DEFAULT '',
-      available         INTEGER NOT NULL DEFAULT 0,
-      version           TEXT,
-      invoke_type       TEXT,
-      invoke_cmd        TEXT,
-      invoke_args       TEXT NOT NULL DEFAULT '[]',
-      notes             TEXT NOT NULL DEFAULT '',
-      docs_url          TEXT,
-      docs_search_query TEXT,
-      detected_at       TEXT NOT NULL,
-      updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-  `)
-  // 老库迁移：补上文档字段
-  try { db.exec(`ALTER TABLE known_agents ADD COLUMN docs_url TEXT`) } catch {}
-  try { db.exec(`ALTER TABLE known_agents ADD COLUMN docs_search_query TEXT`) } catch {}
-
-  // user_identities 表：渠道外部 ID → canonical 用户 ID 的绑定（多用户阶段使用，单用户阶段保留为空）
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS user_identities (
-      canonical_id TEXT NOT NULL,
-      channel      TEXT NOT NULL,
-      external_id  TEXT NOT NULL,
-      alias        TEXT DEFAULT '',
-      bound_at     TEXT NOT NULL DEFAULT (datetime('now')),
-      PRIMARY KEY (channel, external_id)
-    );
-    CREATE INDEX IF NOT EXISTS idx_identity_canonical ON user_identities(canonical_id);
-  `)
-
-  // 一次性历史数据迁移：把外部前缀 ID 统一为 PRIMARY_USER_ID，原值搬到 external_party_id
-  try {
-    const flag = db.prepare(`SELECT value FROM config WHERE key = ?`).get('migration_canonical_user_v1')
-    if (!flag) {
-      const externalRows = db.prepare(`
-        SELECT COUNT(*) AS c FROM conversations
-        WHERE from_id LIKE 'wechat:%' OR from_id LIKE 'discord:%'
-           OR from_id LIKE 'feishu:%' OR from_id LIKE 'wecom:%'
-           OR to_id   LIKE 'wechat:%' OR to_id   LIKE 'discord:%'
-           OR to_id   LIKE 'feishu:%' OR to_id   LIKE 'wecom:%'
-      `).get()
-      if (externalRows.c > 0) {
-        console.log(`[DB migration] Canonicalizing ${externalRows.c} conversation row(s) with external-channel IDs → ID:000001`)
-        db.exec(`
-          UPDATE conversations
-            SET external_party_id = CASE WHEN external_party_id = '' OR external_party_id IS NULL THEN from_id ELSE external_party_id END,
-                from_id = 'ID:000001'
-            WHERE from_id LIKE 'wechat:%' OR from_id LIKE 'discord:%'
-               OR from_id LIKE 'feishu:%' OR from_id LIKE 'wecom:%';
-          UPDATE conversations
-            SET external_party_id = CASE WHEN external_party_id = '' OR external_party_id IS NULL THEN to_id ELSE external_party_id END,
-                to_id = 'ID:000001'
-            WHERE to_id LIKE 'wechat:%' OR to_id LIKE 'discord:%'
-               OR to_id LIKE 'feishu:%' OR to_id LIKE 'wecom:%';
-        `)
-      }
-      db.prepare(`INSERT OR REPLACE INTO config (key, value, updated_at) VALUES (?, ?, datetime('now'))`)
-        .run('migration_canonical_user_v1', new Date().toISOString())
-    }
-  } catch (err) {
-    console.warn('[DB migration] canonical user migration failed:', err.message)
-  }
-
-  // focus_stack 表：动态上下文记忆池第 5c 步——持久化注意力焦点栈，让重启不丢栈。
-  //   depth         : 栈深，主键。0=栈底，length-1=栈顶。
-  //   topic         : JSON array of strings（主题关键词）。
-  //   started_at    : 帧创建时间（ISO timestamp）。
-  //   started_at_tick / last_seen_tick : 创建/最后命中的 tickCounter。
-  //   hit_count     : 累计命中次数。
-  //   conclusions   : JSON array，存放从被 pop 子帧回填的结论字符串。
-  //   updated_at    : 行写入时间。
-  // 写入策略：每次 saveFocusStack 都先 DELETE 全表再批量 INSERT，整栈原子替换。
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS focus_stack (
-      depth         INTEGER PRIMARY KEY,
-      topic         TEXT    NOT NULL,
-      started_at    TEXT    NOT NULL,
-      started_at_tick INTEGER NOT NULL,
-      last_seen_tick INTEGER NOT NULL,
-      hit_count     INTEGER NOT NULL DEFAULT 1,
-      conclusions   TEXT    NOT NULL DEFAULT '[]',
-      updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-  `)
-
-  // threads / commitments 表：线索模型（DynamicMemoryPool.md 第 8 章）持久化。
-  //   threads     : 线索全集。status='open'|'closed'；closed 仍在仓库可召回——线索数据只增不删，
-  //                 "遗忘"只发生在读时（threadTemperature 不选它），不发生在写时。
-  //   commitments : 承诺注册表。"好的我去做"= 单 Agent 版 spawn 时刻；开放承诺钉住线索温度，
-  //                 是指代性问询（"干得咋样"）的解析锚点。
-  //   thread_state: 单行 KV，存 foregroundId（前台指针）。
-  // 写入策略：saveThreadState 整态原子替换（transaction 内 DELETE+INSERT），与 focus_stack 同款。
-  // focus_stack 表只读保留：首启 threads 为空时一次性迁移，之后不再写。
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS threads (
-      id              TEXT PRIMARY KEY,
-      topic           TEXT NOT NULL DEFAULT '[]',
-      signature       TEXT NOT NULL DEFAULT '[]',
-      label           TEXT NOT NULL DEFAULT '',
-      summary         TEXT NOT NULL DEFAULT '',
-      conclusions     TEXT NOT NULL DEFAULT '[]',
-      status          TEXT NOT NULL DEFAULT 'open',
-      created_at      TEXT NOT NULL,
-      last_event_at   TEXT NOT NULL,
-      last_event_tick INTEGER NOT NULL DEFAULT 0,
-      hit_count       INTEGER NOT NULL DEFAULT 1,
-      last_summary_at TEXT NOT NULL DEFAULT '',
-      updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-    );
-    CREATE TABLE IF NOT EXISTS commitments (
-      id          TEXT PRIMARY KEY,
-      thread_id   TEXT NOT NULL,
-      text        TEXT NOT NULL DEFAULT '',
-      status      TEXT NOT NULL DEFAULT 'open',
-      channel     TEXT NOT NULL DEFAULT '',
-      created_at  TEXT NOT NULL,
-      closed_at   TEXT
-    );
-    CREATE TABLE IF NOT EXISTS thread_state (
-      key   TEXT PRIMARY KEY,
-      value TEXT NOT NULL DEFAULT ''
-    );
-    CREATE INDEX IF NOT EXISTS idx_commitments_status ON commitments(status);
-  `)
-
-  // wechat-clawbot 上下文令牌持久化：
-  //   wechat-ilink-client 库内部用一个内存 Map<from_user_id, context_token> 缓存每个用户的会话令牌，
-  //   每次入站消息刷新一次，重启即丢——重启后想"主动"给该用户发消息会抛 No context_token。
-  //   把这层映射持久化下来，启动时回填到 client.contextTokens，能让"老朋友"在重启后立即可达。
-  //   服务端令牌仍可能过期，这只是个尽力而为的缓存，所以 executor 兜底文案保留。
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS wechat_clawbot_tokens (
-      from_user_id  TEXT    PRIMARY KEY,
-      context_token TEXT    NOT NULL,
-      updated_at    TEXT    NOT NULL DEFAULT (datetime('now'))
-    );
-  `)
-
-  // recall_audit / extract_audit：记忆系统观测层（Phase 0 of Memory-Optimization v0.1）
-  //   recall_audit  : injector 每次召回写一行——给"召回到底命中了什么/漏了什么"留证据
-  //   extract_audit : recognizer 每次抽取写一行——给"哪些 turn 没抽到记忆"留证据
-  // 写入采用 best-effort（try/catch + console.warn），任何写失败都不能影响主流程
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS recall_audit (
-      id              INTEGER PRIMARY KEY AUTOINCREMENT,
-      created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
-      turn_label      TEXT,
-      from_id         TEXT,
-      channel         TEXT,
-      query_text      TEXT,
-      matched_mem_ids TEXT    NOT NULL DEFAULT '[]',
-      matched_count   INTEGER NOT NULL DEFAULT 0,
-      chosen_count    INTEGER NOT NULL DEFAULT 0,
-      event_type_dist TEXT    NOT NULL DEFAULT '{}',
-      latency_ms      INTEGER,
-      source          TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_recall_audit_created_at ON recall_audit(created_at);
-    CREATE INDEX IF NOT EXISTS idx_recall_audit_from_id    ON recall_audit(from_id);
-  `)
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS extract_audit (
-      id                INTEGER PRIMARY KEY AUTOINCREMENT,
-      created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
-      turn_label        TEXT,
-      from_id           TEXT,
-      channel           TEXT,
-      turn_summary      TEXT,
-      extracted_mem_ids TEXT    NOT NULL DEFAULT '[]',
-      extracted_count   INTEGER NOT NULL DEFAULT 0,
-      event_type_dist   TEXT    NOT NULL DEFAULT '{}',
-      latency_ms        INTEGER,
-      skipped           INTEGER NOT NULL DEFAULT 0,
-      skip_reason       TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_extract_audit_created_at ON extract_audit(created_at);
-    CREATE INDEX IF NOT EXISTS idx_extract_audit_from_id    ON extract_audit(from_id);
-  `)
-
-  // 重建 FTS 索引（覆盖已有数据，确保历史记忆也被索引）
-  db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`)
-}
 
 export function upsertClawbotToken(fromUserId, contextToken) {
   if (!fromUserId || !contextToken) return
@@ -590,15 +63,6 @@ export function markUISignalsConsumed(ids = []) {
   if (!ids.length) return
   const placeholders = ids.map(() => '?').join(',')
   getDB().prepare(`UPDATE ui_signals SET consumed = 1 WHERE id IN (${placeholders})`).run(...ids)
-}
-
-export function normalizeConversationPartyId(id) {
-  if (!id) return id
-  const text = String(id).trim()
-  if (!text) return text
-  if (/^ID:\d+$/i.test(text)) return `ID:${text.replace(/^ID:/i, '')}`
-  if (/^\d+$/.test(text)) return `ID:${text}`
-  return text
 }
 
 function normalizeMemoryEntity(entity) {
@@ -1372,6 +836,7 @@ export function insertConversation({
   role, from_id, to_id = null, content, timestamp,
   channel = '', external_party_id = '',
   focus_topic = null, open_question = 0, thread_id = null,
+  delivery_status = '',
 }) {
   const db = getDB()
   const fromId = normalizeConversationPartyId(from_id)
@@ -1379,10 +844,43 @@ export function insertConversation({
   const topic = focus_topic == null ? currentFocusTopic : String(focus_topic || '')
   const threadId = thread_id == null ? currentThreadId : String(thread_id || '')
   const info = db.prepare(`
-    INSERT INTO conversations (role, from_id, to_id, content, timestamp, channel, external_party_id, focus_topic, open_question, thread_id)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(role, fromId, toId, content, timestamp, channel || '', external_party_id || '', topic, open_question ? 1 : 0, threadId)
+    INSERT INTO conversations (role, from_id, to_id, content, timestamp, channel, external_party_id, focus_topic, open_question, thread_id, delivery_status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(role, fromId, toId, content, timestamp, channel || '', external_party_id || '', topic, open_question ? 1 : 0, threadId, delivery_status || '')
   return Number(info.lastInsertRowid) || 0
+}
+
+export function updateConversationDeliveryStatus(id, status) {
+  if (!id) return 0
+  const normalized = ['pending', 'delivered', 'failed'].includes(String(status)) ? String(status) : ''
+  const info = getDB().prepare(`UPDATE conversations SET delivery_status = ? WHERE id = ?`).run(normalized, id)
+  return info.changes || 0
+}
+
+// Return an identical, successfully delivered outbound message when the user
+// has not spoken since it was sent. This is the durable heartbeat idempotency
+// boundary: process restarts and long tick intervals must not turn silence into
+// a reason to send the same message again.
+export function findUnansweredDeliveredOutbound({ toId, content, channel = '', externalPartyId = '' } = {}) {
+  const normalizedId = normalizeConversationPartyId(toId)
+  if (!normalizedId || !String(content || '').trim()) return null
+  return getDB().prepare(`
+    SELECT id, timestamp, channel, external_party_id
+    FROM conversations
+    WHERE role = 'jarvis'
+      AND to_id = ?
+      AND content = ?
+      AND channel = ?
+      AND external_party_id = ?
+      AND delivery_status = 'delivered'
+      AND id > COALESCE((
+        SELECT MAX(id)
+        FROM conversations
+        WHERE role = 'user' AND from_id = ?
+      ), 0)
+    ORDER BY id DESC
+    LIMIT 1
+  `).get(normalizedId, String(content), String(channel || ''), String(externalPartyId || ''), normalizedId) || null
 }
 
 // P0-1：给本轮触发判定的 user 消息回填 focus_topic
@@ -1451,53 +949,6 @@ export function markConversationOpenQuestion(id, isOpen = true) {
   const db = getDB()
   const info = db.prepare(`UPDATE conversations SET open_question = ? WHERE id = ?`).run(isOpen ? 1 : 0, id)
   return info.changes || 0
-}
-
-// 查最近 withinMs 毫秒内 jarvis 发给 toId 的消息中，是否有 content 完全相同的一条。
-// 命中返回 { id, content, timestamp, ageMs }，未命中返回 null。
-// 用途：send_message 防重发——零用户消息状态下，模型常被旧 directions 反复驱动发同一句话。
-// 防重发判定：在最近的 jarvis 出站里找一条与 content 逐字相同、且"用户尚未回应过"的消息。
-//
-// 旧逻辑只用 5 分钟时间窗（withinMs）卡——实测 deepseek 等模型重发节奏（如 5min4s / 14min）
-// 恰好踩在窗口外，逐字重发照样漏过（典型：启动期"委托授权询问"被连发 3 次）。对一条用户
-// 还没回应的主动消息，逐字重发不管隔多久都是骚扰，时间长短不该是豁免条件。
-// 新逻辑以"该条之后用户有没有回过话"为分界：
-//   - 没回过 → 不论间隔多久都判为重发并拒绝；
-//   - 回过了 → 话题已翻篇，放行（仍保留 withinMs 作兜底下限：刚回过也不许 5 分钟内逐字重发）。
-export function findRecentJarvisDuplicate(toId, content, withinMs = 300_000) {
-  if (!toId || !content) return null
-  const db = getDB()
-  const normalizedId = normalizeConversationPartyId(toId)
-  const target = String(content).trim()
-  if (!target) return null
-
-  // 该对象最近一条真实用户消息的时间戳，作为"用户是否已回应"的分界线。
-  // SYSTEM 信号的 from_id 是 'SYSTEM'，不等于对象 id，天然被排除，不会被误当成用户回应。
-  const lastUserRow = db.prepare(`
-    SELECT timestamp FROM conversations
-    WHERE role = 'user' AND from_id = ?
-    ORDER BY id DESC LIMIT 1
-  `).get(normalizedId)
-  const lastUserTs = lastUserRow ? Date.parse(lastUserRow.timestamp) : NaN
-
-  // 拉最近 20 条 jarvis 出站做内存比对，比 LIKE 全表扫稳。
-  const rows = db.prepare(`
-    SELECT id, content, timestamp FROM conversations
-    WHERE role = 'jarvis' AND to_id = ?
-    ORDER BY id DESC
-    LIMIT 20
-  `).all(normalizedId)
-  const now = Date.now()
-  for (const r of rows) {
-    if (String(r.content || '').trim() !== target) continue
-    const ts = Date.parse(r.timestamp)
-    const ageMs = Number.isFinite(ts) ? now - ts : Infinity
-    // 用户在这条逐字相同的消息之后回过话 → 话题已翻篇；除非仍在 withinMs 兜底窗内，否则放行。
-    const userRepliedSince = Number.isFinite(lastUserTs) && Number.isFinite(ts) && lastUserTs > ts
-    if (userRepliedSince && ageMs > withinMs) continue
-    return { id: r.id, content: r.content, timestamp: r.timestamp, ageMs }
-  }
-  return null
 }
 
 // 将最近一条 jarvis 消息内容裁剪为已说出的部分（TTS 被打断时调用）
@@ -1753,7 +1204,7 @@ export function upsertUserProfile(profile = {}) {
 const RECENT_RAW_CONTEXT_FLOOR = 60
 const CONVERSATION_COLUMNS = `
   id, role, from_id, to_id, content, channel, timestamp, created_at,
-  external_party_id, focus_absorbed, focus_topic, open_question, thread_id
+  external_party_id, focus_absorbed, focus_topic, open_question, thread_id, delivery_status
 `
 
 function normalizeConversationLimit(limit, fallback = 20) {
@@ -1922,106 +1373,8 @@ export function getRecentActionLogs(limit = 50, { includeHousekeeping = false, i
   `).all(limit).reverse()
 }
 
-export function createReminder({ userId, dueAt, task, systemMessage, source = '', recurrenceType = null, recurrenceConfig = null }) {
-  const db = getDB()
-  const normalizedUserId = normalizeConversationPartyId(userId || CANONICAL_USER_ID)
-  const configStr = recurrenceConfig ? JSON.stringify(recurrenceConfig) : null
-  return db.prepare(`
-    INSERT INTO reminders (user_id, due_at, task, system_message, status, source, recurrence_type, recurrence_config)
-    VALUES (?, ?, ?, ?, 'pending', ?, ?, ?)
-  `).run(normalizedUserId, dueAt, task, systemMessage, source, recurrenceType, configStr)
-}
-
 // 找到同 user + 同 due_at（精确到分钟）且非周期的待触发提醒，用于合并
-export function findMergeableOneOffReminder(userId, dueAtIsoMinute) {
-  const db = getDB()
-  const normalizedUserId = normalizeConversationPartyId(userId || CANONICAL_USER_ID)
-  return db.prepare(`
-    SELECT * FROM reminders
-    WHERE status = 'pending'
-      AND recurrence_type IS NULL
-      AND user_id = ?
-      AND substr(due_at, 1, 16) = ?
-    ORDER BY id ASC
-    LIMIT 1
-  `).get(normalizedUserId, dueAtIsoMinute) || null
-}
-
-export function appendReminderTask(id, additionalTask, newSystemMessage) {
-  const db = getDB()
-  const row = db.prepare(`SELECT task FROM reminders WHERE id = ?`).get(id)
-  if (!row) return { changes: 0 }
-  const mergedTask = `${row.task}; ${additionalTask}`
-  return db.prepare(`
-    UPDATE reminders
-    SET task = ?, system_message = ?
-    WHERE id = ? AND status = 'pending'
-  `).run(mergedTask, newSystemMessage, id)
-}
-
-export function getDueReminders(now = new Date().toISOString(), limit = 20) {
-  const db = getDB()
-  return db.prepare(`
-    SELECT * FROM reminders
-    WHERE status = 'pending' AND due_at <= ?
-    ORDER BY due_at ASC, id ASC
-    LIMIT ?
-  `).all(now, limit)
-}
-
-export function markReminderFired(id, firedAt = new Date().toISOString()) {
-  const db = getDB()
-  return db.prepare(`
-    UPDATE reminders
-    SET status = 'fired', fired_at = ?
-    WHERE id = ? AND status = 'pending'
-  `).run(firedAt, id)
-}
-
 // 周期提醒触发后：保持 pending，推进 due_at 到下次发生时间
-export function advanceReminderDueAt(id, nextDueAtIso) {
-  const db = getDB()
-  return db.prepare(`
-    UPDATE reminders
-    SET due_at = ?
-    WHERE id = ? AND status = 'pending'
-  `).run(nextDueAtIso, id)
-}
-
-export function cancelReminder(id, cancelledAt = new Date().toISOString()) {
-  const db = getDB()
-  return db.prepare(`
-    UPDATE reminders
-    SET status = 'cancelled', cancelled_at = ?
-    WHERE id = ? AND status = 'pending'
-  `).run(cancelledAt, id)
-}
-
-export function listPendingReminders(limit = 50) {
-  const db = getDB()
-  return db.prepare(`
-    SELECT * FROM reminders
-    WHERE status = 'pending'
-    ORDER BY due_at ASC, id ASC
-    LIMIT ?
-  `).all(limit)
-}
-
-export function getReminderById(id) {
-  const db = getDB()
-  return db.prepare(`SELECT * FROM reminders WHERE id = ?`).get(id) || null
-}
-
-export function getNextPendingReminder() {
-  const db = getDB()
-  return db.prepare(`
-    SELECT * FROM reminders
-    WHERE status = 'pending'
-    ORDER BY due_at ASC, id ASC
-    LIMIT 1
-  `).get() || null
-}
-
 // 按关键词搜索记忆（FTS5 全文搜索，优先相关度排序）
 // 注意：trigram tokenizer 需要查询至少 3 字符；< 3 字符（典型如 2 字中文 ngram）走 LIKE fallback。
 // 软隐藏过滤：FTS5 索引保留全量内容，但 JOIN memories 后用 m.visibility=1 过滤；
@@ -2069,15 +1422,24 @@ export function searchMemories(keyword, limit = 10) {
 //
 // 数量级 < 50k 之前先用 JS 内存全表扫描，避免引入 sqlite-vec 扩展。
 
-export function updateMemoryEmbedding(memId, embeddingBuffer) {
+export function updateMemoryEmbedding(memId, embeddingBuffer, model = null) {
   if (!memId) return
   const db = getDB()
-  // null 也允许写入（清除某条的 embedding）
+  // null 也允许写入（清除某条的 embedding）；同时清掉维度/来源
   const value = embeddingBuffer == null ? null : embeddingBuffer
+  // 维度从 BLOB 字节长度反推（Float32 = 4 字节），与召回端的维度过滤对齐
+  const dim = value && value.byteLength > 0 ? Math.floor(value.byteLength / 4) : null
+  const modelTag = value && typeof model === 'string' && model ? model : null
   try {
-    db.prepare(`UPDATE memories SET embedding = ? WHERE mem_id = ?`).run(value, memId)
+    db.prepare(`UPDATE memories SET embedding = ?, embedding_dim = ?, embedding_model = ? WHERE mem_id = ?`)
+      .run(value, dim, modelTag, memId)
   } catch {
-    // 静默忽略（schema 未迁移、磁盘只读、并发冲突等）— 不让 embedding 写入影响主流程
+    // 老库 embedding_dim/embedding_model 列还没迁移时，退回只写 embedding，保证不影响主流程
+    try {
+      db.prepare(`UPDATE memories SET embedding = ? WHERE mem_id = ?`).run(value, memId)
+    } catch {
+      // 静默忽略（schema 未迁移、磁盘只读、并发冲突等）— 不让 embedding 写入影响主流程
+    }
   }
 }
 
@@ -2115,9 +1477,15 @@ export function searchByEmbedding(queryBuffer, limit = 20) {
   if (!queryBuffer || !(queryBuffer instanceof Buffer) || queryBuffer.byteLength === 0) return []
   const db = getDB()
 
+  // 只比与 query 同维度的向量：切换嵌入模型后旧维度向量（如云端 1536/2048）既不参与
+  // 召回、也不挤占 VEC_FULL_SCAN_LIMIT 名额。embedding_dim IS NULL 是迁移前写入的历史行，
+  // 一并纳入候选，由 cosineSimilarity 的 byteLength 守卫兜底剔除真正不同维度的。
+  const queryDim = Math.floor(queryBuffer.byteLength / 4)
+  const DIM_CLAUSE = `(embedding_dim = ${queryDim} OR embedding_dim IS NULL)`
+
   // 上限保护：先 COUNT，超限直接返回。better-sqlite3 + WAL + 索引扫描，几 ms 就回。
   try {
-    const countRow = db.prepare(`SELECT COUNT(*) AS c FROM memories WHERE embedding IS NOT NULL AND ${VISIBLE_CLAUSE}`).get()
+    const countRow = db.prepare(`SELECT COUNT(*) AS c FROM memories WHERE embedding IS NOT NULL AND ${DIM_CLAUSE} AND ${VISIBLE_CLAUSE}`).get()
     if (countRow && countRow.c > VEC_FULL_SCAN_LIMIT) {
       // 静默跳过，不打 warn——这条会被 inject 链路每条消息都走一次，
       // 噪声日志反而干扰调试。需要时把这里改成节流日志。
@@ -2130,10 +1498,14 @@ export function searchByEmbedding(queryBuffer, limit = 20) {
   let rows
   try {
     // 软隐藏过滤：被隐藏的记忆即使有 embedding 也不参与召回
-    rows = db.prepare(`SELECT * FROM memories WHERE embedding IS NOT NULL AND ${VISIBLE_CLAUSE}`).all()
+    rows = db.prepare(`SELECT * FROM memories WHERE embedding IS NOT NULL AND ${DIM_CLAUSE} AND ${VISIBLE_CLAUSE}`).all()
   } catch {
-    // 老库 schema 未迁移 / embedding 列不存在
-    return []
+    // 老库 embedding_dim 列未迁移：退回不带维度过滤的原查询（cosine 守卫仍会剔除异维度）
+    try {
+      rows = db.prepare(`SELECT * FROM memories WHERE embedding IS NOT NULL AND ${VISIBLE_CLAUSE}`).all()
+    } catch {
+      return []
+    }
   }
   if (!rows.length) return []
 
@@ -2148,464 +1520,3 @@ export function searchByEmbedding(queryBuffer, limit = 20) {
   scored.sort((a, b) => b._vecScore - a._vecScore)
   return scored.slice(0, Math.max(0, limit))
 }
-
-// ── 预热缓存 ──────────────────────────────────────────────────────────────
-
-export function savePrefetchCache(source, content, ttlMinutes, tags = []) {
-  const db = getDB()
-  const now = new Date()
-  const fetched_at = now.toISOString()
-  const expires_at = new Date(now.getTime() + ttlMinutes * 60 * 1000).toISOString()
-  db.prepare(`
-    INSERT INTO prefetch_cache (source, content, fetched_at, expires_at, tags)
-    VALUES (?, ?, ?, ?, ?)
-    ON CONFLICT(source) DO UPDATE SET
-      content    = excluded.content,
-      fetched_at = excluded.fetched_at,
-      expires_at = excluded.expires_at,
-      tags       = excluded.tags
-  `).run(source, content, fetched_at, expires_at, JSON.stringify(tags))
-}
-
-export function getValidPrefetchCache() {
-  const db = getDB()
-  const now = new Date().toISOString()
-  return db.prepare(`
-    SELECT * FROM prefetch_cache
-    WHERE expires_at > ?
-    ORDER BY fetched_at DESC
-  `).all(now)
-}
-
-export function clearExpiredPrefetchCache() {
-  const db = getDB()
-  const now = new Date().toISOString()
-  db.prepare(`DELETE FROM prefetch_cache WHERE expires_at <= ?`).run(now)
-}
-
-// ── 预热任务管理 ──────────────────────────────────────────────────────────
-
-export function upsertPrefetchTask({ source, label, url, ttlMinutes = 60, tags = [] }) {
-  const db = getDB()
-  const now = new Date().toISOString()
-  db.prepare(`
-    INSERT INTO prefetch_tasks (source, label, url, ttl_minutes, tags, enabled, updated_at)
-    VALUES (?, ?, ?, ?, ?, 1, ?)
-    ON CONFLICT(source) DO UPDATE SET
-      label       = excluded.label,
-      url         = excluded.url,
-      ttl_minutes = excluded.ttl_minutes,
-      tags        = excluded.tags,
-      enabled     = 1,
-      updated_at  = excluded.updated_at
-  `).run(source, label, url, ttlMinutes, JSON.stringify(tags), now)
-}
-
-export function removePrefetchTask(source) {
-  const db = getDB()
-  const result = db.prepare(`DELETE FROM prefetch_tasks WHERE source = ?`).run(source)
-  return result.changes > 0
-}
-
-export function listPrefetchTasks() {
-  const db = getDB()
-  return db.prepare(`SELECT * FROM prefetch_tasks ORDER BY created_at ASC`).all()
-}
-
-export function getEnabledPrefetchTasks() {
-  const db = getDB()
-  return db.prepare(`SELECT * FROM prefetch_tasks WHERE enabled = 1 ORDER BY created_at ASC`).all()
-}
-
-// ── 媒体播放历史 ──────────────────────────────────────────────────────────────
-
-export function upsertMediaHistory({ kind, url, title = '', videoId = null, platform = null }) {
-  const db = getDB()
-  const now = new Date().toISOString()
-  db.prepare(`
-    INSERT INTO media_history (kind, url, title, video_id, platform, played_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(url) DO UPDATE SET
-      title     = excluded.title,
-      played_at = excluded.played_at
-  `).run(kind, url, title, videoId || null, platform || null, now)
-}
-
-export function getMediaHistory(limit = 30) {
-  const db = getDB()
-  return db.prepare(`
-    SELECT * FROM media_history ORDER BY played_at DESC LIMIT ?
-  `).all(limit)
-}
-
-// ── Music Library ────────────────────────────────────────────────────────────
-
-export function upsertMusicTrack({ title = '', artist = '', album = '', filePath, duration = 0, lrc = '', cover = '', sourceUrl = '' }) {
-  const db = getDB()
-  db.prepare(`
-    INSERT INTO music_library (title, artist, album, file_path, duration, lrc, cover, source_url)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(file_path) DO UPDATE SET
-      title      = excluded.title,
-      artist     = excluded.artist,
-      album      = excluded.album,
-      duration   = excluded.duration,
-      lrc        = CASE WHEN excluded.lrc != '' THEN excluded.lrc ELSE lrc END,
-      cover      = CASE WHEN excluded.cover != '' THEN excluded.cover ELSE cover END,
-      source_url = CASE WHEN excluded.source_url != '' THEN excluded.source_url ELSE source_url END
-  `).run(title, artist, album, filePath, duration, lrc, cover, sourceUrl)
-  return db.prepare(`SELECT * FROM music_library WHERE file_path = ?`).get(filePath)
-}
-
-export function getMusicTrack(id) {
-  return getDB().prepare(`SELECT * FROM music_library WHERE id = ?`).get(id)
-}
-
-export function searchMusicLibrary(query, limit = 20) {
-  const db = getDB()
-  const tokens = String(query || '').trim().split(/\s+/).filter(Boolean)
-  if (!tokens.length) return []
-  // 每个词都要命中 title/artist/album 之一（per-token OR，token 之间 AND）：
-  // 这样 "歌名 歌手" 能匹配到 title 只含歌名、artist 只含歌手的行，避免漏命中后白跑下载。
-  const clauses = tokens.map(() => '(title LIKE ? OR artist LIKE ? OR album LIKE ?)')
-  const params = []
-  for (const t of tokens) { const like = `%${t}%`; params.push(like, like, like) }
-  return db.prepare(`
-    SELECT * FROM music_library
-    WHERE ${clauses.join(' AND ')}
-    ORDER BY added_at DESC LIMIT ?
-  `).all(...params, limit)
-}
-
-export function listMusicLibrary(limit = 50) {
-  return getDB().prepare(`SELECT * FROM music_library ORDER BY added_at DESC LIMIT ?`).all(limit)
-}
-
-export function updateMusicLrc(id, lrc) {
-  getDB().prepare(`UPDATE music_library SET lrc = ? WHERE id = ?`).run(lrc, id)
-}
-
-export function deleteMusicTrack(id) {
-  getDB().prepare(`DELETE FROM music_library WHERE id = ?`).run(id)
-}
-
-// ============================================================
-// focus_stack —— 动态上下文记忆池 5c 步：注意力焦点栈持久化
-// ============================================================
-//
-// loadFocusStack: 启动时一次性读出整栈（按 depth ASC）；任何异常都返回 []，
-//   不阻塞主流程。frame 形状与内存中的 state.focusStack[i] 完全一致：
-//   { topic, startedAt, startedAtTick, lastSeenTick, hitCount, conclusions }
-//
-// saveFocusStack: 整栈原子替换。先 DELETE 再 INSERT，全部包在 transaction 里。
-//   focus.js 只在内存里改 state.focusStack，所以 index.js 在每次 updateFocusFrame
-//   返回非 noop 时主动调；focus-compress.js 也通过 onConclusionAttached 回调触发。
-//   写库失败 console.warn 后吞掉——专注栈丢一次远比阻塞主对话轻。
-const FOCUS_STACK_RESTORE_TTL_MS = 24 * 60 * 60 * 1000
-
-export function loadFocusStack() {
-  const db = getDB()
-  try {
-    const rows = db.prepare(`SELECT * FROM focus_stack ORDER BY depth ASC`).all()
-    if (rows.length > 0) {
-      const newest = rows
-        .map(r => Date.parse(r.updated_at || r.started_at || ''))
-        .filter(Number.isFinite)
-        .sort((a, b) => b - a)[0]
-      if (Number.isFinite(newest) && Date.now() - newest > FOCUS_STACK_RESTORE_TTL_MS) {
-        db.prepare(`DELETE FROM focus_stack`).run()
-        console.log('[focus-persist] dropped stale persisted focus_stack on startup')
-        return []
-      }
-    }
-    return rows.map(r => ({
-      topic: JSON.parse(r.topic || '[]'),
-      startedAt: r.started_at,
-      startedAtTick: r.started_at_tick,
-      lastSeenTick: r.last_seen_tick,
-      hitCount: r.hit_count,
-      conclusions: JSON.parse(r.conclusions || '[]'),
-    }))
-  } catch {
-    return []
-  }
-}
-
-export function saveFocusStack(stack) {
-  const db = getDB()
-  try {
-    const tx = db.transaction((frames) => {
-      db.prepare(`DELETE FROM focus_stack`).run()
-      const insert = db.prepare(`
-        INSERT INTO focus_stack (depth, topic, started_at, started_at_tick, last_seen_tick, hit_count, conclusions)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `)
-      for (let i = 0; i < frames.length; i++) {
-        const f = frames[i]
-        insert.run(
-          i,
-          JSON.stringify(f.topic || []),
-          f.startedAt || new Date().toISOString(),
-          f.startedAtTick || 0,
-          f.lastSeenTick || 0,
-          f.hitCount || 1,
-          JSON.stringify(f.conclusions || [])
-        )
-      }
-    })
-    tx(stack || [])
-  } catch (err) {
-    console.warn('[focus-persist] saveFocusStack failed:', err.message)
-  }
-}
-
-// ============================================================
-// threads / commitments —— 线索模型（DynamicMemoryPool.md 第 8 章）持久化
-// ============================================================
-//
-// loadThreadState: 启动时一次性读出 { threads, foregroundId, commitments }。
-//   只加载 status='open' 的承诺所属线索 + 最近 7 天活跃线索（冷线索留在仓库，召回另走记忆）。
-//   threads 为空且 focus_stack 有货 → 返回 null 让上层走 migrateFocusStackToThreads。
-// saveThreadState: 整态原子替换（transaction）。与 saveFocusStack 同款的"丢一次不如阻塞"取舍。
-const THREAD_LOAD_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
-
-function rowToThread(r) {
-  const topic = JSON.parse(r.topic || '[]')
-  const signature = JSON.parse(r.signature || '[]')
-  return {
-    id: r.id,
-    topic,
-    signature: signature.length > 0 ? signature : [...topic],
-    label: r.label || '',
-    summary: r.summary || '',
-    conclusions: JSON.parse(r.conclusions || '[]'),
-    status: r.status || 'open',
-    createdAt: r.created_at,
-    lastEventAt: r.last_event_at,
-    lastEventTick: r.last_event_tick || 0,
-    hitCount: r.hit_count || 1,
-    lastSummaryAt: r.last_summary_at || '',
-  }
-}
-
-export function loadThreadState() {
-  const db = getDB()
-  try {
-    const threadRows = db.prepare(`SELECT * FROM threads`).all()
-    if (threadRows.length === 0) return null
-    const commitmentRows = db.prepare(`SELECT * FROM commitments WHERE status = 'open'`).all()
-    const openThreadIds = new Set(commitmentRows.map(r => r.thread_id))
-    const cutoff = Date.now() - THREAD_LOAD_WINDOW_MS
-    const threads = threadRows
-      .filter(r => openThreadIds.has(r.id) || (Date.parse(r.last_event_at || '') || 0) >= cutoff)
-      .map(rowToThread)
-    const fgRow = db.prepare(`SELECT value FROM thread_state WHERE key = 'foregroundId'`).get()
-    let foregroundId = fgRow?.value || null
-    if (foregroundId && !threads.some(t => t.id === foregroundId)) foregroundId = null
-    const commitments = commitmentRows.map(r => ({
-      id: r.id,
-      threadId: r.thread_id,
-      text: r.text || '',
-      status: r.status || 'open',
-      channel: r.channel || '',
-      createdAt: r.created_at,
-      closedAt: r.closed_at || null,
-    }))
-    return { threads, foregroundId, commitments }
-  } catch {
-    return null
-  }
-}
-
-export function saveThreadState(threadState) {
-  const db = getDB()
-  const ts = threadState || {}
-  try {
-    const tx = db.transaction(() => {
-      const upsertThread = db.prepare(`
-        INSERT INTO threads (id, topic, signature, label, summary, conclusions, status, created_at, last_event_at, last_event_tick, hit_count, last_summary_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
-        ON CONFLICT(id) DO UPDATE SET
-          topic = excluded.topic, signature = excluded.signature, label = excluded.label, summary = excluded.summary,
-          conclusions = excluded.conclusions, status = excluded.status,
-          last_event_at = excluded.last_event_at, last_event_tick = excluded.last_event_tick,
-          hit_count = excluded.hit_count, last_summary_at = excluded.last_summary_at,
-          updated_at = datetime('now')
-      `)
-      // 注意：threads 表不 DELETE——线索数据只增不删（被 evict 出内存的线索仍在仓库）。
-      for (const t of (ts.threads || [])) {
-        upsertThread.run(
-          t.id,
-          JSON.stringify(t.topic || []),
-          JSON.stringify(t.signature || t.topic || []),
-          t.label || '',
-          t.summary || '',
-          JSON.stringify(t.conclusions || []),
-          t.status || 'open',
-          t.createdAt || new Date().toISOString(),
-          t.lastEventAt || new Date().toISOString(),
-          t.lastEventTick || 0,
-          t.hitCount || 1,
-          t.lastSummaryAt || ''
-        )
-      }
-      const upsertCommitment = db.prepare(`
-        INSERT INTO commitments (id, thread_id, text, status, channel, created_at, closed_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(id) DO UPDATE SET
-          thread_id = excluded.thread_id, text = excluded.text, status = excluded.status,
-          channel = excluded.channel, closed_at = excluded.closed_at
-      `)
-      for (const c of (ts.commitments || [])) {
-        upsertCommitment.run(
-          c.id, c.threadId, c.text || '', c.status || 'open',
-          c.channel || '', c.createdAt || new Date().toISOString(), c.closedAt || null
-        )
-      }
-      db.prepare(`
-        INSERT INTO thread_state (key, value) VALUES ('foregroundId', ?)
-        ON CONFLICT(key) DO UPDATE SET value = excluded.value
-      `).run(ts.foregroundId || '')
-      // 内存中被 merge 掉的线索：仓库行标记 closed（不删行）
-      if (Array.isArray(ts.mergedAwayIds)) {
-        const close = db.prepare(`UPDATE threads SET status = 'merged', updated_at = datetime('now') WHERE id = ?`)
-        for (const id of ts.mergedAwayIds) close.run(id)
-      }
-    })
-    tx()
-  } catch (err) {
-    console.warn('[thread-persist] saveThreadState failed:', err.message)
-  }
-}
-
-// ───────── 记忆观测层（Memory-Optimization v0.1 Phase 0） ─────────
-// 所有 audit 写入都是 best-effort：失败只记 warn，不抛出，不影响主流程。
-
-export function insertRecallAudit({
-  turn_label = null,
-  from_id = null,
-  channel = null,
-  query_text = '',
-  matched_mem_ids = [],
-  chosen_count = 0,
-  event_type_dist = {},
-  latency_ms = null,
-  source = null,
-} = {}) {
-  try {
-    const ids = Array.isArray(matched_mem_ids) ? matched_mem_ids : []
-    getDB().prepare(`
-      INSERT INTO recall_audit (
-        turn_label, from_id, channel, query_text,
-        matched_mem_ids, matched_count, chosen_count,
-        event_type_dist, latency_ms, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      turn_label,
-      from_id,
-      channel,
-      (query_text || '').slice(0, 1000),
-      JSON.stringify(ids),
-      ids.length,
-      chosen_count,
-      JSON.stringify(event_type_dist || {}),
-      latency_ms,
-      source
-    )
-  } catch (err) {
-    console.warn('[recall_audit] insert failed:', err.message)
-  }
-}
-
-export function insertExtractAudit({
-  turn_label = null,
-  from_id = null,
-  channel = null,
-  turn_summary = '',
-  extracted_mem_ids = [],
-  event_type_dist = {},
-  latency_ms = null,
-  skipped = false,
-  skip_reason = null,
-} = {}) {
-  try {
-    const ids = Array.isArray(extracted_mem_ids) ? extracted_mem_ids : []
-    getDB().prepare(`
-      INSERT INTO extract_audit (
-        turn_label, from_id, channel, turn_summary,
-        extracted_mem_ids, extracted_count,
-        event_type_dist, latency_ms, skipped, skip_reason
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      turn_label,
-      from_id,
-      channel,
-      (turn_summary || '').slice(0, 500),
-      JSON.stringify(ids),
-      ids.length,
-      JSON.stringify(event_type_dist || {}),
-      latency_ms,
-      skipped ? 1 : 0,
-      skip_reason
-    )
-  } catch (err) {
-    console.warn('[extract_audit] insert failed:', err.message)
-  }
-}
-
-export function getRecentRecallAudits(limit = 50) {
-  try {
-    return getDB().prepare(`SELECT * FROM recall_audit ORDER BY id DESC LIMIT ?`).all(limit)
-  } catch (err) {
-    console.warn('[recall_audit] read failed:', err.message)
-    return []
-  }
-}
-
-export function getRecentExtractAudits(limit = 50) {
-  try {
-    return getDB().prepare(`SELECT * FROM extract_audit ORDER BY id DESC LIMIT ?`).all(limit)
-  } catch (err) {
-    console.warn('[extract_audit] read failed:', err.message)
-    return []
-  }
-}
-
-export function getRecallAuditStats({ sinceIso = null } = {}) {
-  try {
-    const sinceClause = sinceIso ? 'WHERE created_at >= ?' : ''
-    const args = sinceIso ? [sinceIso] : []
-    return getDB().prepare(`
-      SELECT
-        COUNT(*) AS total,
-        AVG(matched_count) AS avg_matched,
-        AVG(chosen_count)  AS avg_chosen,
-        AVG(latency_ms)    AS avg_latency_ms,
-        MAX(latency_ms)    AS max_latency_ms,
-        SUM(CASE WHEN matched_count = 0 THEN 1 ELSE 0 END) AS zero_match_count
-      FROM recall_audit ${sinceClause}
-    `).get(...args)
-  } catch (err) {
-    console.warn('[recall_audit] stats failed:', err.message)
-    return null
-  }
-}
-
-export function getExtractAuditStats({ sinceIso = null } = {}) {
-  try {
-    const sinceClause = sinceIso ? 'WHERE created_at >= ?' : ''
-    const args = sinceIso ? [sinceIso] : []
-    return getDB().prepare(`
-      SELECT
-        COUNT(*)            AS total,
-        AVG(extracted_count) AS avg_extracted,
-        AVG(latency_ms)      AS avg_latency_ms,
-        SUM(skipped)         AS skipped_count
-      FROM extract_audit ${sinceClause}
-    `).get(...args)
-  } catch (err) {
-    console.warn('[extract_audit] stats failed:', err.message)
-    return null
-  }
-}
-

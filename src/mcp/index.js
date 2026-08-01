@@ -11,6 +11,7 @@ import fs from 'fs'
 import path from 'path'
 import { paths } from '../paths.js'
 import { McpStdioClient } from './client.js'
+import { decryptSecretsDeep, encryptSecretsDeep } from '../secure-store.js'
 
 // 随安装包内置的默认配置（打包进 asar，位于资源目录下）。
 const DEFAULT_CONFIG_FILE = path.join(paths.resourcesDir, 'src', 'mcp', 'servers.default.json')
@@ -29,7 +30,14 @@ function fullName(server, toolName) {
 function readServersFrom(file) {
   try {
     if (!fs.existsSync(file)) return {}
-    const raw = JSON.parse(fs.readFileSync(file, 'utf-8'))
+    const stored = JSON.parse(fs.readFileSync(file, 'utf-8'))
+    const raw = decryptSecretsDeep(stored)
+    if (file === paths.mcpConfigFile) {
+      const tmp = `${file}.tmp`
+      fs.writeFileSync(tmp, JSON.stringify(encryptSecretsDeep(structuredClone(raw)), null, 2), { encoding: 'utf-8', mode: 0o600 })
+      try { fs.chmodSync(tmp, 0o600) } catch {}
+      fs.renameSync(tmp, file)
+    }
     return raw?.mcpServers && typeof raw.mcpServers === 'object' ? raw.mcpServers : {}
   } catch (err) {
     console.log(`[mcp] 读取配置失败（${file}）：${err.message}`)
@@ -90,9 +98,12 @@ export async function loadMcpServers() {
         server: name,
         toolName: t.name,
         schema: {
-          name: fn,
-          description: `[MCP:${name}] ${t.description || t.name}`,
-          parameters: t.inputSchema || { type: 'object', properties: {} },
+          type: 'function',
+          function: {
+            name: fn,
+            description: `[MCP:${name}] ${t.description || t.name}`,
+            parameters: t.inputSchema || { type: 'object', properties: {} },
+          },
         },
       })
     }
@@ -119,7 +130,7 @@ export function listMcpTools() {
   return [...toolIndex.values()].map(t => ({
     name: fullName(t.server, t.toolName),
     server: t.server,
-    description: t.schema.description,
+    description: t.schema.function.description,
   }))
 }
 
@@ -149,3 +160,8 @@ export function shutdownMcp() {
   clients.clear()
   toolIndex.clear()
 }
+
+// Electron owns the process lifecycle, while the MCP layer lives in the same
+// process. Expose a narrow shutdown hook so child stdio servers cannot survive
+// an application quit.
+globalThis.shutdownOpenVZMcp = shutdownMcp

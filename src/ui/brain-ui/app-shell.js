@@ -1,27 +1,26 @@
 import { createHotspotPanel } from './hotspot-panel.js';
 import { createWorldcupPanel } from './worldcup-panel.js';
+import { createTyphoonPanel } from './typhoon-panel.js';
 import { createPersonCardPanel } from './person-card-panel.js';
 import { createDocPanel } from './doc-panel.js';
 import { createWorkflowPanel } from './workflow-panel.js';
 
+const createAppTitlebar = () => `
+<header class="app-titlebar" aria-label="Window drag area"></header>
+`;
+
 const createGraphStage = () => `
 <div class="grid-overlay"></div>
-<svg id="graph" aria-label="OpenVZ Agent 记忆节点图"></svg>
+<svg id="graph" aria-label="OpenVZ 记忆节点图"></svg>
 `;
 
 const createPrimaryPanel = () => `
 <aside id="panel-l1" class="panel">
   <header class="panel-identity">
-    <div class="brand-mark" aria-hidden="true">
-      <svg viewBox="0 0 32 32" width="24" height="24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path class="brand-glyph" d="M16 2 3 9v14l13 7 13-7V9L16 2Z" />
-        <path class="brand-glyph-inner" d="M16 9.5 22 13v6l-6 3.5L10 19v-6l6-3.5Z" />
-        <circle class="brand-glyph-core" cx="16" cy="16" r="2.4" />
-      </svg>
-    </div>
+    <div class="brand-mark"></div>
     <div class="brand-copy">
-      <div class="eyebrow">Your Personal AI Agent OS</div>
-      <div class="brand-title" id="agent-brand-name">OpenVZ&nbsp;Agent</div>
+      <div class="eyebrow">认知界面</div>
+      <div class="brand-title" id="agent-brand-name">OpenVZ Agent</div>
     </div>
     <button class="voice-btn" id="voice-btn" title="麦克风 开/关" type="button">🎤</button>
     <button class="video-btn" id="video-btn" title="视频模式 (V)" type="button" hidden>⊞</button>
@@ -93,55 +92,108 @@ const createPrimaryPanel = () => `
 
 const createSecondaryPanel = () => `
 <aside id="panel-l2" class="panel">
-  <header class="panel-stats">
-    <div class="stat">
-      <span class="stat-label">状态</span>
-      <div class="stat-value live" id="conn-state"><span class="live-dot"></span>Token流</div>
-    </div>
-    <div class="stat">
-      <span class="stat-label">节点</span>
-      <div class="stat-value" id="node-count">0</div>
-    </div>
-    <div class="stat">
-      <span class="stat-label">连线</span>
-      <div class="stat-value" id="link-count">0</div>
-    </div>
-    <div class="stat">
-      <span class="stat-label">tok/s</span>
-      <div class="stat-value" id="tok-rate">—</div>
-    </div>
-    <div class="stat" id="mem-recall-stat" title="近 1 小时记忆召回次数 / 平均拉取条数。点击查看明细">
-      <span class="stat-label">召回/h</span>
-      <div class="stat-value" id="mem-recall-rate">—</div>
-    </div>
-    <div class="stat" id="mem-extract-stat" title="近 1 小时记忆抽取次数 / 平均写入条数。点击查看明细">
-      <span class="stat-label">抽取/h</span>
-      <div class="stat-value" id="mem-extract-rate">—</div>
-    </div>
-  </header>
-
   <!-- 专注帧 UI 已隐藏（后端 focus stack 仍在工作，给 LLM 注入上下文）。
        要恢复观察面板时把对应 HTML 还原即可——app.js 渲染逻辑保留着，靠 getElementById 返回 null 自动 no-op。 -->
 
-  <div class="stream-meta">
-    <div>
-      <div class="stream-title-text">自主行动机制 · Tick</div>
-      <div class="stream-subtitle">心跳 · 思考 · 工具</div>
-    </div>
-    <span class="pill pill-warm" id="pill-l2">流式传输</span>
-  </div>
+  <div class="l2-dashboard">
+    <section class="l2-module heartbeat-monitor" aria-labelledby="heartbeat-monitor-title">
+      <header class="panel-stats heartbeat-stats">
+        <div class="stat">
+          <span class="stat-label">状态</span>
+          <div class="stat-value live" id="conn-state"><span class="live-dot"></span>Token流</div>
+        </div>
+        <div class="stat">
+          <span class="stat-label">节点</span>
+          <div class="stat-value" id="node-count">0</div>
+        </div>
+        <div class="stat">
+          <span class="stat-label">连线</span>
+          <div class="stat-value" id="link-count">0</div>
+        </div>
+        <div class="stat">
+          <span class="stat-label">tok/s</span>
+          <div class="stat-value" id="tok-rate">—</div>
+        </div>
+        <div class="stat" id="mem-recall-stat" title="近 1 小时记忆召回次数 / 平均拉取条数。点击查看明细">
+          <span class="stat-label">召回/h</span>
+          <div class="stat-value" id="mem-recall-rate">—</div>
+        </div>
+        <div class="stat" id="mem-extract-stat" title="近 1 小时记忆抽取次数 / 平均写入条数。点击查看明细">
+          <span class="stat-label">抽取/h</span>
+          <div class="stat-value" id="mem-extract-rate">—</div>
+        </div>
+      </header>
+      <div class="l2-module-head">
+        <div>
+          <div class="l2-module-kicker">HEARTBEAT</div>
+          <h2 class="l2-module-title" id="heartbeat-monitor-title">意识心跳</h2>
+        </div>
+        <span class="heartbeat-state" id="heartbeat-state" data-state="waiting">
+          <span class="heartbeat-state-dot"></span>
+          <span id="heartbeat-state-label">等待连接</span>
+        </span>
+      </div>
+      <div class="heartbeat-chart" id="heartbeat-chart" role="img" aria-label="意识心跳实时波形">
+        <svg viewBox="0 0 320 72" preserveAspectRatio="none" aria-hidden="true">
+          <defs>
+            <linearGradient id="heartbeat-fill" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="var(--warm)" stop-opacity="0.24"></stop>
+              <stop offset="100%" stop-color="var(--warm)" stop-opacity="0"></stop>
+            </linearGradient>
+          </defs>
+          <path class="heartbeat-gridline" d="M0 36 H320"></path>
+          <path class="heartbeat-area" id="heartbeat-area"></path>
+          <path class="heartbeat-wave" id="heartbeat-wave"></path>
+        </svg>
+        <span class="heartbeat-sweep" aria-hidden="true"></span>
+      </div>
+      <div class="heartbeat-facts">
+        <span><b id="heartbeat-count">0</b> 次心跳</span>
+        <span id="heartbeat-last">等待首次 Tick</span>
+      </div>
+    </section>
 
-  <div class="stream">
-    <div class="stream-inner" id="si-l2"></div>
+    <section class="l2-module action-log-module" aria-labelledby="action-log-title">
+      <div class="l2-module-head compact">
+        <div>
+          <div class="l2-module-kicker">ACTION LOG</div>
+          <h2 class="l2-module-title" id="action-log-title">行动日志</h2>
+        </div>
+      </div>
+      <div class="action-log" id="action-log" aria-live="polite">
+        <div class="action-log-empty" id="action-log-empty">Agent 最近执行的文件、命令和工具动作会显示在这里</div>
+      </div>
+    </section>
+
+    <section class="l2-module cognition-module" aria-labelledby="cognition-title">
+      <div class="l2-module-head compact cognition-head">
+        <div>
+          <div class="l2-module-kicker">LIVE COGNITION</div>
+          <h2 class="l2-module-title" id="cognition-title">思考与工具</h2>
+        </div>
+        <span class="cognition-state" id="cognition-state" data-state="idle">空闲</span>
+      </div>
+      <div class="stream cognition-stream">
+        <div class="stream-inner" id="si-l2">
+          <div class="cognition-empty" id="cognition-empty">心跳触发后，这里会实时显示思考与工具调用</div>
+        </div>
+      </div>
+    </section>
   </div>
 </aside>
 `;
 
 const createConsole = () => `
 <section class="console" id="chat-area">
+  <div class="compact-voice-strip" id="compact-voice-strip" aria-live="polite">
+    <span class="compact-voice-indicator" aria-hidden="true"></span>
+    <span class="compact-voice-label">语音识别</span>
+    <span class="compact-voice-transcript" id="compact-voice-transcript">按住空格键开始说话</span>
+  </div>
   <div id="chat-history">
     <div id="chat-messages"></div>
   </div>
+  <div id="paste-attachments" class="paste-attachments" hidden></div>
   <div id="input-row">
     <div id="slash-menu" class="slash-menu" role="listbox" aria-label="命令" hidden></div>
     <span class="prompt-mark">▸</span>
@@ -153,8 +205,7 @@ const createConsole = () => `
 
 const createThemeSwitcher = () => `
 <div class="theme-switcher" id="theme-switcher">
-  <div class="theme-dot active" data-t="openvz" title="OpenVZ Aurora"></div>
-  <div class="theme-dot" data-t="midnight" title="Midnight Steel"></div>
+  <div class="theme-dot active" data-t="midnight" title="Midnight Steel"></div>
   <div class="theme-dot" data-t="phosphor" title="Phosphor CRT"></div>
   <div class="theme-dot" data-t="violet" title="Violet Lab"></div>
   <div class="theme-dot" data-t="rose" title="Rose Dusk"></div>
@@ -185,6 +236,7 @@ const createSettingsModal = () => `
         <button class="settings-nav-item" data-tab="voice" type="button">语音对话</button>
         <button class="settings-nav-item" data-tab="web-search" type="button">上网搜索</button>
         <button class="settings-nav-item" data-tab="security" type="button">安全沙箱</button>
+        <button class="settings-nav-item" data-tab="advanced" type="button">高级功能</button>
         <button class="settings-nav-item" data-tab="update" type="button">更新</button>
       </nav>
 
@@ -245,6 +297,10 @@ const createSettingsModal = () => `
               <label class="settings-label" for="settings-model-select">模型</label>
               <select class="settings-select" id="settings-model-select"></select>
             </div>
+            <div class="settings-row" id="settings-official-custom-model-row" style="display:none;">
+              <label class="settings-label" for="settings-official-custom-model">自定义模型名</label>
+              <input class="settings-input" id="settings-official-custom-model" type="text" placeholder="如 kimi-k2.8, gpt-5.2, glm-6" autocomplete="off" spellcheck="false">
+            </div>
             <!-- 自定义端点字段（选择"自定义端点"时显示） -->
             <div id="settings-custom-llm-section" style="display:none;">
               <div class="settings-row">
@@ -259,7 +315,7 @@ const createSettingsModal = () => `
             <div class="settings-row">
               <label class="settings-label" for="settings-llm-key">API Key</label>
               <div class="settings-secret-wrap">
-                <input class="settings-input" id="settings-llm-key" type="password" placeholder="已保存的 Key 会在这里显示" autocomplete="new-password">
+                <input class="settings-input" id="settings-llm-key" type="password" placeholder="已安全保存；如需更换请填写新 Key" autocomplete="new-password">
                 <button class="settings-secret-toggle" id="settings-llm-key-toggle" type="button" aria-label="显示 API Key" title="显示/隐藏 API Key">👁</button>
               </div>
             </div>
@@ -291,6 +347,24 @@ const createSettingsModal = () => `
                 <span class="settings-toggle-track"></span>
               </label>
               <span class="settings-feedback" id="settings-thinking-feedback"></span>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-label">上下文消息条数</div>
+            <p class="settings-hint">分别控制普通对话和 Tick 对话每轮注入的最近消息数量。范围 1–40 条，默认均为 10 条，修改后下一轮生效。</p>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-conversation-context-limit">普通对话</label>
+              <input class="settings-range" type="range" id="settings-conversation-context-limit" min="1" max="40" step="1" value="10">
+              <span class="settings-range-value" id="settings-conversation-context-limit-val">10 条</span>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-tick-context-limit">Tick 对话</label>
+              <input class="settings-range" type="range" id="settings-tick-context-limit" min="1" max="40" step="1" value="10">
+              <span class="settings-range-value" id="settings-tick-context-limit-val">10 条</span>
+            </div>
+            <div class="settings-row-action">
+              <button class="settings-save-btn" id="settings-save-context-window" type="button">保存</button>
+              <span class="settings-feedback" id="settings-context-window-feedback"></span>
             </div>
           </div>
         </div>
@@ -396,7 +470,7 @@ const createSettingsModal = () => `
         <!-- ── 语音 tab ── -->
         <div class="settings-tab" data-tab="voice">
           <div class="settings-section">
-            <div class="settings-section-label">识别模式配置</div>
+            <div class="settings-section-label">语音识别配置</div>
             <div class="settings-row">
               <label class="settings-label" for="voice-auto-key">粘贴 Key 自动识别厂商</label>
               <input class="settings-input" type="password" id="voice-auto-key" placeholder="阿里云 / 腾讯云 / 讯飞 / 火山豆包 ASR Key">
@@ -434,20 +508,11 @@ const createSettingsModal = () => `
             </div>
             <div id="voice-cred-volcengine" style="display:none;">
               <div class="settings-row">
-                <label class="settings-label" for="voice-volc-apikey">API Key（新版）</label>
-                <input class="settings-input" type="password" id="voice-volc-apikey" placeholder="留空则不修改">
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" for="voice-volc-resourceid">Resource ID</label>
-                <input class="settings-input" type="text" id="voice-volc-resourceid" placeholder="volc.bigasr.sauc.duration">
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" for="voice-volc-appkey">App Key（旧版）</label>
-                <input class="settings-input" type="password" id="voice-volc-appkey" placeholder="旧版控制台可填">
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" for="voice-volc-accesskey">Access Key（旧版）</label>
-                <input class="settings-input" type="password" id="voice-volc-accesskey" placeholder="旧版控制台可填">
+                <label class="settings-label" for="voice-volc-apikey">API Key</label>
+                <div class="settings-secret-wrap">
+                  <input class="settings-input" type="password" id="voice-volc-apikey" placeholder="输入后自动保存" autocomplete="new-password">
+                  <button class="settings-secret-toggle" id="voice-volc-apikey-toggle" type="button" aria-label="显示 API Key" title="显示/隐藏 API Key">👁</button>
+                </div>
               </div>
             </div>
             <div id="voice-cred-xunfei" style="display:none;">
@@ -463,34 +528,7 @@ const createSettingsModal = () => `
           </div>
 
           <div class="settings-section">
-            <div class="settings-section-label">通用设置</div>
-            <div class="settings-row">
-              <label class="settings-label" for="voice-lang-select">识别语言</label>
-              <select class="settings-select" id="voice-lang-select">
-                <option value="zh-CN">中文（普通话）</option>
-                <option value="en-US">English (US)</option>
-              </select>
-            </div>
-            <div class="settings-row">
-              <label class="settings-label" for="voice-mic-select">麦克风</label>
-              <select class="settings-select" id="voice-mic-select">
-                <option value="">系统默认麦克风</option>
-              </select>
-              <button class="settings-save-btn" id="voice-refresh-mics" type="button" style="padding:0 10px;">刷新</button>
-            </div>
-            <p class="settings-hint" id="voice-mic-status" style="margin-top:-2px;">更换麦克风后，重新开启语音对话生效。</p>
-            <div class="settings-row">
-              <label class="settings-label" for="voice-auto-send">识别后自动发送</label>
-              <input id="voice-auto-send" type="checkbox" checked style="width:auto;flex:none;">
-            </div>
-            <div class="settings-row">
-              <label class="settings-label" for="voice-auto-mic">启动时自动开启麦克风</label>
-              <input id="voice-auto-mic" type="checkbox" style="width:auto;flex:none;">
-            </div>
-          </div>
-
-          <div class="settings-section">
-            <div class="settings-section-label">语音灵敏度</div>
+            <div class="settings-section-label">语音识别灵敏度</div>
             <p class="settings-hint">调节麦克风触发阈值。越低越灵敏，越高越需要大声说话。默认 0.008。</p>
             <div class="settings-row">
               <label class="settings-label" for="settings-voice-threshold">触发阈值</label>
@@ -502,14 +540,6 @@ const createSettingsModal = () => `
           <div class="settings-section" id="settings-tts-section">
             <div class="settings-section-label">语音合成（TTS）</div>
             <p class="settings-hint">用语音发消息时，Agent 回复会自动转为语音播放。首选推荐豆包语音合成 2.0（https://console.volcengine.com/speech/new/），也支持 MiniMax、OpenAI、ElevenLabs、火山引擎。</p>
-            <div class="settings-row">
-              <label class="settings-label" for="voice-output-select">输出设备</label>
-              <select class="settings-select" id="voice-output-select">
-                <option value="">自动（跟随系统，避开虚拟设备）</option>
-              </select>
-              <button class="settings-save-btn" id="voice-refresh-outputs" type="button" style="padding:0 10px;">刷新</button>
-            </div>
-            <p class="settings-hint" id="voice-output-status" style="margin-top:-2px;">语音从这里发声。默认自动选择；拔耳机会自动切回扬声器，不会被串流/虚拟声卡占用。</p>
             <div class="settings-row">
               <label class="settings-label" for="tts-provider-select">服务商</label>
               <select class="settings-select" id="tts-provider-select">
@@ -539,7 +569,7 @@ const createSettingsModal = () => `
               </label>
             </div>
             <div id="tts-fx-lock" style="display:none;flex-direction:column;align-items:stretch;gap:6px;padding:8px 0 4px;">
-              <p class="settings-hint" style="margin:0;color:#e0a64d;">未来感音效需要付费，这是维持这个项目动力，请联系作者索要密码</p>
+              <p class="settings-hint" style="margin:0;color:#e0a64d;">机器人音效需要付费，这是维持这个项目动力，请联系作者索要密码</p>
               <div style="display:flex;gap:8px;align-items:center;">
                 <input class="settings-input" type="text" id="tts-fx-pw" placeholder="输入密码解锁" style="flex:1;">
                 <button class="settings-save-btn" id="tts-fx-unlock" type="button" style="padding:4px 14px;font-size:12px;">解锁</button>
@@ -565,30 +595,21 @@ const createSettingsModal = () => `
             <div id="tts-creds-doubao" style="display:none;">
               <div class="settings-row">
                 <label class="settings-label" for="tts-doubao-key">API Key</label>
-                <input class="settings-input" type="password" id="tts-doubao-key" placeholder="留空则不修改">
+                <div class="settings-secret-wrap">
+                  <input class="settings-input" type="password" id="tts-doubao-key" placeholder="已安全保存；如需更换请填写新 Key" autocomplete="new-password">
+                  <button class="settings-secret-toggle" id="tts-doubao-key-toggle" type="button" aria-label="显示 API Key" title="显示/隐藏 API Key">👁</button>
+                </div>
               </div>
               <div class="settings-row">
                 <label class="settings-label" for="tts-doubao-resource">Resource ID</label>
                 <input class="settings-input" type="text" id="tts-doubao-resource" placeholder="自动匹配，或填 seed-tts-2.0 / seed-tts-1.0">
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" for="tts-doubao-appid">AppId</label>
-                <input class="settings-input" type="text" id="tts-doubao-appid" placeholder="旧版控制台鉴权选填">
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" for="tts-doubao-access-key">Access Key</label>
-                <input class="settings-input" type="password" id="tts-doubao-access-key" placeholder="旧版控制台 Access Token，留空则不修改">
-              </div>
-              <div class="settings-row">
-                <label class="settings-label" for="tts-doubao-style">情感风格</label>
-                <input class="settings-input" type="text" id="tts-doubao-style" placeholder="可空。例：用低沉沉稳、情绪饱满带金属感的人工智能管家声音">
               </div>
               <div class="tts-fx-srow" style="margin-bottom:8px;">
                 <label for="tts-doubao-rate">语速</label>
                 <input type="range" id="tts-doubao-rate" min="-50" max="100" step="5">
                 <span id="tts-doubao-rate-val"></span>
               </div>
-              <p class="settings-hint">在<a href="https://console.volcengine.com/speech/new/" target="_blank" style="color:var(--cool)">豆包语音合成控制台</a>获取 API Key。2.0 音色使用 seed-tts-2.0；1.0/moon/BV 音色使用 seed-tts-1.0 或控制台对应资源。<br>「情感风格」用自然语言描述语气（越具体越好，短词无效），留空＝中性。要贾维斯感建议配男声（云舟 zh_male_m191_uranus_bigtts）。</p>
+              <p class="settings-hint">在<a href="https://console.volcengine.com/speech/new/" target="_blank" style="color:var(--cool)">豆包语音合成控制台</a>获取 API Key。2.0 音色使用 seed-tts-2.0；1.0/moon/BV 音色使用 seed-tts-1.0 或控制台对应资源。</p>
             </div>
 
             <div id="tts-creds-minimax" style="display:none;">
@@ -634,6 +655,41 @@ const createSettingsModal = () => `
             <div class="settings-row" style="margin-top:8px;">
               <button class="settings-save-btn" id="tts-test-btn" type="button" style="padding:4px 12px;font-size:12px;">试听</button>
               <span id="tts-test-status" style="color:var(--ink2);font-size:12px;margin-left:8px;"></span>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-label">设备设置</div>
+            <div class="settings-row">
+              <label class="settings-label" for="voice-lang-select">识别语言</label>
+              <select class="settings-select" id="voice-lang-select">
+                <option value="zh-CN">中文（普通话）</option>
+                <option value="en-US">English (US)</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="voice-mic-select">麦克风</label>
+              <select class="settings-select" id="voice-mic-select">
+                <option value="">系统默认麦克风</option>
+              </select>
+              <button class="settings-save-btn" id="voice-refresh-mics" type="button" style="padding:0 10px;">刷新</button>
+            </div>
+            <p class="settings-hint" id="voice-mic-status" style="margin-top:-2px;">更换麦克风后，重新开启语音对话生效。</p>
+            <div class="settings-row">
+              <label class="settings-label" for="voice-output-select">输出设备</label>
+              <select class="settings-select" id="voice-output-select">
+                <option value="">自动（跟随系统，避开虚拟设备）</option>
+              </select>
+              <button class="settings-save-btn" id="voice-refresh-outputs" type="button" style="padding:0 10px;">刷新</button>
+            </div>
+            <p class="settings-hint" id="voice-output-status" style="margin-top:-2px;">语音从这里发声。默认自动选择；拔耳机会自动切回扬声器，不会被串流/虚拟声卡占用。</p>
+            <div class="settings-row">
+              <label class="settings-label" for="voice-auto-send">识别后自动发送</label>
+              <input id="voice-auto-send" type="checkbox" checked style="width:auto;flex:none;">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="voice-auto-mic">启动时自动开启麦克风</label>
+              <input id="voice-auto-mic" type="checkbox" style="width:auto;flex:none;">
             </div>
           </div>
 
@@ -749,16 +805,73 @@ const createSettingsModal = () => `
             <div class="settings-section-label">工具黑名单</div>
             <p class="settings-hint">勾选后该工具将被拒绝执行，对话中 Agent 调用时会收到"已被安全策略禁用"错误。</p>
             <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="exec_command"> exec_command &nbsp;<span style="color:var(--ink2);font-size:12px;">（执行 shell 命令）</span></label></div>
-            <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="browser_read"> browser_read &nbsp;<span style="color:var(--ink2);font-size:12px;">（浏览器渲染访问）</span></label></div>
-            <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="fetch_url"> fetch_url &nbsp;<span style="color:var(--ink2);font-size:12px;">（HTTP 请求）</span></label></div>
+            <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="web_read"> web_read &nbsp;<span style="color:var(--ink2);font-size:12px;">（HTTP / Playwright 网页读取）</span></label></div>
             <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="web_search"> web_search &nbsp;<span style="color:var(--ink2);font-size:12px;">（网页搜索）</span></label></div>
-            <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="ui_show"> ui_show &nbsp;<span style="color:var(--ink2);font-size:12px;">（推送 UI 卡片 / 动态代码注入）</span></label></div>
-            <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="ui_register"> ui_register &nbsp;<span style="color:var(--ink2);font-size:12px;">（注册新 UI 组件）</span></label></div>
+            <div class="settings-row"><label class="settings-label"><input type="checkbox" class="security-blocked-tool" value="ui_set"> ui_set &nbsp;<span style="color:var(--ink2);font-size:12px;">（投影声明式界面 surface）</span></label></div>
           </div>
           <div class="settings-section settings-section-action">
             <button class="settings-save-btn" id="settings-save-security" type="button">保存</button>
             <button class="settings-save-btn hidden" id="settings-restart-security" type="button" style="width:auto;padding:0 14px;">立即重启</button>
             <span class="settings-feedback" id="settings-security-feedback"></span>
+          </div>
+        </div>
+
+        <!-- ── 高级功能 tab ── -->
+        <div class="settings-tab" data-tab="advanced">
+          <div class="settings-section">
+            <div class="settings-section-label">心跳</div>
+            <p class="settings-hint">控制 OpenVZ 是否按固定节奏自主思考。关闭后不会再自动触发 L2 心跳，但用户消息和定时提醒仍会正常处理。</p>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-heartbeat-enabled">启用心跳</label>
+              <label class="settings-toggle">
+                <input type="checkbox" id="settings-heartbeat-enabled">
+                <span class="settings-toggle-track"></span>
+              </label>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-heartbeat-interval">默认间隔</label>
+              <input class="settings-input" id="settings-heartbeat-interval" type="number" min="1" max="1440" step="1" inputmode="numeric" value="20">
+              <span class="settings-value">分钟</span>
+            </div>
+            <p class="settings-hint">可设置 1–1440 分钟，默认 20 分钟。任务、初次觉醒以及 Agent 临时调整的节奏可能使用更短间隔。</p>
+            <div class="settings-row-action">
+              <button class="settings-save-btn" id="settings-save-heartbeat" type="button">保存心跳设置</button>
+              <span class="settings-feedback" id="settings-heartbeat-feedback"></span>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-label">地图服务</div>
+            <p class="settings-hint">为台风监测、位置、行程等功能提供统一真实地图。凭证仅保存在本机加密存储中，不会写入项目源码或返回安全密钥明文。</p>
+            <div class="settings-config-row">
+              <span class="settings-config-type">状态</span>
+              <span class="settings-config-info" id="settings-map-status">正在检查…</span>
+              <span class="settings-config-dot" id="settings-map-status-dot"></span>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-map-provider">地图服务商</label>
+              <select class="settings-select" id="settings-map-provider">
+                <option value="amap">高德地图 JS API 2.0</option>
+              </select>
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-amap-key">Web 端 Key</label>
+              <input class="settings-input" id="settings-amap-key" type="password" placeholder="留空保持现有 Key 不变" autocomplete="new-password" spellcheck="false">
+            </div>
+            <div class="settings-row">
+              <label class="settings-label" for="settings-amap-security">安全密钥</label>
+              <input class="settings-input" id="settings-amap-security" type="password" placeholder="securityJsCode，留空保持不变" autocomplete="new-password" spellcheck="false">
+            </div>
+            <p class="settings-hint">请在高德开放平台创建“Web端（JS API）”Key。安全密钥只在本地代理请求中使用，地图页面无法读取其明文。</p>
+            <div class="settings-row-action" style="gap:8px;flex-wrap:wrap;">
+              <button class="settings-save-btn" id="settings-save-map" type="button">保存地图配置</button>
+              <button class="settings-save-btn" id="settings-clear-map" type="button" style="width:auto;padding:0 14px;background:transparent;border:1px solid var(--line);color:var(--ink2);">清除</button>
+              <a href="https://console.amap.com/dev/key/app" target="_blank" rel="noreferrer" class="settings-map-link">申请高德 Key ↗</a>
+              <span class="settings-feedback" id="settings-map-feedback"></span>
+            </div>
+          </div>
+          <div class="settings-section">
+            <div class="settings-section-label">共用范围</div>
+            <p class="settings-hint">配置一次后，台风监测、天气灾害、位置卡片和后续地图页面都会通过统一 MapService 使用同一地图服务。</p>
           </div>
         </div>
 
@@ -810,7 +923,9 @@ const createSettingsModal = () => `
 
 const createVoicePanel = () => `
 <div class="voice-panel" id="voice-panel">
-  <canvas id="voice-canvas" width="160" height="160"></canvas>
+  <div class="voice-canvas-card">
+    <canvas id="voice-canvas" width="160" height="160"></canvas>
+  </div>
   <div class="voice-transcript" id="voice-transcript"></div>
 </div>
 `;
@@ -965,7 +1080,7 @@ const createPanelTabs = () => `
 `;
 
 export function createBrainUiMarkup() {
-  return [
+  const viewportMarkup = [
     createGraphStage(),
     createPrimaryPanel(),
     createSecondaryPanel(),
@@ -978,10 +1093,13 @@ export function createBrainUiMarkup() {
     createImagePanel(),
     createHotspotPanel(),
     createWorldcupPanel(),
+    createTyphoonPanel(),
     createPersonCardPanel(),
     createDocPanel(),
     createWorkflowPanel(),
   ].join("\n\n");
+
+  return `${createAppTitlebar()}\n\n<main class="app-viewport">${viewportMarkup}</main>`;
 }
 
 export function renderBrainUiApp(root = document.body) {

@@ -1,14 +1,16 @@
 import OpenAI from 'openai'
-import { config, MIMO_PROVIDER, ZHIPU_PROVIDER, getProviderModelFallbacks, switchModel } from './config.js'
+import { config, MIMO_PROVIDER, ZHIPU_PROVIDER, getProviderModelFallbacks, shouldOmitSamplingForProviderModel, shouldSendThinkingDisabledForProviderModel, shouldUseMaxCompletionTokensForProviderModel, switchModel } from './config.js'
 import { executeTool } from './capabilities/executor.js'
 import { getToolSchemas } from './capabilities/schemas.js'
 import { recordUsage, shouldThrottle } from './quota.js'
 import { insertActionLog } from './db.js'
 import { isTerminalInternalToolRound } from './runtime/tool-protocol.js'
-import { stripMarkers } from './runtime/markers.js'
+import { sanitizeAssistantReplyForDelivery, createAssistantReplyStreamSanitizer } from './runtime/markers.js'
 import { beginTurn } from './runtime/turn-trace.js'
 import { createMergedAbortSignal } from './capabilities/abort-utils.js'
 import { filterStrictEvaluationTools, isToolForbiddenInStrictEvaluation, makeStrictForbiddenToolResult } from './runtime/strict-evaluation.js'
+import { streamWriteFileArgumentPreview, streamXmlFileWriteArgumentPreview } from './write-file-preview.js'
+import { actionContractToolSucceeded, containsUnsupportedCompletionClaim } from './runtime/action-contract.js'
 
 // 单轮流式调用的「空闲超时」：从开始到第一个 token、以及每两个 token 之间，
 // 若超过这个时长没有任何增量到达，判定为 provider 连接卡死（连接开着却不吐字节）。
@@ -20,7 +22,7 @@ const STREAM_IDLE_TIMEOUT_MS = 45_000
 // find_tool 命中后，把它返回的 loaded 工具 schema 原地追加进本轮 toolSchemas。
 // 已在列表里的跳过；schema 取不到的跳过。数组原地 mutate —— 调用方传的是 callLLM 的 toolSchemas
 // 引用，push 后下一轮 streamOnceWithRetry 自动带上这些新工具，模型即可直接调用。
-function injectFoundToolSchemas(result, toolSchemas, strictEvaluation = null) {
+function injectFoundToolSchemas(result, toolSchemas, strictEvaluation = null, toolPromptHints = null) {
   try {
     const parsed = JSON.parse(result)
     const loaded = parsed?.loaded
@@ -32,7 +34,7 @@ function injectFoundToolSchemas(result, toolSchemas, strictEvaluation = null) {
         console.log(`[find_tool] strict evaluation skipped forbidden tool → ${name}`)
         continue
       }
-      const schema = getToolSchemas([name])[0]
+      const schema = getToolSchemas([name], { toolPromptHints })[0]
       if (schema) {
         toolSchemas.push(schema)
         present.add(name)
@@ -63,45 +65,72 @@ function shouldEnableDeepSeekThinking(thinking) {
   return true
 }
 
-function normalizeTemperatureForProvider(temperature) {
+function normalizeTemperatureForProvider(temperature, model = config.model) {
   if (typeof temperature !== 'number') return temperature
+  if (shouldOmitSamplingForProviderModel(config.provider, model)) return undefined
   if (config.provider !== ZHIPU_PROVIDER) return temperature
   return Math.max(0, Math.min(1, Number(temperature.toFixed(2))))
 }
 
-// 单次流式调用，返回 { content, toolCalls, aborted }
-async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens, thinking = true, signal, onStream, model = config.model }) {
-  const providerTemperature = normalizeTemperatureForProvider(temperature)
+function buildChatCompletionRequestParams({ messages, toolSchemas = [], temperature, topP, maxTokens, thinking = true, model = config.model }) {
+  const providerTemperature = normalizeTemperatureForProvider(temperature, model)
   const requestParams = {
     model,
-    temperature: providerTemperature,
     messages,
     stream: true,
+  }
+  if (typeof providerTemperature === 'number') {
+    requestParams.temperature = providerTemperature
   }
   if (config.provider !== ZHIPU_PROVIDER) {
     requestParams.stream_options = { include_usage: true }
   }
 
-  if (typeof topP === 'number' && topP > 0 && config.provider !== ZHIPU_PROVIDER) requestParams.top_p = topP
+  if (
+    typeof topP === 'number'
+    && topP > 0
+    && config.provider !== ZHIPU_PROVIDER
+    && !shouldOmitSamplingForProviderModel(config.provider, model)
+  ) {
+    requestParams.top_p = topP
+  }
   if (config.provider === 'deepseek') {
     const thinkingEnabled = shouldEnableDeepSeekThinking(thinking)
     if (thinkingEnabled) {
       requestParams.reasoning_effort = 'high'
       requestParams.thinking = { type: 'enabled' }
     } else {
-      // DeepSeek 拒绝 reasoning_effort 与 thinking.type='disabled' 组合
       requestParams.thinking = { type: 'disabled' }
     }
-  } else {
-    if (!thinking) requestParams.thinking = { type: 'disabled' }
+  } else if (!thinking && shouldSendThinkingDisabledForProviderModel(config.provider, model)) {
+    requestParams.thinking = { type: 'disabled' }
   }
-  if (maxTokens) requestParams.max_tokens = maxTokens
+  if (maxTokens) {
+    if (shouldUseMaxCompletionTokensForProviderModel(config.provider, model)) {
+      requestParams.max_completion_tokens = maxTokens
+    } else {
+      requestParams.max_tokens = maxTokens
+    }
+  }
   if (toolSchemas.length > 0) {
     requestParams.tools = toolSchemas
     requestParams.tool_choice = 'auto'
     if (config.provider === ZHIPU_PROVIDER) requestParams.tool_stream = true
   }
+  return requestParams
+}
 
+// 单次流式调用，返回 { content, toolCalls, aborted }
+async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens, thinking = true, signal, onStream, model = config.model }) {
+  const requestParams = buildChatCompletionRequestParams({
+    model,
+    messages,
+    toolSchemas,
+    temperature,
+    topP,
+    maxTokens,
+    thinking,
+  })
   // ── 空闲超时（连接卡死保护）──
   // provider 连接开着却长时间不吐任何增量 = 停摆。每收到一个 chunk 就重置计时；超时则中止本轮，
   // 交给 streamOnceWithRetry 重试，避免把整个 turn 干耗到 index.js 的 180s watchdog 才被发现。
@@ -135,12 +164,28 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
   let fullContent = ''
   let fullReasoningContent = ''
   let toolCallsMap = {}
+  const writeFilePreviewStates = new Map()
+  const writeFilePreviewSession = { cleared: false }
+  const xmlWriteFilePreviewState = { session: writeFilePreviewSession }
   let inThink = false
   let thinkDone = false
   let streamStarted = false
   let usageTokens = 0
   let cacheHitTokens = 0
   let cacheMissTokens = 0
+  const textStreamSanitizer = createAssistantReplyStreamSanitizer()
+  const emitTextChunk = (rawText) => {
+    const cleanText = textStreamSanitizer.push(rawText)
+    if (!cleanText) return
+    if (!streamStarted) { onStream?.({ event: 'start', mode: 'text' }); streamStarted = true }
+    onStream?.({ event: 'chunk', text: cleanText })
+  }
+  const flushTextStream = () => {
+    const cleanText = textStreamSanitizer.flush()
+    if (!cleanText) return
+    if (!streamStarted) { onStream?.({ event: 'start', mode: 'text' }); streamStarted = true }
+    onStream?.({ event: 'chunk', text: cleanText })
+  }
 
   try {
   // create() 也放进 try：连接建立阶段就卡死时，idle 触发 → 这里抛 AbortError → 下方 catch 转成可重试的瞬时错误。
@@ -160,6 +205,7 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
 
     // 工具调用增量
     if (delta?.tool_calls) {
+      flushTextStream()
       if (streamStarted) {
         onStream?.({ event: 'end' })
         streamStarted = false
@@ -180,12 +226,15 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
           }
         }
         if (tc.function?.arguments) toolCallsMap[idx].arguments += tc.function.arguments
+        const previewState = writeFilePreviewStates.get(idx) || {}
+        previewState.session ||= writeFilePreviewSession
+        writeFilePreviewStates.set(idx, streamWriteFileArgumentPreview(toolCallsMap[idx], previewState))
       }
       continue
     }
 
     // DeepSeek reasoner 思考内容（独立字段，不在 content 里）
-    const reasoningText = delta?.reasoning_content
+    const reasoningText = delta?.reasoning_content || delta?.reasoningContent || delta?.reasoning
     if (reasoningText) {
       fullReasoningContent += reasoningText
       if (!thinkDone) {
@@ -208,6 +257,7 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
     }
 
     fullContent += text
+    streamXmlFileWriteArgumentPreview(fullContent, xmlWriteFilePreviewState)
 
     // 解析 <think> 标签流式推送
     if (!thinkDone) {
@@ -230,8 +280,7 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
           streamStarted = false
           const afterThink = fullContent.split('</think>').slice(1).join('</think>').trimStart()
           if (afterThink) {
-            onStream?.({ event: 'start', mode: 'text' }); streamStarted = true
-            onStream?.({ event: 'chunk', text: afterThink })
+            emitTextChunk(afterThink)
           }
         } else {
           if (!streamStarted) { onStream?.({ event: 'start', mode: 'think' }); streamStarted = true }
@@ -241,14 +290,14 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
       }
     }
 
-    if (!streamStarted) { onStream?.({ event: 'start', mode: 'text' }); streamStarted = true }
-    onStream?.({ event: 'chunk', text })
+    emitTextChunk(text)
   }
 
   } catch (err) {
     // 空闲超时（我们自己的看门狗触发）且调用方并未中止 —— 当作瞬时错误上抛，由 streamOnceWithRetry 重试，
     // 而不是误判成"用户中止"(aborted:true) 把本轮静默放弃。
     if (idleFired && !signal?.aborted) {
+      flushTextStream()
       if (streamStarted) onStream?.({ event: 'end' })
       const e = new Error(`stream idle timeout after ${STREAM_IDLE_TIMEOUT_MS / 1000}s`)
       e.code = 'ETIMEDOUT'
@@ -256,21 +305,24 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
       throw e
     }
     if (err.name === 'AbortError' || signal?.aborted) {
+      flushTextStream()
       if (streamStarted) onStream?.({ event: 'end' })
       return {
-        content: fullContent,
+        content: sanitizeAssistantReplyForDelivery(fullContent),
         reasoningContent: fullReasoningContent,
         toolCalls: Object.values(toolCallsMap),
         aborted: true
       }
     }
     err.hadContent = fullContent.length > 0
+    flushTextStream()
     if (streamStarted) onStream?.({ event: 'end' })
     throw err
   } finally {
     cleanupIdle()
   }
 
+  flushTextStream()
   if (streamStarted) onStream?.({ event: 'end' })
   if (usageTokens > 0) {
     recordUsage(usageTokens)
@@ -282,11 +334,15 @@ async function streamOnce({ messages, toolSchemas, temperature, topP, maxTokens,
   }
 
   return {
-    content: fullContent,
+    content: sanitizeAssistantReplyForDelivery(fullContent),
     reasoningContent: fullReasoningContent,
     toolCalls: Object.values(toolCallsMap),
     aborted: false
   }
+}
+
+export const __internals = {
+  buildChatCompletionRequestParams,
 }
 
 // 判断是否为瞬时错误（5xx / 网络抖动 / 超时），429 交给外层 setRateLimited
@@ -398,6 +454,7 @@ const PARAM_ALIASES = {
   delete_file: { file: 'path', filename: 'path' },
   exec_command: { cmd: 'command', shell: 'command', bg: 'background' },
   web_search: { q: 'query', keyword: 'query', keywords: 'query', search: 'query' },
+  web_read: { link: 'url', href: 'url', uri: 'url' },
   fetch_url: { link: 'url', href: 'url', uri: 'url' },
   browser_read: { link: 'url', href: 'url', uri: 'url' },
   search_memory: { q: 'keyword', query: 'keyword', term: 'keyword' },
@@ -436,11 +493,22 @@ function parseXmlToolCalls(content) {
 }
 
 
+const SENSITIVE_TOOL_ARG_KEY_RE = /(?:api[_-]?key|apikey|access[_-]?key|secret|token|password|authorization|bearer|credential)/i
+const SECRET_LIKE_VALUE_RE = /\b(?:sk|ak|ark|rk|pk|ghp|github_pat|xox[abprs])-[-A-Za-z0-9_.]{10,180}\b/gi
+
+function redactToolPreviewText(value, max = 80) {
+  return String(value ?? '')
+    .replace(/\bBearer\s+[^\s,;]+/gi, 'Bearer [redacted]')
+    .replace(/((?:api[_-]?key|apikey|access[_-]?key|secret|token|password|authorization|credential)\s*[=:]\s*)[^\s,;&]+/gi, '$1[redacted]')
+    .replace(SECRET_LIKE_VALUE_RE, '[redacted]')
+    .slice(0, max)
+}
+
 function formatToolArgPreview(args = {}) {
   return Object.entries(args)
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
     .slice(0, 3)
-    .map(([key, value]) => `${key}=${String(value).slice(0, 80)}`)
+    .map(([key, value]) => `${key}=${SENSITIVE_TOOL_ARG_KEY_RE.test(key) ? '[redacted]' : redactToolPreviewText(value)}`)
     .join(', ')
 }
 
@@ -453,11 +521,13 @@ function summarizeToolCall(name, args = {}) {
     case 'list_dir':
       return `list_dir(${args.path || args.dir || args.directory || '.'})`
     case 'web_search':
-      return `web_search(${String(args.query || args.q || args.keyword || '?').slice(0, 80)})`
+      return `web_search(${redactToolPreviewText(args.query || args.q || args.keyword || '?')})`
+    case 'web_read':
+      return `web_read(${redactToolPreviewText(args.url || args.link || args.href || '?')})`
     case 'fetch_url':
-      return `fetch_url(${String(args.url || args.link || args.href || '?').slice(0, 80)})`
+      return `fetch_url(${redactToolPreviewText(args.url || args.link || args.href || '?')})`
     case 'browser_read':
-      return `browser_read(${String(args.url || args.link || args.href || '?').slice(0, 80)})`
+      return `browser_read(${redactToolPreviewText(args.url || args.link || args.href || '?')})`
     case 'search_memory': {
       if (Array.isArray(args.keywords)) {
         return `search_memory([${args.keywords.slice(0, 4).map(k => String(k).slice(0, 20)).join(', ')}])`
@@ -487,7 +557,7 @@ function summarizeToolCall(name, args = {}) {
     case 'make_dir':
       return `make_dir(${args.path || args.dir || args.directory || '?'})`
     case 'exec_command':
-      return `exec_command(${String(args.command || args.cmd || '?').slice(0, 80)})`
+      return `exec_command(${redactToolPreviewText(args.command || args.cmd || '?')})`
     default: {
       const preview = formatToolArgPreview(args)
       return preview ? `${name}(${preview})` : name
@@ -497,9 +567,81 @@ function summarizeToolCall(name, args = {}) {
 
 function buildToolLogDetail(args = {}, result = '') {
   const argPreview = formatToolArgPreview(args)
-  const resultPreview = String(result || '').replace(/\s+/g, ' ').trim().slice(0, 180)
+  const resultPreview = redactToolPreviewText(String(result || '').replace(/\s+/g, ' ').trim(), 180)
   if (argPreview && resultPreview) return `${argPreview} | ${resultPreview}`
   return argPreview || resultPreview
+}
+
+function makeDeferredOutboundResult(args = {}, latestOutbound = null) {
+  const target = String(args.target_id || '')
+  const sent = latestOutbound
+    ? `The immediately preceding message to ${latestOutbound.targetId} was delivered at ${latestOutbound.sentAt}: “${latestOutbound.content.slice(0, 240)}”`
+    : 'A preceding outbound message in this same model response was delivered.'
+  return JSON.stringify({
+    ok: false,
+    tool: 'send_message',
+    skipped: 'outbound_reconsideration_required',
+    target_id: target,
+    reason: `${sent} This additional message was planned before that delivery result existed, so it was not sent. Read the delivered-message fact and make a fresh, context-based decision in the next step; silence is the correct choice when nothing materially changed.`,
+  })
+}
+
+const TICK_EVIDENCE_EXCLUDED_TOOLS = new Set([
+  'send_message', 'express', 'set_tick_interval', 'set_task', 'complete_task',
+  'recall_memory', 'search_memory', 'probe_memory', 'find_tool',
+  'upsert_memory', 'skip_recognition', 'skip_consolidation', 'ui_set', 'voice_retire',
+])
+
+function toolAddsTickEvidence(name, result) {
+  return !TICK_EVIDENCE_EXCLUDED_TOOLS.has(name) && !isToolFailure(result)
+}
+
+function buildTickRoundContext(tickState, toolRound) {
+  if (!tickState) return ''
+  const elapsedSeconds = Math.max(0, Math.floor((Date.now() - tickState.startedAtMs) / 1000))
+  const lines = [
+    `[outer heartbeat] TICK #${tickState.number} (${tickState.id}) is still active.`,
+    `This is internal tool-loop round ${toolRound}, not heartbeat #${toolRound}. No new scheduler heartbeat has occurred; ${elapsedSeconds}s have elapsed continuously inside this one TICK.`,
+    `Evidence revision in this TICK: ${tickState.evidenceVersion}. Tool results can be evidence, but they never create another heartbeat or make 10 seconds pass.`,
+  ]
+  if (tickState.outboundByTarget.size) {
+    lines.push('Messages already delivered in this same TICK:')
+    for (const item of tickState.outboundByTarget.values()) {
+      lines.push(`- to ${item.targetId}, tool-loop round ${item.toolRound}, evidence revision ${item.evidenceVersion}: "${item.content.slice(0, 260)}"`)
+    }
+    lines.push('Do not relabel a tool-loop round as the next heartbeat. Another message to the same recipient requires concrete new evidence after the earlier delivery; otherwise conclude silently.')
+  }
+  return lines.join('\n')
+}
+
+function makeSameTickNoEvidenceResult(args = {}, previousOutbound = null, tickState = null) {
+  const previous = previousOutbound
+    ? `A message to ${previousOutbound.targetId} was already delivered in tool-loop round ${previousOutbound.toolRound}: "${previousOutbound.content.slice(0, 240)}".`
+    : 'A message to this recipient was already delivered in the current TICK.'
+  return JSON.stringify({
+    ok: false,
+    tool: 'send_message',
+    skipped: 'same_tick_no_new_evidence',
+    target_id: String(args.target_id || ''),
+    tick_id: tickState?.id || '',
+    reason: `${previous} This is still the same outer TICK, not a later heartbeat. No qualifying new tool evidence has appeared since that delivery, so this message was not sent. End silently or first obtain and assess new evidence.`,
+  })
+}
+
+function buildPostSendNudge(outboundMessages = [], tickState = null) {
+  const latest = outboundMessages.at(-1)
+  if (!latest) {
+    return 'Message sent. Default action: end the round now. Do not send another message unless genuinely new substantive information appears.'
+  }
+  return [
+    'Communication reality check:',
+    `You have already delivered this message to ${latest.targetId} at ${latest.sentAt}:`,
+    `“${latest.content.slice(0, 500)}”`,
+    tickState ? `This is still outer TICK #${tickState.number}; the send happened in tool-loop round ${latest.toolRound}.` : '',
+    'The successful tool result means the message was received and shown to the user. If the user has not replied, that is only a pause; do not reinterpret silence as a missed or failed delivery, and do not retry the message for that reason.',
+    'Treat that delivery as a completed fact, not an unfinished task. Compare the current evidence with what the recipient already knows before considering another message.',
+    'Default action: end the round silently. Only send again if new external evidence, task progress, risk, or a new user message makes another message useful to the recipient.',
+  ].filter(Boolean).join('\n')
 }
 
 function shouldPersistActionLog(toolName) {
@@ -511,7 +653,7 @@ function shouldPersistActionLog(toolName) {
 // 文本标记后返回正文。内容本身不做客套裁剪 / 行去重 / 改写。
 function stripProtocolMarkersForDelivery(text) {
   // 单一真相源：src/runtime/markers.js。剥离语义（含末尾 trim）与原正则完全一致。
-  return stripMarkers(text)
+  return sanitizeAssistantReplyForDelivery(text)
 }
 
 const TOOL_LOOP_LIMITS = {
@@ -535,13 +677,14 @@ const HIGH_RISK_TOOLS = new Set([
   'exec_command',
   'kill_process',
   'web_search',
+  'web_read',
   'fetch_url',
   'browser_read',
+  'browser_act',
   'speak',
   'generate_lyrics',
   'generate_music',
   'generate_image',
-  'ui_register',
 ])
 
 function stableStringify(value) {
@@ -563,7 +706,9 @@ function isHighRiskTool(name) {
 const PARALLEL_SAFE_TOOLS = new Set([
   'read_file',
   'list_dir',
+  'browser_sessions',
   'web_search',
+  'web_read',
   'fetch_url',
   'browser_read',
   'search_memory',
@@ -610,8 +755,8 @@ const REPORT_CHANNEL_TOOLS = new Set(['send_message', 'express'])
 // 这些工具一旦被调用，就由运行时在执行前替它"应一声"——一个 turn 只发一次（见 callLLM 的
 // ackSent）。只覆盖真正会让人等的工具；秒回的普通问答不在此列，避免把简单对话变啰嗦。
 const SLOW_ACK_TOOLS = new Set([
-  'generate_video', 'generate_image', 'generate_music', 'generate_lyrics',
-  'web_search', 'fetch_url', 'browser_read', 'deep_research', 'exec_command',
+  'generate_image', 'generate_music', 'generate_lyrics',
+  'web_search', 'web_read', 'fetch_url', 'browser_read', 'deep_research', 'exec_command',
 ])
 function isSlowAckTool(name, args) {
   if (name === 'music') return String(args?.action || '').trim() === 'download'  // 仅下载慢；search/list 秒回
@@ -623,9 +768,8 @@ function slowAckText(name, args) {
     return s ? `在找《${s}》了，稍等一下～` : '在找了，稍等一下～'
   }
   if (name === 'generate_image') return '在画了，稍等一下～'
-  if (name === 'generate_video') return '在生成视频了，稍等一下～'
   if (name === 'generate_music' || name === 'generate_lyrics') return '在创作了，稍等一下～'
-  if (name === 'web_search' || name === 'fetch_url' || name === 'browser_read' || name === 'deep_research') {
+  if (name === 'web_search' || name === 'web_read' || name === 'fetch_url' || name === 'browser_read' || name === 'deep_research') {
     const q = String(args?.query || args?.q || args?.url || '').trim()
     return q ? `我查一下「${q.length > 30 ? q.slice(0, 30) + '…' : q}」～` : '我查一下～'
   }
@@ -768,9 +912,11 @@ function isCloserPattern(content) {
 //   refresh agent 的上下文"，**不**期望模型回复用户。当 silentSignal=true 时，
 //   runtime 直接拦截 send_message 调用（不让它真投递），并在工具结果里告知
 //   "本轮是 silent 系统信号，不要 send_message"，让模型从这次拒绝里学到边界。
-export async function callLLM({ systemPrompt, message, messages: inputMessages = null, temperature = 0.5, topP = 0.9, tools = [], maxTokens, thinking = true, signal, onToolCall, onToolExecute, onStream, onRetry, toolContext = {}, mustReply = false, silentSignal = false, localReply = false, _streamOnceForTest = null }) {
+export async function callLLM({ systemPrompt, message, messages: inputMessages = null, temperature = 0.5, topP = 0.9, tools = [], maxTokens, thinking = true, signal, onToolCall, onToolExecute, onStream, onRetry, toolContext = {}, mustReply = false, silentSignal = false, localReply = false, _streamOnceForTest = null, _executeToolForTest = null }) {
   const strictEvaluation = toolContext?.strictEvaluation || null
-  const toolSchemas = getToolSchemas(filterStrictEvaluationTools(tools, strictEvaluation))
+  const toolPromptHints = toolContext?.toolPromptHints || null
+  const actionContract = toolContext?.actionContract || null
+  const toolSchemas = getToolSchemas(filterStrictEvaluationTools(tools, strictEvaluation), { toolPromptHints })
 
   // 本地渠道（语音 / TUI）下纯文本即回复：模型直接产出 text 就算回复，runtime 协议兜底会替它
   // 真正投递（含语音 TTS）。社交渠道（微信/Discord/飞书/企微）必须显式 send_message 才能送达外部平台。
@@ -780,6 +926,22 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   const deliverInstruction = localReply
     ? 'give the user your final reply now as plain text — in this local channel your message text reaches the user directly (and is spoken aloud on voice), you do NOT need to call send_message'
     : 'call send_message now to deliver your final reply to the user'
+
+  // Only a user-authored turn has a plain-text reply body by protocol. During a
+  // heartbeat, ordinary text is private working output; the model must call
+  // send_message when it independently decides to communicate. Do not infer
+  // external intent from heartbeat prose or manufacture a fallback send.
+  const allowPlainTextFallback = Boolean(mustReply && toolContext?.outputContract !== 'explicit_send_only')
+  const runTool = _executeToolForTest || executeTool
+  const tickState = toolContext?.tickContext
+    ? {
+        id: String(toolContext.tickContext.id || 'tick'),
+        number: Number(toolContext.tickContext.number) || 0,
+        startedAtMs: Number(toolContext.tickContext.startedAtMs) || Date.now(),
+        evidenceVersion: 0,
+        outboundByTarget: new Map(),
+      }
+    : null
 
   const messages = Array.isArray(inputMessages) && inputMessages.length > 0
     ? inputMessages.map(item => ({ ...item }))
@@ -804,6 +966,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
     silentSignal,
     localReply,
     mustReply,
+    outputContract: toolContext?.outputContract || (mustReply ? 'user_reply' : 'internal'),
     tools,
   })
 
@@ -816,6 +979,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   let lastToolResult = null
   let sawToolCall = false
   let sentMessage = false
+  let toolDeliveredFinalReply = false
   // delivered 语义：本次 callLLM 调用中是否**真正投递过**至少一条回复给用户。
   //   = 「≥1 次未被 silent / closer 拦截、且未熔断的 send_message 执行过」。
   //   这是"用户到底有没有收到实质回复"的**单一权威信号**，调用方不准再从 toolCallLog 二次推导。
@@ -825,6 +989,13 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   let finalNudgeUsed = false
   let plainTextReplyNudgeUsed = false
   let emptyReplyNudgeUsed = false
+  // `delivered` only means the reply reached a person. These two flags carry
+  // the separate question: did a real tool produce evidence for the requested
+  // external effect?
+  let actionContractSatisfied = false
+  let actionContractAttempted = false
+  let actionContractNudgeCount = 0
+  let actionClaimNudgeUsed = false
   // 层 3：本 turn 是否已发过"不确定回退"软检查点（一 turn 一次，见 buildUncertaintyCheckpointNudge）。
   let uncertaintyNudgeUsed = false
   const toolLoopState = createToolLoopState()
@@ -836,6 +1007,10 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   // 模式）+ "已发实质消息"前置条件（length>=15 且非 closer）控制——纯短回复"好的"/"已开"
   // 不命中 pattern，不会被误拦。
   const turnSendHistory = new Map()
+  // Facts about messages that were actually delivered in this callLLM run. These
+  // are injected after every tool round so the next model decision starts from
+  // reality rather than from an intention to send.
+  const outboundMessages = []
   // 本 turn 是否已替模型"应过一声"（耗时工具即时回应）——保证一个 turn 只发一次。
   let ackSent = false
   // 本 turn 是否播放过音乐/视频——之后模型补的播放确认短收尾会被改成单个表情（"放好不用说"，
@@ -848,6 +1023,9 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   for (let round = 0; round < TOOL_LOOP_LIMITS.maxRounds; round++) {
     throwIfAborted(signal)
 
+    if (tickState) {
+      messages.push({ role: 'user', content: buildTickRoundContext(tickState, round) })
+    }
     // 本轮开始时 messages 的长度 = 本轮模型看到的上下文边界。messages 在一个 turn 内严格
     // append-only，所以前端用 final messages.slice(0, inputOffset) 即可精确还原"本轮看到了什么"。
     const roundInputOffset = messages.length
@@ -925,6 +1103,44 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
 
     // 无工具调用：本轮结束；若工具后空回复，再补一轮明确的最终回复指令。
     if (effectiveToolCalls.length === 0) {
+      // Do not infer an action from prose.  A clear action request carries a
+      // narrow contract from runTurn, and it is satisfied only by a successful
+      // matching tool result.  This deliberately runs before the normal local
+      // plain-text fast path so TUI/voice cannot turn “我已经做好了” into the
+      // only observable outcome.
+      if (mustReply && actionContract && !actionContractSatisfied && !actionContractAttempted) {
+        if (actionContractNudgeCount < 2) {
+          const draft = allContent.trim()
+          if (content) messages.push({ role: 'assistant', content })
+          allContent = ''
+          actionContractNudgeCount += 1
+          messages.push({
+            role: 'user',
+            content: `This user explicitly asked you to ${actionContract.label}. No matching action has actually run. Text, plans, promises, and send_message do NOT satisfy this request. Call one appropriate real action tool now: ${actionContract.requiredTools.join(', ')}. Only after a successful tool result may you say the action is complete. If the action truly cannot be performed, make one relevant attempt and then explain the concrete blocker. Do not repeat this instruction or quote the draft to the user.${INTERNAL_NUDGE_SUFFIX}`,
+          })
+          continue
+        }
+
+        // The provider kept declining to issue an action call. Do not release
+        // its completion-sounding draft as if it were a result.
+        allContent = `我还没有完成「${actionContract.label}」：本轮没有发起所需的实际操作。`
+        break
+      }
+
+      // A matching tool was attempted but failed. A model is allowed to report
+      // that failure, but it must not turn the error into a success claim.
+      if (mustReply && actionContract && actionContractAttempted && !actionContractSatisfied
+          && containsUnsupportedCompletionClaim(allContent) && !actionClaimNudgeUsed) {
+        if (content) messages.push({ role: 'assistant', content })
+        allContent = ''
+        actionClaimNudgeUsed = true
+        messages.push({
+          role: 'user',
+          content: `The requested action (${actionContract.label}) has no successful tool evidence. Your previous wording sounded like completion. Reply truthfully from the tool result: state the failure or limitation, and do not say it is done/created/saved/opened/installed/executed.${INTERNAL_NUDGE_SUFFIX}`,
+        })
+        continue
+      }
+
       // 用户消息回复但只产出了 plain text，完全没调任何工具（包括 send_message）。
       //
       // 与 finalNudge 的区别：finalNudge 处理"调过工具但最后没补 send_message"（sawToolCall=true），
@@ -1008,10 +1224,12 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         console.log(`[工具警告] ${tc.name} 参数为空`)
       }
       let result
+      let outboundSent = false
       let closerSuppressed = false
       let silentSignalSuppressed = false
       let mediaCloserSuppressed = false
       let strictSuppressed = false
+      let actionContractSendSuppressed = false
       if (stopReason) {
         result = makeToolLoopStoppedResult(tc.name, stopReason)
         console.log(`[工具熔断] ${tc.name}: ${stopReason}`)
@@ -1025,6 +1243,14 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         recordToolLoopOutcome(toolLoopState, tc.name, fingerprint, result)
         console.log(`[strict evaluation] 拦截 forbidden tool ${tc.name}`)
       } else {
+        const priorTickOutbound = tc.name === 'send_message'
+          ? tickState?.outboundByTarget.get(normalizedArgs.target_id)
+          : null
+        if (priorTickOutbound && priorTickOutbound.evidenceVersion === tickState.evidenceVersion) {
+          result = makeSameTickNoEvidenceResult(normalizedArgs, priorTickOutbound, tickState)
+          recordToolLoopOutcome(toolLoopState, tc.name, fingerprint, result)
+          console.log(`[same TICK outbound] blocked repeat to ${normalizedArgs.target_id} without new evidence`)
+        } else {
         // Silent system signal 拦截：本轮是 silent APP_SIGNAL（如 confirm_security_change /
         //   cancel_security_change / app:saveState 等），系统只是在悄悄 refresh agent 上下文，
         //   不期望模型回复用户。模型如果违反这个约束调 send_message → 直接拒绝，让它从工具
@@ -1063,7 +1289,24 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           }
         }
 
-        if (silentSignalSuppressed) {
+        // On external channels send_message is itself a side effect, and used
+        // to let a premature “done” message terminate the whole agent loop.
+        // Suppress it until the requested action has evidence; after a failed
+        // attempt, allow only an honest failure report.
+        const actionContractBlocksSend = tc.name === 'send_message'
+          && actionContract
+          && !actionContractSatisfied
+          && (!actionContractAttempted || containsUnsupportedCompletionClaim(normalizedArgs.content))
+        if (actionContractBlocksSend) {
+          actionContractSendSuppressed = true
+          result = JSON.stringify({
+            ok: false,
+            tool: 'send_message',
+            skipped: 'action_contract_unmet',
+            reason: `The requested action (${actionContract.label}) has no successful matching tool result. Do the action first; do not send a completion claim as a substitute.`,
+          })
+          console.log(`[action contract] suppressed premature send_message for ${actionContract.id}`)
+        } else if (silentSignalSuppressed) {
           result = JSON.stringify({
             ok: false,
             tool: 'send_message',
@@ -1103,7 +1346,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
             ackSent = true
             try {
               const ackArgs = { target_id: toolContext.currentTargetId, content: slowAckText(tc.name, normalizedArgs) }
-              const ackResult = await executeTool('send_message', ackArgs, { ...toolContext, signal, source: 'ack' })
+              const ackResult = await runTool('send_message', ackArgs, { ...toolContext, signal, source: 'ack' })
               // 关键：ack 不置 delivered。ack 是"承诺稍后汇报"，不是汇报本身——
               // 把它当投递会让文末兜底（!delivered 守卫）跳过，模型生成的最终汇报被静默丢弃。
               // 实测（2026-06-10 排障四连静默）：r19 已生成完整收尾汇报，因 ack 置了 delivered
@@ -1117,14 +1360,50 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
           }
           // 真正开始执行前通知 UI —— 让用户知道当前停留在哪一步的工具上
           onToolExecute?.(tc.name, normalizedArgs)
-          result = await executeTool(tc.name, normalizedArgs, { ...toolContext, signal })
+          result = await runTool(tc.name, normalizedArgs, { ...toolContext, signal })
+          if (actionContract?.requiredTools?.includes(tc.name)) {
+            actionContractAttempted = true
+            if (actionContractToolSucceeded(actionContract, tc.name, result)) {
+              actionContractSatisfied = true
+            }
+          }
+          let deliveredByToolResult = false
+          try {
+            const parsedResult = JSON.parse(String(result || '{}'))
+            deliveredByToolResult = parsedResult?.delivered === true && parsedResult?.message_sent === true
+          } catch {}
           recordToolLoopOutcome(toolLoopState, tc.name, fingerprint, result)
+          if (tickState && toolAddsTickEvidence(tc.name, result)) {
+            tickState.evidenceVersion += 1
+          }
           // 单一权威：一次未被 silent/closer 拦截、未熔断的 send_message 真正执行过 →
           //   用户确实收到了回复。这是 delivered 唯一被置 true 的地方（除文末协议兜底外）。
-          if (tc.name === 'send_message' && !strictSuppressed) delivered = true
+          if (tc.name === 'send_message' && !strictSuppressed && !isToolFailure(result)) delivered = true
+          outboundSent = tc.name === 'send_message'
+            && !strictSuppressed
+            && !silentSignalSuppressed
+            && !closerSuppressed
+          && !mediaCloserSuppressed
+          && !isToolFailure(result)
+          if (outboundSent) {
+            const outbound = {
+              targetId: String(normalizedArgs.target_id || ''),
+              content: String(normalizedArgs.content || ''),
+              sentAt: new Date().toISOString(),
+              toolRound: round,
+              evidenceVersion: tickState?.evidenceVersion ?? 0,
+            }
+            outboundMessages.push(outbound)
+            if (tickState && outbound.targetId) tickState.outboundByTarget.set(outbound.targetId, outbound)
+          }
+          if (deliveredByToolResult && !strictSuppressed) {
+            delivered = true
+            toolDeliveredFinalReply = true
+          }
           // find_tool 动态装载：把搜到的工具 schema 当场注入本轮 toolSchemas（数组原地 push，
           // 下一轮 streamOnceWithRetry 即带上），模型下一步就能直接调用搜出来的工具。
-          if (tc.name === 'find_tool') injectFoundToolSchemas(result, toolSchemas, strictEvaluation)
+          if (tc.name === 'find_tool') injectFoundToolSchemas(result, toolSchemas, strictEvaluation, toolPromptHints)
+        }
         }
       }
       throwIfAborted(signal)
@@ -1134,11 +1413,17 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       // 这样 line ~641 的"沉默退出 nudge"才能在该补刀时正确触发。
       // 被 closer dedup 拦截的 send_message 也算 sentMessage=true（最后一个动作意图是
       // 发消息，主回复已经发过——下一轮注入 "默认结束本轮" nudge 是合适的）。
-      if (tc.name === 'send_message' && !strictSuppressed) {
+      let deliveredByToolResultForTurn = false
+      try {
+        const parsedResult = JSON.parse(String(result || '{}'))
+        deliveredByToolResultForTurn = parsedResult?.delivered === true && parsedResult?.message_sent === true
+      } catch {}
+      if ((tc.name === 'send_message' || deliveredByToolResultForTurn) && !strictSuppressed && !actionContractSendSuppressed) {
         sentMessage = true
         // 仅对真实发出的（未被 dedup 拦截的）send_message 记录到 turn 历史，避免被拦截的
         // closer / silent signal / media-closer 反过来污染后续判断（已经被拦截的就当没发生）。
-        if (!closerSuppressed && !silentSignalSuppressed && !mediaCloserSuppressed) {
+        if (!closerSuppressed && !silentSignalSuppressed && !mediaCloserSuppressed
+            && (deliveredByToolResultForTurn || (tc.name === 'send_message' && !isToolFailure(result)))) {
           const target = normalizedArgs.target_id
           const content = String(normalizedArgs.content || '')
           if (target) {
@@ -1170,11 +1455,19 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       console.log(`[工具结果] ${tc.name}: ${result.slice(0, 100)}`)
       if (onToolCall) onToolCall(tc.name, normalizedArgs, result)
       lastToolResult = { name: tc.name, args: normalizedArgs, result }
-      return { id: tc.id, name: tc.name, args: normalizedArgs, result, stopReason }
+      return { id: tc.id, name: tc.name, args: normalizedArgs, result, stopReason, outboundSent }
     }
 
+    const deferredOutboundTargets = new Set()
     for (let callIndex = 0; callIndex < effectiveToolCalls.length;) {
       const firstPrepared = prepareToolCall(effectiveToolCalls[callIndex])
+      if (firstPrepared.tc.name === 'send_message' && deferredOutboundTargets.has(firstPrepared.normalizedArgs.target_id)) {
+        const result = makeDeferredOutboundResult(firstPrepared.normalizedArgs, outboundMessages.at(-1))
+        toolResults.push({ id: firstPrepared.tc.id, name: firstPrepared.tc.name, result })
+        if (onToolCall) onToolCall(firstPrepared.tc.name, firstPrepared.normalizedArgs, result)
+        callIndex += 1
+        continue
+      }
       const canParallelize = isParallelSafeTool(firstPrepared.tc.name, firstPrepared.normalizedArgs)
       const remainingBudget = TOOL_LOOP_LIMITS.maxTotalCalls - toolLoopState.totalCalls
 
@@ -1205,12 +1498,14 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         } else {
           const result = await runPreparedToolCall(firstPrepared)
           toolResults.push({ id: result.id, name: result.name, result: result.result })
+          if (result.outboundSent) deferredOutboundTargets.add(result.args.target_id)
           toolLoopStopReason = result.stopReason
           callIndex += 1
         }
       } else {
         const result = await runPreparedToolCall(firstPrepared)
         toolResults.push({ id: result.id, name: result.name, result: result.result })
+        if (result.outboundSent) deferredOutboundTargets.add(result.args.target_id)
         toolLoopStopReason = result.stopReason
         callIndex += 1
       }
@@ -1227,6 +1522,14 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       }
     }
     throwIfAborted(signal)
+    if (toolDeliveredFinalReply) {
+      return {
+        content: '',
+        toolResult: lastToolResult,
+        aborted: signal?.aborted ?? false,
+        delivered: true,
+      }
+    }
 
     // 将本轮 assistant 消息（含工具调用）加入对话
     // 若是 XML 解析的工具调用，assistant 消息用文本形式（避免 MiniMax 不支持 tool_calls 格式回放）
@@ -1244,7 +1547,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         messages.push({
           role: 'user',
           content: sentMessage
-            ? `Tool execution results:\n${resultSummary}\n\nMessage sent. Default action: end the round now — to end, just stop: emit no further tool call and no text.\n\nDo NOT send a second message just to add a closing pleasantry ("有需要随时叫我", "希望对你有帮助"), a follow-up check ("还有什么需要吗"), or to restate your reply — those are pure noise. Do NOT narrate your decision to stop either: "已经回复过了，不需要再发" / "安静等待" is internal reasoning, not a message — never send it. Only call send_message again if there is genuinely NEW substantive information the user does not yet know.`
+            ? `Tool execution results:\n${resultSummary}\n\n${buildPostSendNudge(outboundMessages, tickState)}`
             : toolLoopStopReason
               ? buildToolLoopStopNudge(toolLoopStopReason, lastToolResult)
               : `Tool execution results:\n${resultSummary}\n\nContinue completing the task. If this is a user message and the information is sufficient, ${deliverInstruction}. If a tool failed, explain the failure and available clues; do not end silently.`,
@@ -1288,7 +1591,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
         // 仅保留"工具结果回来后补刀"和"不同收件人"的合法口子。
         messages.push({
           role: 'user',
-          content: 'Message sent. Default action: end the round now — to end, just stop: emit no further tool call and no text.\n\nDo NOT send a second message just to add a closing pleasantry ("有需要随时叫我", "希望对你有帮助", "祝你...好"), a follow-up check ("还有什么需要吗", "明白了吗"), or to restate what you already said. Those are pure noise — the user sees them as filler and the conversation degrades.\n\nAbove all, do NOT narrate your own decision to stop. Lines like "已经和用户打过招呼了，不需要再发第二条" / "安静等待" / "I\'ll stay quiet now" are INTERNAL REASONING, not messages — they belong in your thinking and must never be sent through send_message or written as a reply. If you have decided not to reply, the correct way to express that is to send nothing at all.\n\nOnly call send_message again if you have genuinely NEW substantive information the user does not yet know — e.g., a tool result that came back after your reply and materially changes the answer, or a different recipient that also needs to hear from you.',
+          content: buildPostSendNudge(outboundMessages, tickState),
         })
       } else if (mustReply) {
         // 层 3：步数跨过阈值仍未投递 → 先插一次"不确定回退"软检查点，引导退一步重审计划，
@@ -1317,8 +1620,8 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   // 模型产出了可投递的回复文本，但整轮从未真正执行过 send_message（delivered=false），
   // 且本轮要求回复用户（mustReply 且非 silent 信号）。此时由 runtime 代为投递——
   // 关键：走**真正的 send_message 执行器**（executeTool），从而复用 executor 里的
-  //   findRecentJarvisDuplicate 去重 / open_question 检测 / dispatchSocialMessage 社交派发，
-  //   不再像旧的 index.js fallback 那样手工重做副作用却漏掉这些安全检查。
+  //   open_question 检测 / dispatchSocialMessage 社交派发，
+  //   不再像旧的 index.js fallback 那样手工重做副作用却漏掉这些通道逻辑。
   // 硬不变量：
   //   #1 silent 轮绝不投递 —— !silentSignal 守卫。
   //   #4 不双发 —— 仅 !delivered 时触发；一旦投出立刻 delivered=true，index.js 不会再补。
@@ -1330,7 +1633,7 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
   // send_message 时卡死被 watchdog 掐），这条答案不应凭空丢掉——「你有意识吗」事故就是这么蒸发的。
   // 此时原 signal 已废，复用它会让 send_message 立刻 AbortError 失败，所以中断兜底改走一条全新的、
   // 带 30s 超时的干净 signal，确保已生成的答案仍能送达。
-  if (mustReply && !silentSignal && !delivered) {
+  if (allowPlainTextFallback && !silentSignal && !delivered) {
     // 内容来源：优先本轮累积的 allContent；若它已被 nudge 清空（草稿挪进了 messages），
     // 退回 salvageableReply —— 这正是中断/卡死时把"已生成但没发出"的答案救回来的关键。
     let fallbackContent = stripProtocolMarkersForDelivery(allContent.trim() ? allContent : salvageableReply)
@@ -1361,11 +1664,11 @@ export async function callLLM({ systemPrompt, message, messages: inputMessages =
       try {
         const fbArgs = { target_id: fallbackTarget, content: fallbackContent }
         // source:'fallback' 让 tool-audit 把这条 action_log 标记为协议兜底（不变量 #8）。
-        const fbResult = await executeTool('send_message', fbArgs, { ...toolContext, signal: fbSignal, source: 'fallback' })
+        const fbResult = await runTool('send_message', fbArgs, { ...toolContext, signal: fbSignal, source: 'fallback' })
         // 兜底也是"真正执行过的 send_message"：置 delivered，并触发与正常路径同样的
         //   onToolCall 回调（语音渠道自动 TTS、UI tool_call 事件、toolCallLog 登记都在那里）。
         //   __fallback 标记仅给 onToolCall 用于遥测分类；executeTool 收到的是干净的 fbArgs。
-        delivered = true
+        delivered = !isToolFailure(fbResult)
         lastToolResult = { name: 'send_message', args: fbArgs, result: fbResult }
         if (onToolCall) onToolCall('send_message', { ...fbArgs, __fallback: true }, fbResult)
       } catch (err) {

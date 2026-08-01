@@ -1,28 +1,105 @@
 name: CI
 
-# 每次 push / PR 跑：工作流引擎单测 + 关键文件语法检查。
-# 引擎单测是纯 Node（无外部依赖、无网络），所以不需要 npm install，秒级完成。
 on:
   push:
-    branches: [main]
+    branches: [main, 'agent/**']
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  test:
+  core:
+    name: ${{ matrix.label }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: Linux x64
+            os: ubuntu-latest
+          - label: Windows 10/11 x64
+            os: windows-2025
+          - label: macOS Intel x64
+            os: macos-15-intel
+          - label: macOS Apple Silicon
+            os: macos-14
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install pinned dependencies for Node tests
+        run: |
+          npm ci --ignore-scripts
+          node node_modules/electron/install.js
+          npm rebuild better-sqlite3
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Production dependency audit
+        run: npm audit --omit=dev
+      - name: Syntax and packaging contracts
+        run: |
+          node scripts/check-syntax.mjs
+          npm run test:playwright-packaging
+          npm run test:release-metadata
+      - name: Core runtime, delivery and safety
+        run: |
+          npm run test:tick-policy
+          npm run test:failed-outbound-dedupe
+          npm run test:consciousness-loop
+          npm run test:runtime-managers
+          npm run test:websocket-security
+          node src/test-action-contract.js
+          node src/test-runtime-delivery.js
+          node src/test-api-capability-slots.js
+          node src/test-capability-registry.js
+      - name: Scene, workflow and compatibility adapters
+        run: |
+          npm run test:scene
+          node src/workflow/engine.test.mjs
+      - name: MCP, migration and credential storage
+        run: |
+          npm run test:mcp
+          npm run test:upgrade
+          npm run test:config-upgrade
+          npm run test:secret-redaction
+      - name: Media, voice and download page
+        run: |
+          npm run test:media-modules
+          npm run test:voice-ptt
+          npm run test:website
+      - name: Verify native module loads on host Node 24
+        run: node -e "const Database=require('better-sqlite3'); const db=new Database(':memory:'); db.exec('select 1'); db.close(); console.log(process.platform, process.arch, 'better-sqlite3 OK')"
+
+  browser-security:
+    name: Browser integration and network boundary
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-      - name: Workflow engine unit tests
-        run: node src/workflow/engine.test.mjs
-      - name: Syntax check core modules
+          node-version: '24'
+          cache: npm
+      - run: |
+          npm ci --ignore-scripts
+          node node_modules/electron/install.js
+          npm rebuild better-sqlite3
+        env:
+          PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      - name: Install Chromium and Linux dependencies
+        run: node node_modules/playwright/cli.js install --with-deps chromium
+      - name: Stateful sessions, ref invalidation and URL security
         run: |
-          for f in src/index.js src/config.js src/secure-store.js \
-                   src/workflow/engine.js src/workflow/store.js \
-                   src/capabilities/schemas.js src/capabilities/executor.js \
-                   src/capabilities/tools/workflow.js src/memory/tool-router.js; do
-            node --check "$f"
-          done
+          node src/test-browser-session-manager.js
+          node src/test-browser-session-integration.js
+          npm run test:web-read
+        env:
+          OPENVZ_BROWSER_CHANNEL: chromium
+          BAILONGMA_BROWSER_CHANNEL: chromium

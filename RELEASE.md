@@ -1,76 +1,67 @@
-# Bailongma Windows Release Flow
+# OpenVZ Agent 2.2.0 release flow
 
-## Current Version
+Public desktop releases are produced only by `.github/workflows/release.yml`.
+The workflow builds Windows x64, macOS Intel x64 and macOS Apple Silicon on
+native GitHub runners, signs each platform, assembles update metadata once and
+then publishes a single GitHub Release.
 
-- `0.1.1`
+## Required repository configuration
 
-## What This Release Includes
+Apple secrets:
 
-- Windows NSIS installer
-- GitHub Releases auto-update metadata
-- First-run activation flow
-- Uninstall clears `%APPDATA%\Bailongma`
-- Branded installer assets:
-  - `build/icon.ico`
-  - `build/installerHeaderIcon.ico`
-  - `build/installerSidebar.bmp`
-  - `build/uninstallerSidebar.bmp`
+- `MAC_CSC_LINK`
+- `MAC_CSC_KEY_PASSWORD`
+- `APPLE_API_KEY`
+- `APPLE_API_KEY_ID`
+- `APPLE_API_ISSUER`
+- `APPLE_TEAM_ID`
 
-## Local Build
+Azure Trusted Signing secrets:
 
-```powershell
-cd D:\claude\BaiLongma
-npm install
-npm run build
+- `AZURE_TENANT_ID`
+- `AZURE_CLIENT_ID`
+- `AZURE_CLIENT_SECRET`
+
+Azure repository variables:
+
+- `AZURE_SIGN_PUBLISHER`
+- `AZURE_SIGN_ENDPOINT`
+- `AZURE_SIGN_CERTIFICATE_PROFILE`
+- `AZURE_SIGN_ACCOUNT_NAME`
+
+`npm run verify:release-config` fails a release job when any required value is
+missing. Formal builds also enable `forceCodeSigning`; an unsigned installer
+can never be silently published.
+
+## Candidate release
+
+1. Merge the reviewed 2.2.0 pull request after CI passes.
+2. Create and push the `v2.2.0-rc.1` tag on the reviewed commit.
+3. Let the signed release workflow finish all platform smoke tests.
+4. Download the published assets and verify `SHA256SUMS.txt`.
+5. Perform real first-run, activation, upgrade and uninstall checks on Windows
+   10/11, macOS 12+ Intel and macOS 12+ Apple Silicon.
+
+Expected assets:
+
+- `OpenVZ-Agent-Setup.exe` and blockmap
+- `OpenVZ-Agent-mac-x64.dmg` and `.zip`
+- `OpenVZ-Agent-mac-arm64.dmg` and `.zip`
+- ZIP blockmaps
+- `latest.yml` and `latest-mac.yml`
+- `SHA256SUMS.txt`
+
+## Stable release
+
+After the candidate passes real-machine acceptance, tag the same approved
+release commit as `v2.2.0`. Keep `v2.1.439` and the automatic pre-upgrade data
+backup available as rollback points.
+
+Local unsigned builds are for development diagnostics only:
+
+```bash
+npm ci
+npm run build:mac
 ```
 
-Installer output:
-
-- `D:\claude\BaiLongma\dist\Bailongma Setup 0.1.1.exe`
-- `D:\claude\BaiLongma\dist\latest.yml`
-
-## Local Verification Checklist
-
-1. Install `Bailongma Setup 0.1.1.exe`.
-2. Launch the app and confirm the activation page appears on first run.
-3. Enter a valid API key and verify the app enters `brain-ui`.
-4. Uninstall the app.
-5. Reinstall and confirm activation is required again.
-6. After activation, confirm the composer is briefly disabled while the model warms up.
-
-## Publish To GitHub Releases
-
-1. Commit and push the release commit.
-2. Ensure `package.json` version matches the release version.
-3. Create a GitHub personal access token with `repo` permission.
-4. Set the token in the current shell.
-
-```powershell
-cd D:\claude\BaiLongma
-$env:GH_TOKEN = "ghp_your_token"
-npm run publish
-```
-
-Published artifacts:
-
-- GitHub Release asset: `Bailongma Setup 0.1.1.exe`
-- GitHub Release asset: `latest.yml`
-- GitHub Release asset: `Bailongma Setup 0.1.1.exe.blockmap`
-
-## Notes On First Launch Of The Installer
-
-Unsigned Windows installers can feel inconsistent on first open because Windows Defender or SmartScreen may scan them before showing UI.
-
-To reduce that friction:
-
-- Prefer testing the installer copied out of the build folder, not while another tool is still touching it.
-- Wait a moment after the build finishes before double-clicking.
-- For public releases, code-signing is the real long-term fix.
-
-## Version Bump Checklist
-
-1. Update `package.json`.
-2. Update `package-lock.json`.
-3. Build to `dist`.
-4. Verify install, activation, uninstall, and reinstall.
-5. Publish to GitHub Releases.
+Never upload a locally unsigned artifact as a public release.

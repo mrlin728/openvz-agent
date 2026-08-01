@@ -11,6 +11,7 @@
 import crypto from 'crypto'
 import zlib from 'zlib'
 import { WebSocket } from 'ws'
+import { normalizeVoiceProvider } from '../config.js'
 import { createMacSpeechSession } from './macos-speech.js'
 
 // ─── 阿里云 Paraformer ───
@@ -245,8 +246,12 @@ function createXunfeiSession(appId, apiKey, lang, onTranscript, onError, onClose
 // 端点用 bigmodel_async（官方文档：双向流式优化版，数据变化即返回、低延迟，推荐的实时端点）。
 // 不要用 bigmodel_nostream（流式输入模式：音频>15s 或收到最后一包才返回）。bigmodel 为 legacy 双向流式。
 const VOLC_BIGMODEL_ASR_URL = 'wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async'
-const VOLC_DEFAULT_RESOURCE_ID = 'volc.bigasr.sauc.duration'
-const VOLC_SEED_RESOURCE_ID = 'volc.seedasr.sauc.duration'
+// 新配置优先使用 ASR 2.0；未开通时，在握手 403 后无感回退到对应的 1.0 资源。
+const VOLC_DEFAULT_RESOURCE_ID = 'volc.seedasr.sauc.duration'
+const VOLC_RESOURCE_FALLBACKS = new Map([
+  ['volc.seedasr.sauc.duration', 'volc.bigasr.sauc.duration'],
+  ['volc.seedasr.sauc.concurrent', 'volc.bigasr.sauc.concurrent'],
+])
 const VOLC_PROTOCOL_VERSION = 0x1
 const VOLC_HEADER_SIZE = 0x1
 const VOLC_SERIALIZATION_NONE = 0x0
@@ -279,8 +284,7 @@ function makeVolcFrame(messageType, flags, serialization, payload) {
   ])
 }
 
-function makeVolcFullClientRequest(lang) {
-  const langCode = lang === 'zh' ? 'zh-CN' : lang
+function makeVolcFullClientRequest() {
   const payload = Buffer.from(JSON.stringify({
     user: { uid: 'bailongma' },
     audio: {
@@ -289,7 +293,6 @@ function makeVolcFullClientRequest(lang) {
       rate: 16000,
       bits: 16,
       channel: 1,
-      language: langCode || 'zh-CN',
     },
     request: {
       model_name: 'bigmodel',
@@ -348,75 +351,106 @@ function parseVolcResponse(data) {
 }
 
 // 火山 result 是「累积」的：每帧带从头到现在的全部 utterances（最后一条通常是非 definite 的
-// 当前句，前面的是 definite 已定句）。逐条下发、用累积列表里的稳定下标作 seg，正好套进前端
+// 当前句，前面的是 definite 已定句）。逐条下发、用「会话 ID + 累积列表稳定下标」作 seg，正好套进前端
 // 那套（与阿里云一致）按 seg 去重/替换的累积模型：definite→final 入库、非 definite→interim 显示。
 // 不要把它们拼成一坨整段重发——那样跨多句会被前端当新内容反复追加，导致重复/错乱。
-function emitVolcTranscripts(body, isLast, onTranscript) {
+function emitVolcTranscripts(body, isLast, onTranscript, sessionId) {
   const results = Array.isArray(body?.result) ? body.result : (body?.result ? [body.result] : [])
   const utterances = results.flatMap(r => Array.isArray(r?.utterances) ? r.utterances : [])
   if (utterances.length > 0) {
     utterances.forEach((u, i) => {
       if (!u?.text) return
-      // 下标在累积列表里稳定（第 i 句永远是第 i 条）→ 作 seg 供前端去重，重发同句即替换不追加
-      onTranscript(u.text, !!u.definite, `v${i}`)
+      // 下标在单个会话的累积列表里稳定；加会话前缀避免重连后新会话 v0 覆盖旧会话 v0。
+      onTranscript(u.text, !!u.definite, `v${sessionId}:${i}`)
     })
     return
   }
   // 兜底：没有 utterances 字段时用整段 text，常量 seg 让前端替换而非追加
   const text = results.map(r => r?.text || '').filter(Boolean).join('')
-  if (text) onTranscript(text, !!isLast, 'vfull')
+  if (text) onTranscript(text, !!isLast, `v${sessionId}:full`)
 }
 
-function createVolcengineSession(config, lang, onTranscript, onError, onClose) {
+function createVolcengineSession(config, onTranscript, onError, onClose, onEvent) {
   const requestId = crypto.randomUUID()
-  const headers = {
-    'X-Api-Resource-Id': config.volcAsrResourceId || VOLC_DEFAULT_RESOURCE_ID,
-    'X-Api-Request-Id': requestId,
-    'X-Api-Connect-Id': requestId,
-    'X-Api-Sequence': '-1',
-  }
-  if (config.volcAsrApiKey) {
-    headers['X-Api-Key'] = config.volcAsrApiKey
-  } else {
-    headers['X-Api-App-Key'] = config.volcAsrAppKey
-    headers['X-Api-Access-Key'] = config.volcAsrAccessKey
-  }
-
-  const ws = new WebSocket(VOLC_BIGMODEL_ASR_URL, { headers })
+  let resourceId = config.volcAsrResourceId || VOLC_DEFAULT_RESOURCE_ID
+  let ws = null
   let ready = false
   let closed = false
+  let closeNotified = false
+  let flushRequested = false
   const pending = []
 
-  ws.on('open', () => {
-    try { ws.send(makeVolcFullClientRequest(lang)) } catch {}
-    ready = true
-    for (const buf of pending) {
-      try { ws.send(makeVolcAudioFrame(buf)) } catch {}
-    }
-    pending.length = 0
-  })
+  function notifyClose() {
+    if (closeNotified) return
+    closeNotified = true
+    onClose()
+  }
 
-  ws.on('message', (data) => {
-    try {
-      const parsed = parseVolcResponse(data)
-      if (!parsed) return
-      if (parsed.error) { onError(parsed.error); return }
-      emitVolcTranscripts(parsed.body, parsed.isLast, onTranscript)
-    } catch (err) {
-      onError(`火山 ASR 响应解析失败: ${err.message}`)
+  function connect(nextResourceId) {
+    resourceId = nextResourceId
+    ready = false
+    const headers = {
+      'X-Api-Resource-Id': resourceId,
+      'X-Api-Request-Id': requestId,
+      'X-Api-Connect-Id': requestId,
+      'X-Api-Sequence': '-1',
     }
-  })
+    if (config.volcAsrApiKey) {
+      headers['X-Api-Key'] = config.volcAsrApiKey
+    } else {
+      headers['X-Api-App-Key'] = config.volcAsrAppKey
+      headers['X-Api-Access-Key'] = config.volcAsrAccessKey
+    }
+    const socket = new WebSocket(VOLC_BIGMODEL_ASR_URL, { headers })
+    ws = socket
 
-  ws.on('error', (err) => {
-    pending.length = 0
-    const resourceId = headers['X-Api-Resource-Id']
-    if (/Unexpected server response:\s*403/i.test(err.message || '') && resourceId === VOLC_SEED_RESOURCE_ID) {
-      onError(`${err.message}; current Resource ID is ${resourceId}. If this account has not enabled Doubao streaming ASR 2.0, use ${VOLC_DEFAULT_RESOURCE_ID}.`)
-      return
-    }
-    onError(err.message)
-  })
-  ws.on('close', () => { pending.length = 0; closed = true; onClose() })
+    socket.on('open', () => {
+      if (ws !== socket || closed) return
+      try { socket.send(makeVolcFullClientRequest()) } catch {}
+      ready = true
+      for (const buf of pending) {
+        try { socket.send(makeVolcAudioFrame(buf)) } catch {}
+      }
+      pending.length = 0
+      if (flushRequested && socket.readyState === WebSocket.OPEN) {
+        try { socket.send(makeVolcAudioFrame(Buffer.alloc(0), true)) } catch {}
+      }
+    })
+
+    socket.on('message', (data) => {
+      if (ws !== socket) return
+      try {
+        const parsed = parseVolcResponse(data)
+        if (!parsed) return
+        if (parsed.error) { onError(parsed.error); return }
+        emitVolcTranscripts(parsed.body, parsed.isLast, onTranscript, requestId)
+      } catch (err) {
+        onError(`火山 ASR 响应解析失败: ${err.message}`)
+      }
+    })
+
+    socket.on('error', (err) => {
+      if (ws !== socket || closed) return
+      const fallbackResourceId = VOLC_RESOURCE_FALLBACKS.get(resourceId)
+      if (/Unexpected server response:\s*403/i.test(err.message || '') && fallbackResourceId) {
+        onEvent?.('volcengine-fallback', `ASR 2.0 resource ${resourceId} is unavailable; retrying with ${fallbackResourceId}`)
+        connect(fallbackResourceId)
+        return
+      }
+      pending.length = 0
+      onError(err.message)
+    })
+
+    socket.on('close', () => {
+      if (ws !== socket) return
+      ready = false
+      pending.length = 0
+      closed = true
+      notifyClose()
+    })
+  }
+
+  connect(resourceId)
 
   return {
     sendAudio(pcmBuffer) {
@@ -428,10 +462,11 @@ function createVolcengineSession(config, lang, onTranscript, onError, onClose) {
       if (ws.readyState === WebSocket.OPEN) ws.send(makeVolcAudioFrame(pcmBuffer))
     },
     flush() {
-      if (ws.readyState !== WebSocket.OPEN) return
+      flushRequested = true
+      if (ws?.readyState !== WebSocket.OPEN) return
       ws.send(makeVolcAudioFrame(Buffer.alloc(0), true))
     },
-    close() { try { closed = true; ws.close() } catch {} },
+    close() { try { closed = true; ws?.close() } catch {} },
   }
 }
 
@@ -440,7 +475,8 @@ function createVolcengineSession(config, lang, onTranscript, onError, onClose) {
 //           tencentAppId?, xunfeiAppId?, xunfeiApiKey?,
 //           volcAsrApiKey?, volcAsrAppKey?, volcAsrAccessKey?, volcAsrResourceId? }
 export function createCloudASRSession(config, onTranscript, onError, onClose, onEvent) {
-  const { provider = 'aliyun', lang = 'zh' } = config
+  const provider = normalizeVoiceProvider(config?.provider || config?.voiceProvider || 'aliyun', '')
+  const { lang = 'zh' } = config || {}
 
   if (provider === 'local') {
     if (process.platform === 'darwin') {
@@ -479,9 +515,9 @@ export function createCloudASRSession(config, onTranscript, onError, onClose, on
       onError('未配置火山引擎 ASR API Key 或 AppKey/AccessKey')
       return null
     }
-    return createVolcengineSession(config, lang, onTranscript, onError, onClose)
+    return createVolcengineSession(config, onTranscript, onError, onClose, onEvent)
   }
 
-  onError(`未知云端 ASR 服务商: ${provider}`)
+  onError(`未知云端 ASR 服务商: ${config?.provider || config?.voiceProvider || provider || '空'}`)
   return null
 }

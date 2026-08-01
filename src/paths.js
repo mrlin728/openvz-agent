@@ -2,8 +2,9 @@
 // 而 HTML/静态资源要从应用目录（只读 / asar 内）读。
 //
 // Electron 主进程启动时会通过环境变量注入这两个路径：
-//   BAILONGMA_USER_DIR       - 用户数据目录（可写，存 DB、sandbox、配置）
-//   BAILONGMA_RESOURCES_DIR  - 只读资源目录（存 HTML、UI 资源）
+//   OPENVZ_USER_DIR       - 用户数据目录（可写，存 DB、sandbox、配置）
+//   OPENVZ_RESOURCES_DIR  - 只读资源目录（存 HTML、UI 资源）
+// 2.x 保留 BAILONGMA_* 作为只读兼容别名，OPENVZ_* 始终优先。
 //
 // 开发模式（直接 node src/index.js）下两者都默认到仓库根目录，行为不变。
 
@@ -14,13 +15,21 @@ import { fileURLToPath } from 'url'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const REPO_ROOT = path.resolve(__dirname, '..')
 
-const USER_DIR = process.env.BAILONGMA_USER_DIR
-  ? path.resolve(process.env.BAILONGMA_USER_DIR)
+const USER_DIR_ENV = process.env.OPENVZ_USER_DIR || process.env.BAILONGMA_USER_DIR
+const RESOURCES_DIR_ENV = process.env.OPENVZ_RESOURCES_DIR || process.env.BAILONGMA_RESOURCES_DIR
+
+const USER_DIR = USER_DIR_ENV
+  ? path.resolve(USER_DIR_ENV)
   : REPO_ROOT
 
-const RESOURCES_DIR = process.env.BAILONGMA_RESOURCES_DIR
-  ? path.resolve(process.env.BAILONGMA_RESOURCES_DIR)
+const RESOURCES_DIR = RESOURCES_DIR_ENV
+  ? path.resolve(RESOURCES_DIR_ENV)
   : REPO_ROOT
+
+process.env.OPENVZ_USER_DIR ||= USER_DIR
+process.env.OPENVZ_RESOURCES_DIR ||= RESOURCES_DIR
+process.env.BAILONGMA_USER_DIR ||= USER_DIR
+process.env.BAILONGMA_RESOURCES_DIR ||= RESOURCES_DIR
 
 function ensureDir(dir) {
   try { fs.mkdirSync(dir, { recursive: true }) } catch {}
@@ -36,15 +45,21 @@ export const paths = {
   // 聊天媒体的内容寻址副本：发/收图时把字节按 sha256 命名落到这里，
   // 与易失的原始路径（截图、临时文件）解耦——原文件删了或被同名替换，聊天记录里的图仍在。
   mediaDir: ensureDir(path.join(USER_DIR, 'data', 'media')),
+  // 本地嵌入模型缓存目录：transformers.js 首次下载 ONNX 模型落这里，之后离线命中。
+  modelsDir: ensureDir(path.join(USER_DIR, 'data', 'models')),
   configFile: path.join(USER_DIR, 'config.json'),
-  // MCP（Model Context Protocol）server 配置。格式：{ "mcpServers": { ... } }，
-  // 与业界事实标准一致，可直接复用社区现成配置。缺失则不加载任何 MCP 工具。
+  secretKeyFile: path.join(USER_DIR, 'data', '.openvz-secret.key'),
   mcpConfigFile: path.join(USER_DIR, 'mcp.servers.json'),
   llmConfigDir: ensureDir(path.join(USER_DIR, 'llm')),
+  voiceConfigDir: ensureDir(path.join(USER_DIR, 'voice')),
   // seedance（AI 视频生成）单独成文件，与主 config.json 物理隔离，
   // 避免被 activate() 等“全量覆盖写 config.json”的操作误删。
   seedanceConfigFile: path.join(USER_DIR, 'seedance.json'),
+  apiCapabilitySlotsFile: path.join(USER_DIR, 'api-capability-slots.json'),
+  apiCapabilitySecretsFile: path.join(USER_DIR, 'data', 'api-capability-secrets.json'),
+  apiCapabilitySecretKeyFile: path.join(USER_DIR, 'data', '.api-capability-secret.key'),
   sandboxDir:         ensureDir(path.join(USER_DIR, 'sandbox')),
+  sandboxApiCapabilitiesDir: ensureDir(path.join(USER_DIR, 'sandbox', 'api-capabilities')),
   sandboxMusicDir:    ensureDir(path.join(USER_DIR, 'sandbox', 'music')),
   sandboxNotesDir:    ensureDir(path.join(USER_DIR, 'sandbox', 'notes')),
   sandboxDownloadsDir:ensureDir(path.join(USER_DIR, 'sandbox', 'downloads')),
@@ -140,15 +155,16 @@ export function rescueDataFromInstallDir() {
   // If an old installer recorded a shared parent folder as InstallLocation
   // (for example AppData\Local\Programs or D:\Software), scanning and moving
   // "unknown" directories would touch other applications. Only rescue from a
-  // dedicated OpenVZ Agent install folder.
-  if (path.basename(installDir).toLowerCase() !== 'bailongma') {
+  // dedicated OpenVZ Agent folder. Bailongma is accepted only for safe legacy rescue.
+  const installFolder = path.basename(installDir).toLowerCase().replace(/[\s_-]+/g, '')
+  if (!['openvzagent', 'bailongma'].includes(installFolder)) {
     console.warn(`[paths] skip install-dir rescue from unsafe shared folder: ${installDir}`)
     return rescued
   }
 
   // sandbox 必须在安装目录之外，否则迁过去等于没迁
   if (isPathInside(installDir, paths.sandboxDir)) {
-    console.warn('[paths] 警告：sandbox 目录位于安装目录内，更新时会被清空，请检查 BAILONGMA_USER_DIR 配置')
+    console.warn('[paths] 警告：sandbox 目录位于安装目录内，更新时会被清空，请检查 OPENVZ_USER_DIR 配置')
     return rescued
   }
   if (!isInstallDirSafeToScan(installDir)) return rescued

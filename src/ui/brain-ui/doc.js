@@ -223,10 +223,7 @@ const ASR_FIELDS = {
   local: [],
   aliyun:  [{ key: 'aliyunApiKey',   label: 'API Key',   type: 'password', ph: 'sk-xxxxxxxx...' }],
   volcengine: [
-    { key: 'volcAsrApiKey',     label: 'API Key（新版）',    type: 'password', ph: '' },
-    { key: 'volcAsrResourceId', label: 'Resource ID',       type: 'text',     ph: 'volc.bigasr.sauc.duration' },
-    { key: 'volcAsrAppKey',     label: 'App Key（旧版）',    type: 'password', ph: '' },
-    { key: 'volcAsrAccessKey',  label: 'Access Key（旧版）', type: 'password', ph: '' },
+    { key: 'volcAsrApiKey', label: 'API Key', type: 'password', ph: '' },
   ],
   tencent: [
     { key: 'tencentSecretId',  label: 'SecretId',  type: 'password', ph: '' },
@@ -252,8 +249,6 @@ const TTS_FIELDS = {
   doubao: [
     { key: 'doubaoKey',    label: 'API Key',       type: 'password', ph: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx' },
     { key: 'doubaoResourceId', label: 'Resource ID', type: 'text',     ph: 'seed-tts-2.0' },
-    { key: 'doubaoAppId',  label: 'App ID（可选）', type: 'text',     ph: '' },
-    { key: 'doubaoAccessKey', label: 'Access Key（旧版）', type: 'password', ph: '' },
   ],
   minimax: [],
   openai: [
@@ -505,11 +500,11 @@ async function renderInlineConfig(topicId) {
 
 // ── 初始化 ────────────────────────────────────────────────────────────────────
 
-// Tab 分组：把"配置类"（需要动手填 Key）与"关于OpenVZ Agent"（讲解型自知识）分开，
+// Tab 分组：把"配置类"（需要动手填 Key）与"关于白龙马"（讲解型自知识）分开，
 // 顺序即展示顺序。topic 不存在于 /docs 时自动跳过，无需手动同步。
 const TAB_GROUPS = [
   { label: '配置', topics: ['model_config', 'voice_asr', 'voice_tts', 'voice_config', 'wechat_config'] },
-  { label: '关于OpenVZ Agent', topics: ['self_architecture', 'ui_design'] },
+  { label: '关于 OpenVZ Agent', topics: ['self_architecture', 'ui_design'] },
 ]
 
 // Tab 上的短标签（文档 title 太长，pill 放不下）；缺省回退到 title。

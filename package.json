@@ -1,155 +1,94 @@
 {
   "name": "openvz-agent",
   "productName": "OpenVZ Agent",
-  "version": "2.1.439",
-  "description": "OpenVZ Agent — Your Personal AI Agent OS. A continuously running personal AI agent workspace that remembers you, plans tasks, executes workflows, manages tools, and shows its execution trace.",
+  "version": "2.2.0",
+  "description": "OpenVZ Agent — a continuously running personal AI agent workspace with memory, workflows, MCP, stateful browser automation, voice and Scene UI.",
   "type": "module",
   "main": "electron/main.cjs",
   "author": {
     "name": "OpenVZ"
   },
+  "license": "MIT",
+  "engines": {
+    "node": ">=24 <25"
+  },
   "scripts": {
-    "start": "electron .",
+    "start": "node ./node_modules/electron/cli.js .",
     "start:lan": "powershell -ExecutionPolicy Bypass -File scripts/start-lan.ps1 app",
     "start:backend": "node --env-file=.env src/index.js",
     "start:backend:lan": "powershell -ExecutionPolicy Bypass -File scripts/start-lan.ps1 backend",
     "dev": "node --env-file=.env --watch src/index.js",
-    "build": "node scripts/prebuild-clean.mjs && node scripts/build-macos-speech.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js",
-    "build:win": "node scripts/prebuild-clean.mjs && node scripts/build-macos-speech.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js --win",
+    "build": "node scripts/prebuild-clean.mjs && node scripts/prepare-playwright-browsers.mjs && node scripts/build-macos-speech.mjs && node scripts/rebuild-native.mjs && node ./node_modules/electron-builder/cli.js --config electron-builder.config.cjs",
+    "build:win": "node scripts/prebuild-clean.mjs && node scripts/prepare-playwright-browsers.mjs --platform=win32 --arch=x64 && node scripts/build-macos-speech.mjs && node scripts/rebuild-native.mjs --arch=x64 && node ./node_modules/electron-builder/cli.js --config electron-builder.config.cjs --win nsis --x64",
     "build:mac": "node scripts/build-mac.mjs",
     "build:mac:x64": "node scripts/build-mac.mjs x64",
     "build:mac:arm64": "node scripts/build-mac.mjs arm64",
-    "publish": "node scripts/prebuild-clean.mjs && node scripts/build-macos-speech.mjs && node ./node_modules/@electron/rebuild/lib/cli.js -f -w better-sqlite3 -v 33.4.11 && node ./node_modules/electron-builder/cli.js --publish always",
-    "postinstall": "node ./node_modules/electron-builder/cli.js install-app-deps",
+    "publish": "node scripts/assert-release-config.mjs && npm run build -- --publish always",
+    "postinstall": "node ./node_modules/electron-builder/install-app-deps.js",
     "test:rule-context": "electron ./src/test-rule-context.js",
     "test:complex-task": "electron ./src/test-complex-task.js",
     "test:relevance": "electron ./src/test-relevance-selection.js",
     "test:section-gate": "node ./src/test-section-gate.js",
+    "test:tick-policy": "node ./src/test-tick-policy.js",
+    "test:failed-outbound-dedupe": "node ./src/test-failed-outbound-dedupe.js",
+    "test:consciousness-loop": "node ./src/test-consciousness-loop.js",
+    "test:runtime-managers": "node ./src/test-index-refactor-modules.js",
     "test:agent-skills": "node ./src/test-agent-skills.js",
     "test:tool-factory": "node ./src/test-tool-factory.js",
-    "test:api-message-utf8": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:ELECTRON_RUN_AS_NODE='1'; .\\node_modules\\.bin\\electron.cmd .\\src\\test-api-message-utf8.js\"",
-    "test:strict-evaluation": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:ELECTRON_RUN_AS_NODE='1'; .\\node_modules\\.bin\\electron.cmd .\\src\\test-strict-evaluation.js\"",
-    "test:no-fake-detection": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:ELECTRON_RUN_AS_NODE='1'; .\\node_modules\\.bin\\electron.cmd .\\src\\test-no-fake-tool-detection.js\"",
+    "test:api-message-utf8": "node ./src/test-api-message-utf8.js",
+    "test:strict-evaluation": "node ./src/test-strict-evaluation.js",
+    "test:no-fake-detection": "node ./src/test-no-fake-tool-detection.js",
     "test:config-upgrade": "node ./src/test-config-upgrade.js",
+    "test:media-modules": "node ./src/test-media-modules.js",
+    "test:db-schema-module": "electron ./src/test-db-schema-module.js",
     "test:voice-continuous": "node ./src/test-voice-continuous.js",
+    "test:voice-ptt": "node ./src/test-voice-ptt.js",
+    "test:websocket-security": "node ./src/test-websocket-security.js",
+    "test:web-read": "node ./src/test-web-read.js",
+    "test:playwright-packaging": "node ./scripts/test-playwright-packaging.mjs",
+    "test:browser-core": "node ./src/test-browser-session-manager.js && node ./src/test-browser-session-integration.js",
+    "test:scene": "node ./src/scene/test-scene-store.js && node ./src/scene/test-scene-manifest.js && node ./src/test-scene-acui-adapter.js",
+    "test:mcp": "node ./src/test-mcp-integration.js",
+    "test:upgrade": "node ./src/test-upgrade-migration.js && node ./src/test-v21439-upgrade.js && node ./src/test-secure-store.js",
+    "test:secret-redaction": "node ./src/test-api-secret-redaction.js && node ./src/test-error-logger.js && node ./src/test-console-redaction.js",
+    "test:release-metadata": "node ./scripts/test-release-metadata.mjs",
+    "test:website": "node ./scripts/test-website.mjs",
+    "smoke:packaged-playwright": "node ./scripts/smoke-packaged-playwright.mjs",
+    "smoke:packaged-playwright:mac": "node ./scripts/smoke-packaged-playwright-mac.mjs",
+    "smoke:mac-artifacts": "node ./scripts/smoke-mac-artifacts.mjs",
     "repair:memories:dry": "electron ./scripts/repair-memory-quality.js",
     "repair:memories": "electron ./scripts/repair-memory-quality.js --apply",
     "probe:config-upgrade": "node ./scripts/probe-config-upgrade.mjs",
     "smoke:tools": "node scripts/smoke-tools.mjs",
     "smoke:tool-factory-web": "node scripts/smoke-tool-factory-web-e2e.mjs",
     "smoke:brain-ui": "node scripts/smoke-brain-ui.mjs",
-    "smoke:social": "node scripts/smoke-social.mjs"
+    "smoke:social": "electron ./scripts/smoke-social.mjs",
+    "smoke:feishu-ws": "electron ./scripts/smoke-feishu-ws.mjs",
+    "verify:release-config": "node scripts/assert-release-config.mjs"
   },
   "dependencies": {
-    "better-sqlite3": "^12.8.0",
-    "d3": "^7.9.0",
-    "electron-updater": "^6.3.9",
-    "openai": "^6.34.0",
-    "wechat-ilink-client": "^0.1.0",
-    "ws": "^8.20.1"
+    "@huggingface/transformers": "3.7.6",
+    "@larksuiteoapi/node-sdk": "1.72.0",
+    "better-sqlite3": "13.0.2",
+    "d3": "7.9.0",
+    "electron-updater": "6.8.9",
+    "openai": "6.34.0",
+    "playwright": "1.59.1",
+    "playwright-core": "1.59.1",
+    "sherpa-onnx-node": "1.13.3",
+    "undici": "6.28.0",
+    "wechat-ilink-client": "0.1.0",
+    "ws": "8.21.1"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.0.4",
-    "electron": "^33.2.0",
-    "electron-builder": "^25.1.8",
-    "playwright": "^1.59.1"
+    "electron": "43.2.0",
+    "electron-builder": "26.15.3",
+    "js-yaml": "4.3.1"
   },
-  "build": {
-    "appId": "com.openvz.agent",
-    "productName": "OpenVZ Agent",
-    "artifactName": "OpenVZ-Agent-Setup.${ext}",
-    "afterPack": "scripts/adhoc-sign.cjs",
-    "npmRebuild": false,
-    "asar": true,
-    "asarUnpack": [
-      "**/node_modules/better-sqlite3/**",
-      "build/native-speech-recognizer",
-      "src/voice/**",
-      "src/mcp/servers/**"
-    ],
-    "files": [
-      "electron/**/*",
-      "src/**/*",
-      "skills/**/*",
-      "scripts/seed-memories.js",
-      "index.html",
-      "brain-ui.html",
-      "website.html",
-      "systemPrompt.html",
-      "activation.html",
-      "focus-banner.html",
-      "turn-trace.html",
-      "build/icon.ico",
-      "build/icon.icns",
-      "build/icon.png",
-      "build/icon-mac-cartoon.png",
-      "build/native-speech-recognizer",
-      "sandbox/**/*",
-      "music/**/*",
-      "package.json",
-      "!**/*.map",
-      "!src/test-*",
-      "!src/**/test-*",
-      "!scripts/smoke-*.mjs",
-      "!src/**/__pycache__/**",
-      "!src/**/*.pyc",
-      "!**/node_modules/*/{CHANGELOG.md,README.md,readme.md,*.d.ts}",
-      "!**/node_modules/.cache",
-      "!**/.vscode",
-      "!data/**/*"
-    ],
-    "directories": {
-      "buildResources": "build",
-      "output": "dist"
-    },
-    "win": {
-      "icon": "build/icon.ico",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "deleteAppDataOnUninstall": false,
-      "installerHeaderIcon": "build/installerHeaderIcon.ico",
-      "installerSidebar": "build/installerSidebar.bmp",
-      "uninstallerSidebar": "build/uninstallerSidebar.bmp",
-      "createDesktopShortcut": false,
-      "createStartMenuShortcut": false,
-      "shortcutName": "OpenVZ Agent"
-    },
-    "mac": {
-      "icon": "build/icon.icns",
-      "identity": null,
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "arm64"
-          ]
-        }
-      ],
-      "category": "public.app-category.productivity",
-      "extendInfo": {
-        "NSMicrophoneUsageDescription": "OpenVZ Agent uses the microphone for voice input when you enable voice features.",
-        "NSSpeechRecognitionUsageDescription": "OpenVZ Agent may use speech recognition for voice input features."
-      },
-      "artifactName": "OpenVZ-Agent-mac-${arch}.${ext}"
-    },
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "mrlin728",
-        "repo": "openvz-agent",
-        "releaseType": "release"
-      }
-    ]
+  "overrides": {
+    "axios": "1.19.0",
+    "form-data": "4.0.6",
+    "protobufjs": "7.6.5",
+    "sharp": "0.35.3"
   }
 }

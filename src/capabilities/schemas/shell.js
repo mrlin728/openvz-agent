@@ -1,10 +1,27 @@
 // Shell / 进程工具 schema：exec_command / kill_process / list_processes
 export const shellSchemas = {
+  install_software: {
+    type: 'function',
+    function: {
+      name: 'install_software',
+      description: 'Start a non-blocking background Windows winget software install job. Use this FIRST for desktop app installation requests before raw exec_command, web_search, web_read, or manual installer downloads. It returns quickly with ok=true, status="started", and job_id; that means the background job has begun, not that installation has finished. The job then checks winget, searches candidates, prefers known modern package ids such as Tencent.QQ.NT before Tencent.QQ for QQ, runs winget show/install, and later sends a background APP_SIGNAL/event when it succeeds, fails, needs user attention, or is cancelled. Do not call this repeatedly for the same app; use list_processes to inspect software_install_jobs. Only fall back to manual vendor download after the final job result says no candidates or all candidates failed.',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Software name or search query, e.g. "QQ", "微信", "Chrome".' },
+          package_id: { type: 'string', description: 'Optional exact winget package id if already known, e.g. Tencent.QQ.NT.' },
+          silent: { type: 'boolean', description: 'Run the installer silently with no setup-wizard clicks. Silent is the DEFAULT, so normally omit this. Pass false only if the user explicitly wants to see/click the installer UI. Note: silent covers the installer wizard only; a machine-scope package may still raise a Windows UAC elevation prompt unless the app itself runs elevated.' }
+        },
+        required: []
+      }
+    }
+  },
+
   exec_command: {
     type: 'function',
     function: {
       name: 'exec_command',
-      description: 'Run a shell command. Returns structured JSON with ok, mode, exit_code, stdout, stderr, timed_out, pid. On Windows runs in PowerShell — use PowerShell syntax (e.g. Get-ChildItem, $env:USERPROFILE, Write-Output). Use background=true for long-running servers. Use cwd to run in a sandbox subdirectory instead of cd-chaining. Use promote_to_background=true so a foreground timeout converts the process to background instead of killing it. Do NOT use this tool for operations that have a dedicated tool — those are more reliable and handle encoding/sandbox/verification for you: write a file → write_file (never WriteAllText/Out-File/Set-Content/echo >/python -c with embedded text; the quoting of multi-line content breaks repeatedly); read a file → read_file; list a directory → list_dir; delete a file/dir → delete_file (never Remove-Item/rm); create a directory → make_dir; fetch a web page → fetch_url or browser_read (never curl/Invoke-WebRequest). exec_command is for running programs (node, npm, python script.py, git, opening apps) and for file operations that have no dedicated tool (move/copy/rename, search file contents with findstr/Select-String).',
+      description: 'Run a shell command. Returns structured JSON with ok, mode, exit_code, stdout, stderr, timed_out, pid. On Windows runs in PowerShell — use PowerShell syntax (e.g. Get-ChildItem, $env:USERPROFILE, Write-Output). Use background=true for long-running servers. Use cwd to run in a sandbox subdirectory instead of cd-chaining. Use promote_to_background=true so a foreground timeout converts the process to background instead of killing it. Do NOT use this tool for operations that have a dedicated tool — those are more reliable and handle encoding/sandbox/verification for you: write a file → write_file (never WriteAllText/Out-File/Set-Content/echo >/python -c with embedded text; the quoting of multi-line content breaks repeatedly); read a file → read_file; list a directory → list_dir; delete a file/dir → delete_file (never Remove-Item/rm); create a directory → make_dir; read a web page → web_read (never curl/Invoke-WebRequest). exec_command is for running programs (node, npm, python script.py, git, opening apps) and for file operations that have no dedicated tool (move/copy/rename, search file contents with findstr/Select-String).',
       parameters: {
         type: 'object',
         properties: {
@@ -107,7 +124,7 @@ export const shellSchemas = {
     type: 'function',
     function: {
       name: 'list_processes',
-      description: 'List background processes with their recent output. Returns ok, count, and processes (each with pid, command, status running|exited, exit_code, started_at, exited_at, recent_output). Recently exited processes are retained for ~5 min so you can still read their final output and exit code. Use tail to control how many output lines to include per process (default 20, max 200).',
+      description: 'List background processes with their recent output, plus background software install jobs. Returns ok, count, processes (each with pid, command, status running|exited, exit_code, started_at, exited_at, recent_output), and software_install_jobs with job_id/status/query/package_id/candidates/attempts. Recently exited shell processes are retained for ~5 min; software install jobs are retained longer so final success/failure can be inspected. Use tail to control how many shell output lines to include per process (default 20, max 200).',
       parameters: {
         type: 'object',
         properties: {

@@ -1,0 +1,58 @@
+name: Download site
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - website.html
+      - build/icon.png
+      - scripts/test-website.mjs
+      - .github/workflows/pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - run: node scripts/test-website.mjs
+      - name: Build Pages artifact from the shared in-app page
+        run: |
+          mkdir -p _site/site-assets
+          cp website.html _site/index.html
+          cp build/icon.png _site/site-assets/icon.png
+          touch _site/.nojekyll
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+      - name: Verify deployed links and mobile/no-JS source
+        run: |
+          curl --fail --location --retry 5 --retry-delay 5 "${{ steps.deployment.outputs.page_url }}" -o page.html
+          grep -q 'OpenVZ-Agent-Setup.exe' page.html
+          grep -q 'OpenVZ-Agent-mac-arm64.dmg' page.html
+          grep -q 'OpenVZ-Agent-mac-x64.dmg' page.html
+          grep -q '<noscript>' page.html

@@ -16,6 +16,8 @@
 // 输出：null 或 { mirror, style, loop, perceptionText }
 // perceptionText 是已经拼好的人类可读文本；其余字段供守门规则（如 upsert_memory 拦截）使用。
 
+import { formatLocalClock } from '../time.js'
+
 const AGENT_MONOLOGUE_PATTERNS = [
   '无需回复',
   '本轮',
@@ -280,7 +282,7 @@ export function computeSelfSnapshot({ conversationWindow = [], actionLog = [], a
     const toolSummary = tools.counts.map(([t, n]) => `${t}×${n}`).join(', ')
     lines.push(`- Tool habits (last 10 calls): ${toolSummary}.`)
     if (tools.lastSend) {
-      const ts = tools.lastSend.timestamp.slice(11, 16) || ''
+      const ts = formatLocalClock(tools.lastSend.timestamp)
       lines.push(`- Most recent message actually sent: ${ts} (witnessed by send_message).`)
     } else {
       lines.push(`- No send_message in the last 10 tool calls — you have not actually spoken to anyone recently.`)

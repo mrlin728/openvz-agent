@@ -1,4 +1,4 @@
-# BaiLongma 模块拆分重构计划
+# OpenVZ Agent 模块拆分重构计划
 
 目标：把超大文件拆成更细粒度、职责清晰、可测试、可持续扩展的功能模块，同时保持现有行为不变。
 
@@ -188,7 +188,7 @@
 - media 工具域改动：至少跑相关 `node --check`、`npm run smoke:tools`；尽量做不会消耗真实配额或污染媒体库的错误/只读路径验证。如必须写入，说明原因并清理测试文件/记录。
 - brain UI 改动：跑 `npm run smoke:brain-ui`。
 - 社交/微信/外部渠道改动：跑 `npm run smoke:social`，但注意本地 Node CLI ABI mismatch 的已知限制。
-- build/启动路径改动：跑标准 BaiLongma build 脚本并验证安装版 `/status`。
+- build/启动路径改动：跑标准 OpenVZ Agent build 脚本并验证安装版 `/status`。
 
 ## 暂不做
 
