@@ -10,7 +10,7 @@ on:
       tag:
         description: Existing v2.2.0 tag to publish
         required: true
-        default: v2.2.0-rc.5
+        default: v2.2.0-rc.6
       unsigned:
         description: Publish a clearly labelled unsigned prerelease (RC tags only)
         required: true

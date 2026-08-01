@@ -257,20 +257,21 @@ FunctionEnd
   ; folder such as AppData\Local\Programs or D:\Software. Remove only files and
   ; subdirectories OpenVZ Agent owns, then remove parent folders only if empty.
   ${if} ${isUpdated}
-    ; During an upgrade, fail atomically if any app file is busy. This prevents
-    ; a half-removed install folder followed by a false successful install.
-    CreateDirectory "$PLUGINSDIR\old-install"
-    Push ""
-    Call un.atomicRMDir
-    Pop $R0
-
-    ${if} $R0 != 0
-      DetailPrint "OpenVZ Agent file is busy, aborting upgrade: $R0"
-      Push ""
-      Call un.restoreFiles
-      Pop $R0
+    ; The stock atomic remover renames every file into $PLUGINSDIR. That can
+    ; silently become a cross-volume copy when a user installs on D: but the
+    ; NSIS temp directory is on C:, and the bundled Chromium makes it extremely
+    ; slow. Rename the complete application-owned folder to a sibling on the
+    ; same volume instead. The single rename still fails atomically if any file
+    ; is busy, while avoiding a per-file transfer of the ~1 GB payload.
+    StrCpy $R8 "$INSTDIR.openvz-update-$pid"
+    IfFileExists "$R8" 0 +2
+      Abort `Can't safely update OpenVZ Agent because the temporary update folder "$R8" already exists.`
+    SetOutPath "$TEMP"
+    ClearErrors
+    Rename "$INSTDIR" "$R8"
+    IfErrors 0 +2
       Abort `Can't safely update OpenVZ Agent because "$INSTDIR" contains a busy file.`
-    ${endif}
+    RMDir /r "$R8"
 
     Goto bailongmaRemoveFilesDone
   ${endif}

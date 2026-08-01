@@ -31,6 +31,9 @@ assert.match(installerSource, /better-sqlite3\\prebuilds\\win32-x64\.node/)
 assert.doesNotMatch(installerSource, /better-sqlite3\\build\\Release\\better_sqlite3\.node/)
 assert.match(installerSource, /Recognized legacy Bailongma install directory; upgrading in place/)
 assert.match(installerSource, /StrCmp \$R2 "Bailongma\.exe"/)
+assert.match(installerSource, /StrCpy \$R8 "\$INSTDIR\.openvz-update-\$pid"/)
+assert.match(installerSource, /Rename "\$INSTDIR" "\$R8"/)
+assert.doesNotMatch(installerSource, /Call un\.atomicRMDir/, 'cross-volume upgrades must not move the bundled Chromium file by file')
 assert.deepEqual(builderConfig.extraResources, [{
   from: 'build/playwright-browsers/${os}-${arch}',
   to: 'playwright-browsers',
