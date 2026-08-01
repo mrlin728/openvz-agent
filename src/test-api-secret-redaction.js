@@ -64,5 +64,16 @@ try {
 
   console.log('Settings API, tool events and audit records do not expose stored credentials: OK')
 } finally {
-  fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  try {
+    const { closeDBForTest } = await import('./db.js')
+    closeDBForTest()
+  } catch {}
+  try {
+    fs.rmSync(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  } catch (error) {
+    // Windows runners can keep a just-closed native file handle alive until
+    // process exit. The fixture contains fake credentials and the isolated
+    // runner temp directory is reclaimed after the process/job exits.
+    if (process.platform !== 'win32' || !['EPERM', 'EBUSY'].includes(error?.code)) throw error
+  }
 }
