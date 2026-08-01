@@ -19,6 +19,7 @@ const userDir = path.join(tempRoot, 'user-data')
 const probe = path.join(tempRoot, 'probe.mjs')
 fs.mkdirSync(mount)
 fs.mkdirSync(userDir)
+let attached = false
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { encoding: 'utf8', timeout: 120_000, ...options })
@@ -27,6 +28,36 @@ function run(command, args, options = {}) {
     throw new Error(`${command} ${args.join(' ')} failed:\n${result.stdout || ''}\n${result.stderr || ''}`)
   }
   return result.stdout.trim()
+}
+
+const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms))
+
+async function cleanup() {
+  if (attached) {
+    let detached = false
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const result = spawnSync('hdiutil', ['detach', mount, '-quiet'], { encoding: 'utf8' })
+      if (result.status === 0) {
+        detached = true
+        break
+      }
+      await wait(500)
+    }
+    if (!detached) {
+      const forced = spawnSync('hdiutil', ['detach', mount, '-force', '-quiet'], { encoding: 'utf8' })
+      if (forced.status !== 0) console.warn(`[smoke:packaged-playwright:mac] deferred DMG detach: ${forced.stderr || forced.stdout || 'unknown error'}`)
+    }
+  }
+
+  try {
+    fs.rmSync(tempRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 300 })
+  } catch (error) {
+    // The runner is ephemeral and Chromium can finish filesystem cleanup after
+    // its parent exits. Do not turn a successful browser probe into a release
+    // failure solely because the temporary directory is briefly busy.
+    if (!['EBUSY', 'ENOTEMPTY'].includes(error?.code)) throw error
+    console.warn(`[smoke:packaged-playwright:mac] deferred temporary cleanup: ${error.message}`)
+  }
 }
 
 const probeSource = String.raw`
@@ -82,6 +113,7 @@ fs.writeFileSync(probe, probeSource, { mode: 0o600 })
 
 try {
   run('hdiutil', ['attach', '-readonly', '-nobrowse', '-mountpoint', mount, dmg])
+  attached = true
   const app = path.join(mount, 'OpenVZ Agent.app')
   const resources = path.join(app, 'Contents', 'Resources')
   const appAsar = path.join(resources, 'app.asar')
@@ -107,6 +139,5 @@ try {
   assert.ok(result.screenshotBytes > 0)
   console.log(`macOS ${arch} packaged offline Chromium session and screenshot: OK`)
 } finally {
-  spawnSync('hdiutil', ['detach', mount, '-quiet'], { encoding: 'utf8' })
-  fs.rmSync(tempRoot, { recursive: true, force: true })
+  await cleanup()
 }
