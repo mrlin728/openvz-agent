@@ -29,15 +29,67 @@ function Invoke-ProcessChecked(
   [int]$TimeoutSeconds
 ) {
   Write-Host "[smoke] Starting $Label (timeout: $TimeoutSeconds seconds)"
-  $process = Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru
-  if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
-    Write-Host "[smoke] $Label timed out; terminating process tree $($process.Id)"
-    & taskkill.exe /PID $process.Id /T /F 2>&1 | Out-Host
-    throw "$Label timed out after $TimeoutSeconds seconds"
+  # Start-Process -Wait on Windows waits for the launched process and all of its
+  # descendants. A plain Process.WaitForExit only waits for the NSIS bootstrapper,
+  # which can leave its inner installer alive and holding the installer mutex.
+  $argumentsJson = ConvertTo-Json -Compress -InputObject @($ArgumentList)
+  $job = Start-Job -ScriptBlock {
+    param([string]$TargetPath, [string]$ArgumentsJson)
+    $targetArguments = @(ConvertFrom-Json -InputObject $ArgumentsJson)
+    $targetProcess = Start-Process -FilePath $TargetPath -ArgumentList $targetArguments -Wait -PassThru
+    [pscustomobject]@{
+      ExitCode = $targetProcess.ExitCode
+      ProcessId = $targetProcess.Id
+    }
+  } -ArgumentList $FilePath, $argumentsJson
+
+  try {
+    $completedJob = Wait-Job -Job $job -Timeout $TimeoutSeconds
+    if ($null -eq $completedJob) {
+      Write-Host "[smoke] $Label timed out; related Windows processes:"
+      $targetLeaf = [IO.Path]::GetFileName($FilePath)
+      $relatedProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        ($_.ExecutablePath -and $_.ExecutablePath.Equals($FilePath, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($_.Name -and ($_.Name -eq $targetLeaf -or $_.Name -like 'OpenVZ Agent*')) -or
+        ($_.CommandLine -and $_.CommandLine.Contains($FilePath, [StringComparison]::OrdinalIgnoreCase))
+      })
+      foreach ($relatedProcess in $relatedProcesses) {
+        $windowTitle = ''
+        $responding = ''
+        try {
+          $runtimeProcess = Get-Process -Id $relatedProcess.ProcessId -ErrorAction Stop
+          $windowTitle = $runtimeProcess.MainWindowTitle
+          $responding = $runtimeProcess.Responding
+        } catch {}
+        Write-Host ("[smoke]   PID={0} PPID={1} Name={2} Responding={3} Window={4} Path={5} CommandLine={6}" -f `
+          $relatedProcess.ProcessId,
+          $relatedProcess.ParentProcessId,
+          $relatedProcess.Name,
+          $responding,
+          $windowTitle,
+          $relatedProcess.ExecutablePath,
+          $relatedProcess.CommandLine)
+      }
+
+      Stop-Job -Job $job -ErrorAction SilentlyContinue
+      foreach ($relatedProcess in $relatedProcesses) {
+        Write-Host "[smoke] Terminating timed-out process tree $($relatedProcess.ProcessId)"
+        & taskkill.exe /PID $relatedProcess.ProcessId /T /F 2>&1 | Out-Host
+      }
+      throw "$Label timed out after $TimeoutSeconds seconds"
+    }
+
+    $result = Receive-Job -Job $job -ErrorAction Stop | Select-Object -Last 1
+    if ($null -eq $result) { throw "$Label completed without returning an exit code" }
+    if ($result.ExitCode -ne 0) { throw "$Label failed with $($result.ExitCode)" }
+    Write-Host "[smoke] $Label completed (process tree $($result.ProcessId))"
+    return $result
+  } finally {
+    if ($job.State -eq 'Running') {
+      Stop-Job -Job $job -ErrorAction SilentlyContinue
+    }
+    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
   }
-  if ($process.ExitCode -ne 0) { throw "$Label failed with $($process.ExitCode)" }
-  Write-Host "[smoke] $Label completed"
-  return $process
 }
 
 function Get-InstalledProcesses([string]$Root) {
