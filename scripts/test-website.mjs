@@ -5,14 +5,14 @@ import fs from 'node:fs'
 import path from 'node:path'
 
 const html = fs.readFileSync(path.resolve(import.meta.dirname, '..', 'website.html'), 'utf-8')
-assert.doesNotMatch(html, /v2\.2\.0-rc\.1/, 'download page must not retain the failed rc.1 tag')
+assert.doesNotMatch(html, /v2\.2\.0-rc\.[12]/, 'download page must not retain failed candidate tags')
 
 for (const [kind, asset] of [
   ['windows', 'OpenVZ-Agent-Setup.exe'],
   ['mac-arm64', 'OpenVZ-Agent-mac-arm64.dmg'],
   ['mac-x64', 'OpenVZ-Agent-mac-x64.dmg'],
 ]) {
-  assert.match(html, new RegExp(`data-download="${kind}"[^>]+releases/download/v2\\.2\\.0-rc\\.2/${asset.replaceAll('.', '\\.')}`))
+  assert.match(html, new RegExp(`data-download="${kind}"[^>]+releases/download/v2\\.2\\.0-rc\\.3/${asset.replaceAll('.', '\\.')}`))
 }
 for (const required of ['Windows 10 / 11', 'macOS 12', 'Apple Silicon', 'Intel', 'API Key', 'SHA256SUMS.txt', 'UNSIGNED-BUILD.txt', '未签名社区', 'Azure Trusted Signing', 'SmartScreen', 'NotSigned', 'Get-AuthenticodeSignature', 'Control', '隐私与安全性', 'spctl --assess', '<noscript>']) {
   assert.ok(html.includes(required), `download page must mention ${required}`)
