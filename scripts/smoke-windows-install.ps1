@@ -161,9 +161,9 @@ node (Join-Path $PSScriptRoot 'smoke-packaged-playwright.mjs')
 $SmokeRoot = Join-Path $env:RUNNER_TEMP 'openvz-install-smoke'
 $FreshInstallDir = Join-Path $SmokeRoot 'fresh\OpenVZ Agent'
 $FreshUserDir = Join-Path $SmokeRoot 'fresh-user-data'
-$UpgradeInstallDir = Join-Path $SmokeRoot 'upgrade\OpenVZ Agent'
-$UpgradeUserDir = Join-Path $SmokeRoot 'upgrade-user-data'
-New-Item -ItemType Directory -Force -Path $SmokeRoot, $FreshUserDir, $UpgradeUserDir | Out-Null
+$MigrationInstallDir = Join-Path $SmokeRoot 'migration\OpenVZ Agent'
+$MigrationUserDir = $env:OPENVZ_UPGRADE_FIXTURE_DIR
+New-Item -ItemType Directory -Force -Path $SmokeRoot, $FreshUserDir | Out-Null
 
 # Current installer fresh-install contract.
 Invoke-ProcessChecked -Label 'current-version silent fresh install' -FilePath $Setup -ArgumentList @('/S', '/currentuser', "/D=$FreshInstallDir") -TimeoutSeconds 300 | Out-Null
@@ -176,31 +176,25 @@ if (-not (Test-Path $freshUninstaller)) { throw "Uninstaller missing: $freshUnin
 Invoke-ProcessChecked -Label 'current-version silent uninstall' -FilePath $freshUninstaller -ArgumentList @('/S', '/currentuser') -TimeoutSeconds 180 | Out-Null
 if (-not (Test-Path $freshMarker)) { throw 'Silent uninstall removed user data despite keep-data default' }
 
-# Real upgrade contract: install the published v2.1.439 package, then replace it
-# with the current candidate. A same-version reinstall exercises an NSIS repair
-# path and is not a valid substitute for an upgrade test.
-$BaselineSetup = $env:OPENVZ_BASELINE_SETUP
-if (-not $BaselineSetup -or -not (Test-Path $BaselineSetup)) {
-  throw "Verified v2.1.439 baseline installer missing: $BaselineSetup"
+# The published v2.1.439 NSIS binary cannot be used as a setup fixture: its
+# package was already branded OpenVZ Agent while its custom payload validation
+# still required Bailongma.exe. Exercise the user-visible upgrade contract with
+# a realistic pre-created v2.1.439 data directory instead. The packaged app must
+# back it up, migrate it in place, encrypt credentials, and preserve it through
+# uninstall.
+if (-not $MigrationUserDir -or -not (Test-Path $MigrationUserDir)) {
+  throw "v2.1.439 user-data fixture missing: $MigrationUserDir"
 }
-Invoke-ProcessChecked -Label 'v2.1.439 baseline silent install' -FilePath $BaselineSetup -ArgumentList @('/S', '/currentuser', "/D=$UpgradeInstallDir") -TimeoutSeconds 300 | Out-Null
+Invoke-ProcessChecked -Label 'current-version install over v2.1.439 user data' -FilePath $Setup -ArgumentList @('/S', '/currentuser', "/D=$MigrationInstallDir") -TimeoutSeconds 300 | Out-Null
+Test-InstalledApp -InstallDir $MigrationInstallDir -UserDir $MigrationUserDir -Port 3722
+python (Join-Path $PSScriptRoot 'v21439-packaged-fixture.py') verify $MigrationUserDir
+if ($LASTEXITCODE -ne 0) { throw 'Independent v2.1.439 packaged migration verification failed' }
 
-# Upgrade/user-data contract: the new installer and uninstaller must not erase
-# data created before the upgrade.
-$marker = Join-Path $UpgradeUserDir 'upgrade-preservation-marker.txt'
-Set-Content -Path $marker -Value 'v2.1.439 fixture retained' -NoNewline
-Write-Host '[smoke] v2.1.439 installed root entries before upgrade:'
-Get-ChildItem -Force -Path $UpgradeInstallDir | Sort-Object Name | ForEach-Object {
-  Write-Host "[smoke]   $($_.Name)"
-}
-Invoke-ProcessChecked -Label 'v2.1.439 to current-version silent upgrade' -FilePath $Setup -ArgumentList @('/S', '/currentuser', "/D=$UpgradeInstallDir") -TimeoutSeconds 300 | Out-Null
-if (-not (Test-Path $marker)) { throw 'Upgrade removed user data' }
-Test-InstalledApp -InstallDir $UpgradeInstallDir -UserDir $UpgradeUserDir -Port 3722
-
-$upgradeUninstaller = Join-Path $UpgradeInstallDir 'Uninstall OpenVZ Agent.exe'
-if (-not (Test-Path $upgradeUninstaller)) { throw "Uninstaller missing: $upgradeUninstaller" }
-Invoke-ProcessChecked -Label 'upgraded-version silent uninstall' -FilePath $upgradeUninstaller -ArgumentList @('/S', '/currentuser') -TimeoutSeconds 180 | Out-Null
-if (-not (Test-Path $marker)) { throw 'Silent uninstall removed user data despite keep-data default' }
+$migrationUninstaller = Join-Path $MigrationInstallDir 'Uninstall OpenVZ Agent.exe'
+if (-not (Test-Path $migrationUninstaller)) { throw "Uninstaller missing: $migrationUninstaller" }
+Invoke-ProcessChecked -Label 'migrated-version silent uninstall' -FilePath $migrationUninstaller -ArgumentList @('/S', '/currentuser') -TimeoutSeconds 180 | Out-Null
+python (Join-Path $PSScriptRoot 'v21439-packaged-fixture.py') verify $MigrationUserDir
+if ($LASTEXITCODE -ne 0) { throw 'Silent uninstall removed or changed migrated user data' }
 
 $mode = if ($RequireSignature) { 'signed release' } else { 'unsigned community RC' }
-Write-Host "Windows $mode fresh install, v2.1.439 upgrade, launch, SQLite, offline Chromium and uninstall smoke: OK"
+Write-Host "Windows $mode fresh install, packaged v2.1.439 data migration, launch, SQLite, offline Chromium and uninstall smoke: OK"

@@ -10,7 +10,7 @@ on:
       tag:
         description: Existing v2.2.0 tag to publish
         required: true
-        default: v2.2.0-rc.9
+        default: v2.2.0-rc.10
       unsigned:
         description: Publish a clearly labelled unsigned prerelease (RC tags only)
         required: true
@@ -55,16 +55,12 @@ jobs:
       - run: npm ci
         env:
           PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
-      - name: Download and verify v2.1.439 upgrade baseline
+      - name: Create a realistic v2.1.439 user-data fixture
         shell: pwsh
         run: |
-          $baseline = Join-Path $env:RUNNER_TEMP 'OpenVZ-Agent-v2.1.439-Setup.exe'
-          & curl.exe --fail --location --retry 5 --output $baseline 'https://github.com/mrlin728/openvz-agent/releases/download/v2.1.439/OpenVZ-Agent-Setup.exe'
-          if ($LASTEXITCODE -ne 0) { throw "Failed to download the v2.1.439 Windows baseline" }
-          $expected = '47f875643abdfd1c8b679a12090ca6376b07158f994ff97db772341a6764a388'
-          $actual = (Get-FileHash -Path $baseline -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "v2.1.439 baseline SHA-256 mismatch: $actual" }
-          "OPENVZ_BASELINE_SETUP=$baseline" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          $fixture = Join-Path $env:RUNNER_TEMP 'openvz-v2.1.439-user-data'
+          python scripts/v21439-packaged-fixture.py create $fixture
+          "OPENVZ_UPGRADE_FIXTURE_DIR=$fixture" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Require Azure Trusted Signing configuration
         if: ${{ !inputs.unsigned }}
         run: npm run verify:release-config
@@ -79,7 +75,7 @@ jobs:
             dist/OpenVZ-Agent-Setup.exe
             dist/OpenVZ-Agent-Setup.exe.blockmap
             dist/latest.yml
-      - name: Fresh install and v2.1.439 upgrade smoke
+      - name: Fresh install and packaged v2.1.439 data migration smoke
         timeout-minutes: 20
         shell: pwsh
         run: ./scripts/smoke-windows-install.ps1
