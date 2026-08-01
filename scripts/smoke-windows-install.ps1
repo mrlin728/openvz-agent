@@ -108,6 +108,10 @@ try {
 # Upgrade/user-data contract: installers and uninstallers must not erase existing data.
 $marker = Join-Path $UserDir 'upgrade-preservation-marker.txt'
 Set-Content -Path $marker -Value 'v2.1.439 fixture retained' -NoNewline
+Write-Host '[smoke] Installed root entries before upgrade:'
+Get-ChildItem -Force -Path $InstallDir | Sort-Object Name | ForEach-Object {
+  Write-Host "[smoke]   $($_.Name)"
+}
 Invoke-ProcessChecked -Label 'silent upgrade' -FilePath $Setup -ArgumentList @('/S', '/currentuser', "/D=$InstallDir") -TimeoutSeconds 300 | Out-Null
 if (-not (Test-Path $marker)) { throw 'Upgrade removed user data' }
 
