@@ -48,10 +48,13 @@ function Invoke-ProcessChecked(
     if ($null -eq $completedJob) {
       Write-Host "[smoke] $Label timed out; related Windows processes:"
       $targetLeaf = [IO.Path]::GetFileName($FilePath)
+      $installDirectoryArgument = $ArgumentList | Where-Object { $_ -like '/D=*' } | Select-Object -First 1
+      $targetInstallDirectory = if ($installDirectoryArgument) { $installDirectoryArgument.Substring(3) } else { '' }
       $relatedProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
         ($_.ExecutablePath -and $_.ExecutablePath.Equals($FilePath, [StringComparison]::OrdinalIgnoreCase)) -or
-        ($_.Name -and ($_.Name -eq $targetLeaf -or $_.Name -like 'OpenVZ Agent*')) -or
-        ($_.CommandLine -and $_.CommandLine.Contains($FilePath, [StringComparison]::OrdinalIgnoreCase))
+        ($_.Name -and ($_.Name -eq $targetLeaf -or $_.Name -eq 'old-uninstaller.exe' -or $_.Name -like 'OpenVZ Agent*' -or $_.Name -like 'Uninstall OpenVZ Agent*')) -or
+        ($_.CommandLine -and $_.CommandLine.Contains($FilePath, [StringComparison]::OrdinalIgnoreCase)) -or
+        ($targetInstallDirectory -and $_.CommandLine -and $_.CommandLine.Contains($targetInstallDirectory, [StringComparison]::OrdinalIgnoreCase))
       })
       foreach ($relatedProcess in $relatedProcesses) {
         $windowTitle = ''
@@ -119,57 +122,85 @@ function Stop-InstalledProcessTrees([string]$Root) {
   throw "Installed processes did not exit before upgrade: $details"
 }
 
+function Test-InstalledApp(
+  [string]$InstallDir,
+  [string]$UserDir,
+  [int]$Port
+) {
+  $exe = Join-Path $InstallDir 'OpenVZ Agent.exe'
+  if (-not (Test-Path $exe)) { throw "Installed executable missing: $exe" }
+  Assert-SignatureContract $exe
+
+  $env:OPENVZ_USER_DIR = $UserDir
+  $env:OPENVZ_PORT = "$Port"
+  $app = Start-Process -FilePath $exe -PassThru
+  try {
+    $ready = $false
+    for ($i = 0; $i -lt 90; $i++) {
+      Start-Sleep -Seconds 1
+      try {
+        $status = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/status" -TimeoutSec 2
+        if ($null -ne $status) { $ready = $true; break }
+      } catch {}
+      if ($app.HasExited) { throw "Installed app exited early with $($app.ExitCode)" }
+    }
+    if (-not $ready) { throw 'Installed app did not expose /status within 90 seconds' }
+    if (-not (Test-Path (Join-Path $UserDir 'data\jarvis.db'))) { throw 'Native SQLite module did not create jarvis.db' }
+  } finally {
+    if (-not $app.HasExited) {
+      Write-Host "[smoke] Stopping app process tree $($app.Id)"
+      & taskkill.exe /PID $app.Id /T /F 2>&1 | Out-Host
+    }
+    Stop-InstalledProcessTrees $InstallDir
+  }
+}
+
 Assert-SignatureContract $Setup
 node (Join-Path $PSScriptRoot 'smoke-packaged-playwright.mjs')
 
 $SmokeRoot = Join-Path $env:RUNNER_TEMP 'openvz-install-smoke'
-$InstallDir = Join-Path $SmokeRoot 'OpenVZ Agent'
-$UserDir = Join-Path $SmokeRoot 'user-data'
-New-Item -ItemType Directory -Force -Path $SmokeRoot, $UserDir | Out-Null
+$FreshInstallDir = Join-Path $SmokeRoot 'fresh\OpenVZ Agent'
+$FreshUserDir = Join-Path $SmokeRoot 'fresh-user-data'
+$UpgradeInstallDir = Join-Path $SmokeRoot 'upgrade\OpenVZ Agent'
+$UpgradeUserDir = Join-Path $SmokeRoot 'upgrade-user-data'
+New-Item -ItemType Directory -Force -Path $SmokeRoot, $FreshUserDir, $UpgradeUserDir | Out-Null
 
-Invoke-ProcessChecked -Label 'silent install' -FilePath $Setup -ArgumentList @('/S', '/currentuser', "/D=$InstallDir") -TimeoutSeconds 300 | Out-Null
+# Current installer fresh-install contract.
+Invoke-ProcessChecked -Label 'current-version silent fresh install' -FilePath $Setup -ArgumentList @('/S', '/currentuser', "/D=$FreshInstallDir") -TimeoutSeconds 300 | Out-Null
+Test-InstalledApp -InstallDir $FreshInstallDir -UserDir $FreshUserDir -Port 3721
 
-$Exe = Join-Path $InstallDir 'OpenVZ Agent.exe'
-$Uninstaller = Join-Path $InstallDir 'Uninstall OpenVZ Agent.exe'
-if (-not (Test-Path $Exe)) { throw "Installed executable missing: $Exe" }
-Assert-SignatureContract $Exe
+$freshMarker = Join-Path $FreshUserDir 'uninstall-preservation-marker.txt'
+Set-Content -Path $freshMarker -Value 'fresh install data retained' -NoNewline
+$freshUninstaller = Join-Path $FreshInstallDir 'Uninstall OpenVZ Agent.exe'
+if (-not (Test-Path $freshUninstaller)) { throw "Uninstaller missing: $freshUninstaller" }
+Invoke-ProcessChecked -Label 'current-version silent uninstall' -FilePath $freshUninstaller -ArgumentList @('/S', '/currentuser') -TimeoutSeconds 180 | Out-Null
+if (-not (Test-Path $freshMarker)) { throw 'Silent uninstall removed user data despite keep-data default' }
 
-$env:OPENVZ_USER_DIR = $UserDir
-$env:OPENVZ_PORT = '3721'
-$app = Start-Process -FilePath $Exe -PassThru
-try {
-  $ready = $false
-  for ($i = 0; $i -lt 90; $i++) {
-    Start-Sleep -Seconds 1
-    try {
-      $status = Invoke-RestMethod -Uri 'http://127.0.0.1:3721/status' -TimeoutSec 2
-      if ($null -ne $status) { $ready = $true; break }
-    } catch {}
-    if ($app.HasExited) { throw "Installed app exited early with $($app.ExitCode)" }
-  }
-  if (-not $ready) { throw 'Installed app did not expose /status within 90 seconds' }
-  if (-not (Test-Path (Join-Path $UserDir 'data\jarvis.db'))) { throw 'Native SQLite module did not create jarvis.db' }
-} finally {
-  if (-not $app.HasExited) {
-    Write-Host "[smoke] Stopping app process tree $($app.Id)"
-    & taskkill.exe /PID $app.Id /T /F 2>&1 | Out-Host
-  }
-  Stop-InstalledProcessTrees $InstallDir
+# Real upgrade contract: install the published v2.1.439 package, then replace it
+# with the current candidate. A same-version reinstall exercises an NSIS repair
+# path and is not a valid substitute for an upgrade test.
+$BaselineSetup = $env:OPENVZ_BASELINE_SETUP
+if (-not $BaselineSetup -or -not (Test-Path $BaselineSetup)) {
+  throw "Verified v2.1.439 baseline installer missing: $BaselineSetup"
 }
+Invoke-ProcessChecked -Label 'v2.1.439 baseline silent install' -FilePath $BaselineSetup -ArgumentList @('/S', '/currentuser', "/D=$UpgradeInstallDir") -TimeoutSeconds 300 | Out-Null
 
-# Upgrade/user-data contract: installers and uninstallers must not erase existing data.
-$marker = Join-Path $UserDir 'upgrade-preservation-marker.txt'
+# Upgrade/user-data contract: the new installer and uninstaller must not erase
+# data created before the upgrade.
+$marker = Join-Path $UpgradeUserDir 'upgrade-preservation-marker.txt'
 Set-Content -Path $marker -Value 'v2.1.439 fixture retained' -NoNewline
-Write-Host '[smoke] Installed root entries before upgrade:'
-Get-ChildItem -Force -Path $InstallDir | Sort-Object Name | ForEach-Object {
+Write-Host '[smoke] v2.1.439 installed root entries before upgrade:'
+Get-ChildItem -Force -Path $UpgradeInstallDir | Sort-Object Name | ForEach-Object {
   Write-Host "[smoke]   $($_.Name)"
 }
-Invoke-ProcessChecked -Label 'silent upgrade' -FilePath $Setup -ArgumentList @('/S', '/currentuser', "/D=$InstallDir") -TimeoutSeconds 300 | Out-Null
+Invoke-ProcessChecked -Label 'v2.1.439 to current-version silent upgrade' -FilePath $Setup -ArgumentList @('/S', '/currentuser', "/D=$UpgradeInstallDir") -TimeoutSeconds 300 | Out-Null
 if (-not (Test-Path $marker)) { throw 'Upgrade removed user data' }
+Test-InstalledApp -InstallDir $UpgradeInstallDir -UserDir $UpgradeUserDir -Port 3722
 
-if (-not (Test-Path $Uninstaller)) { throw "Uninstaller missing: $Uninstaller" }
-Invoke-ProcessChecked -Label 'silent uninstall' -FilePath $Uninstaller -ArgumentList @('/S', '/currentuser') -TimeoutSeconds 180 | Out-Null
+$upgradeUninstaller = Join-Path $UpgradeInstallDir 'Uninstall OpenVZ Agent.exe'
+if (-not (Test-Path $upgradeUninstaller)) { throw "Uninstaller missing: $upgradeUninstaller" }
+Invoke-ProcessChecked -Label 'upgraded-version silent uninstall' -FilePath $upgradeUninstaller -ArgumentList @('/S', '/currentuser') -TimeoutSeconds 180 | Out-Null
 if (-not (Test-Path $marker)) { throw 'Silent uninstall removed user data despite keep-data default' }
 
 $mode = if ($RequireSignature) { 'signed release' } else { 'unsigned community RC' }
-Write-Host "Windows $mode install, launch, SQLite, offline Chromium, upgrade and uninstall smoke: OK"
+Write-Host "Windows $mode fresh install, v2.1.439 upgrade, launch, SQLite, offline Chromium and uninstall smoke: OK"
