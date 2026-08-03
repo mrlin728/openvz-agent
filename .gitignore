@@ -165,3 +165,11 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+
+# Local scratch — throwaway DB probes and UI screenshots taken while debugging.
+# These used to get committed to the repo root by accident.
+_tmp_*
+check_*.js
+check_*.mjs
+query.js
+data/
