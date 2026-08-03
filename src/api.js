@@ -32,6 +32,12 @@ import {
   selectWebSocketProtocol,
   timingSafeTokenEqual,
 } from './api/websocket-security.js'
+import {
+  allowSensitiveAccess,
+  corsAllowOrigin,
+  isAllowedOrigin as isAllowedHttpOrigin,
+  isSensitivePath,
+} from './api/http-origin.js'
 
 export { emitEvent }
 
@@ -56,25 +62,8 @@ function isLanRequest(req) {
   return isLanAccessEnabled() && isPrivateLanAddress(req.socket?.remoteAddress)
 }
 
-function isLoopbackOrigin(origin = '') {
-  if (!origin || origin === 'null') return true
-  try {
-    const parsed = new URL(origin)
-    return ['127.0.0.1', 'localhost', '::1'].includes(parsed.hostname)
-  } catch {
-    return false
-  }
-}
-
 function isAllowedOrigin(origin = '') {
-  if (isLoopbackOrigin(origin)) return true
-  if (!isLanAccessEnabled()) return false
-  try {
-    const parsed = new URL(origin)
-    return isPrivateLanAddress(parsed.hostname)
-  } catch {
-    return false
-  }
+  return isAllowedHttpOrigin(origin, { lanEnabled: isLanAccessEnabled() })
 }
 
 function getAuthToken() {
@@ -91,7 +80,12 @@ function hasValidAuthToken(req, url) {
 }
 
 function requireLocalOrToken(req, res, url) {
-  if (isLoopbackRequest(req) || hasValidAuthToken(req, url)) return true
+  const allowed = allowSensitiveAccess({
+    origin: req.headers.origin,
+    loopback: isLoopbackRequest(req),
+    hasToken: hasValidAuthToken(req, url),
+  })
+  if (allowed) return true
   jsonResponse(res, 403, { ok: false, error: 'forbidden' })
   return false
 }
@@ -100,18 +94,13 @@ function hasAllowedAccess(req, url) {
   return isLoopbackRequest(req) || hasValidAuthToken(req, url) || isLanRequest(req)
 }
 
-function isSensitivePath(pathname) {
-  return pathname === '/activate'
-    || pathname === '/activate/prepare'
-    || pathname === '/settings'
-    || pathname.startsWith('/settings/')
-    || pathname.startsWith('/admin/')
-    || pathname.startsWith('/memories/')
-}
-
-function setCorsHeaders(req, res, origin) {
-  if (isAllowedOrigin(origin)) {
-    res.setHeader('Access-Control-Allow-Origin', origin || 'null')
+function setCorsHeaders(req, res, origin, pathname = '') {
+  // `Access-Control-Allow-Origin: null` lets any sandboxed iframe read the
+  // response, so sensitive routes never get one — see src/api/http-origin.js.
+  const allow = corsAllowOrigin(origin, { lanEnabled: isLanAccessEnabled(), pathname })
+  if (allow) {
+    res.setHeader('Access-Control-Allow-Origin', allow)
+    res.setHeader('Vary', 'Origin')
   }
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
@@ -337,7 +326,7 @@ export function startAPI(port = 3721, { getStateSnapshot = null, onActivated = n
         return jsonResponse(res, 403, { ok: false, error: 'forbidden' })
       }
 
-      setCorsHeaders(req, res, origin)
+      setCorsHeaders(req, res, origin, url.pathname)
 
       if (req.method !== 'OPTIONS' && isSensitivePath(url.pathname) && !requireLocalOrToken(req, res, url)) return
 
