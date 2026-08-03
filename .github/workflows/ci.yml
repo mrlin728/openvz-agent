@@ -56,6 +56,7 @@ jobs:
           npm run test:consciousness-loop
           npm run test:runtime-managers
           npm run test:websocket-security
+          npm run test:http-origin
           node src/test-action-contract.js
           node src/test-runtime-delivery.js
           node src/test-api-capability-slots.js

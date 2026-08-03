@@ -44,6 +44,7 @@
     "test:voice-continuous": "node ./src/test-voice-continuous.js",
     "test:voice-ptt": "node ./src/test-voice-ptt.js",
     "test:websocket-security": "node ./src/test-websocket-security.js",
+    "test:http-origin": "node ./src/test-http-origin.js",
     "test:web-read": "node ./src/test-web-read.js",
     "test:playwright-packaging": "node ./scripts/test-playwright-packaging.mjs",
     "test:browser-core": "node ./src/test-browser-session-manager.js && node ./src/test-browser-session-integration.js",
